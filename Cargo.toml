@@ -10,6 +10,35 @@ members = [
 [workspace.dependencies]
 soroban-sdk = { version = "21.0.0", features = ["testutils"] }
 
+# ── Integration-test harness (workspace root package) ────────────────────────
+[package]
+name        = "conduit-integration-tests"
+version     = "0.1.0"
+edition     = "2021"
+publish     = false
+autobins    = false
+autoexamples = false
+
+[dev-dependencies]
+drip-stream   = { path = "contracts/stream",   features = ["testutils"] }
+drip-factory  = { path = "contracts/factory",  features = ["testutils"] }
+drip-governor = { path = "contracts/governor", features = ["testutils"] }
+soroban-sdk   = { workspace = true, features = ["testutils"] }
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
+
+[profile.release-with-logs]
+inherits = "release"
+debug-assertions = true
+
 [profile.release]
 opt-level = "z"
 overflow-checks = true
