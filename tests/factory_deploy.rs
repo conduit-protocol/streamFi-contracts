@@ -1,44 +1,165 @@
-//! Tests for DripFactory stream creation and registry.
+//! Integration tests: DripFactory validation and registry queries.
+//!
+//! Deployment tests (create_stream success path) require the stream WASM to be
+//! built first (`cargo build --target wasm32-unknown-unknown --release`).
+//! The tests in this file cover validation guards and registry read-paths that
+//! do not require an actual stream deployment.
 
-#[cfg(test)]
-mod factory_deploy {
-    #[test]
-    fn test_create_stream_returns_incrementing_id() {
-        // TODO: create 3 streams, verify IDs are 0, 1, 2
-    }
+use soroban_sdk::{
+    testutils::{Address as _, Ledger, LedgerInfo},
+    token, Address, BytesN, Env,
+};
+use drip_factory::{DripFactory, DripFactoryClient};
 
-    #[test]
-    fn test_stream_address_registered() {
-        // TODO: create stream, verify factory.stream_address(id) returns valid address
-    }
+fn base_env() -> Env {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp:                1_000_000,
+        protocol_version:         21,
+        sequence_number:          1,
+        network_id:               Default::default(),
+        base_reserve:             10,
+        min_temp_entry_ttl:       16,
+        min_persistent_entry_ttl: 4096,
+        max_entry_ttl:            6_312_000,
+    });
+    env
+}
 
-    #[test]
-    fn test_streams_by_sender_indexed() {
-        // TODO: create 3 streams from same sender, verify streams_by_sender returns all 3
-    }
+fn deploy_factory(env: &Env) -> DripFactoryClient<'_> {
+    let id     = env.register_contract(None, DripFactory);
+    let client = DripFactoryClient::new(env, &id);
+    let governor   = Address::generate(env);
+    let dummy_hash = BytesN::from_array(env, &[0u8; 32]);
+    client.initialize(&dummy_hash, &governor);
+    client
+}
 
-    #[test]
-    fn test_streams_by_recipient_indexed() {
-        // TODO: create 2 streams to same recipient, verify streams_by_recipient returns both
-    }
+// ── Fresh factory state ───────────────────────────────────────────────────────
 
-    #[test]
-    fn test_invalid_deposit_rejected() {
-        // TODO: deposit=0 → InvalidDeposit
-    }
+#[test]
+fn stream_count_starts_at_zero() {
+    let env    = base_env();
+    let client = deploy_factory(&env);
+    assert_eq!(client.stream_count(), 0);
+}
 
-    #[test]
-    fn test_backdated_stream_rejected() {
-        // TODO: start_time < now → BackdatedStream
-    }
+#[test]
+fn stream_address_returns_none_for_nonexistent_id() {
+    let env    = base_env();
+    let client = deploy_factory(&env);
+    assert!(client.stream_address(&0).is_none());
+    assert!(client.stream_address(&999).is_none());
+}
 
-    #[test]
-    fn test_invalid_time_range_rejected() {
-        // TODO: end_time <= start_time → InvalidTimeRange
-    }
+#[test]
+fn streams_by_sender_returns_empty_for_unknown_address() {
+    let env    = base_env();
+    let client = deploy_factory(&env);
+    let sender = Address::generate(&env);
+    let result = client.streams_by_sender(&sender, &0, &10);
+    assert_eq!(result.len(), 0);
+}
 
-    #[test]
-    fn test_insufficient_deposit_rejected() {
-        // TODO: deposit < rate_per_sec → InsufficientDeposit
-    }
+#[test]
+fn streams_by_recipient_returns_empty_for_unknown_address() {
+    let env    = base_env();
+    let client = deploy_factory(&env);
+    let recip  = Address::generate(&env);
+    let result = client.streams_by_recipient(&recip, &0, &10);
+    assert_eq!(result.len(), 0);
+}
+
+#[test]
+fn protocol_fee_bps_returns_default_30() {
+    let env    = base_env();
+    let client = deploy_factory(&env);
+    assert_eq!(client.protocol_fee_bps(), 30);
+}
+
+// ── Validation errors (all fail before deployment) ────────────────────────────
+
+fn make_token(env: &Env, sender: &Address, amount: i128) -> Address {
+    let admin = Address::generate(env);
+    let addr  = env.register_stellar_asset_contract(admin.clone());
+    token::StellarAssetClient::new(env, &addr).mint(sender, &amount);
+    addr
+}
+
+#[test]
+#[should_panic(expected = "InvalidDeposit")]
+fn create_stream_rejects_zero_deposit() {
+    let env    = base_env();
+    let client = deploy_factory(&env);
+    let sender = Address::generate(&env);
+    let recip  = Address::generate(&env);
+    let token  = make_token(&env, &sender, 0);
+    let now    = env.ledger().timestamp();
+    // deposit = 0 → InvalidDeposit before any deployment
+    client.create_stream(&sender, &recip, &token, &0, &100, &(now + 100), &(now + 3_700), &false);
+}
+
+#[test]
+#[should_panic(expected = "InvalidRate")]
+fn create_stream_rejects_zero_rate() {
+    let env    = base_env();
+    let client = deploy_factory(&env);
+    let sender = Address::generate(&env);
+    let recip  = Address::generate(&env);
+    let token  = make_token(&env, &sender, 10_000);
+    let now    = env.ledger().timestamp();
+    client.create_stream(&sender, &recip, &token, &10_000, &0, &(now + 100), &(now + 3_700), &false);
+}
+
+#[test]
+#[should_panic(expected = "InsufficientDeposit")]
+fn create_stream_rejects_deposit_less_than_one_second() {
+    let env    = base_env();
+    let client = deploy_factory(&env);
+    let sender = Address::generate(&env);
+    let recip  = Address::generate(&env);
+    let token  = make_token(&env, &sender, 10_000);
+    let now    = env.ledger().timestamp();
+    // deposit (50) < rate_per_sec (100) → InsufficientDeposit
+    client.create_stream(&sender, &recip, &token, &50, &100, &(now + 100), &(now + 3_700), &false);
+}
+
+#[test]
+#[should_panic(expected = "BackdatedStream")]
+fn create_stream_rejects_start_time_in_past() {
+    let env    = base_env();
+    let client = deploy_factory(&env);
+    let sender = Address::generate(&env);
+    let recip  = Address::generate(&env);
+    let token  = make_token(&env, &sender, 100_000);
+    let now    = env.ledger().timestamp();
+    // start_time = now - 1 → BackdatedStream
+    client.create_stream(&sender, &recip, &token, &100_000, &100, &(now - 1), &(now + 3_600), &false);
+}
+
+#[test]
+#[should_panic(expected = "InvalidTimeRange")]
+fn create_stream_rejects_end_before_start() {
+    let env    = base_env();
+    let client = deploy_factory(&env);
+    let sender = Address::generate(&env);
+    let recip  = Address::generate(&env);
+    let token  = make_token(&env, &sender, 100_000);
+    let now    = env.ledger().timestamp();
+    // end_time <= start_time → InvalidTimeRange
+    client.create_stream(&sender, &recip, &token, &100_000, &100, &(now + 100), &(now + 50), &false);
+}
+
+#[test]
+#[should_panic(expected = "InvalidTimeRange")]
+fn create_stream_rejects_end_equal_to_start() {
+    let env    = base_env();
+    let client = deploy_factory(&env);
+    let sender = Address::generate(&env);
+    let recip  = Address::generate(&env);
+    let token  = make_token(&env, &sender, 100_000);
+    let now    = env.ledger().timestamp();
+    let start  = now + 100;
+    client.create_stream(&sender, &recip, &token, &100_000, &100, &start, &start, &false);
 }
