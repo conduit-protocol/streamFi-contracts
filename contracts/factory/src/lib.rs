@@ -134,6 +134,20 @@ impl DripFactory {
         // Stub returns the default of 30 bps (0.3%).
         30
     }
+
+    /// Update the stored stream WASM hash.
+    ///
+    /// Called after a new stream contract version is uploaded so subsequent
+    /// `create_stream` calls deploy the new implementation. Existing streams
+    /// are unaffected — each is an independent deployed contract.
+    pub fn upgrade_stream_wasm(env: Env, new_wasm_hash: BytesN<32>) {
+        // Only governor may update the wasm hash.
+        let governor: Address = env.storage().instance()
+            .get(&DataKey::GovernorAddress)
+            .expect("factory not initialized");
+        governor.require_auth();
+        env.storage().instance().set(&DataKey::StreamWasmHash, &new_wasm_hash);
+    }
 }
 
 fn paginate(env: &Env, v: Vec<u64>, offset: u32, limit: u32) -> Vec<u64> {
