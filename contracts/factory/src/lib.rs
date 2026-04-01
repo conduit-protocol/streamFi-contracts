@@ -92,6 +92,8 @@ impl DripFactory {
         // they use persistent storage (not instance storage) to avoid hitting
         // instance storage size limits as the protocol scales.
         env.storage().persistent().set(&DataKey::StreamAddr(stream_id), &stream_addr);
+        // Extend TTL on the stream address entry so it outlives ledger pruning.
+        env.storage().persistent().extend_ttl(&DataKey::StreamAddr(stream_id), 100_000, 200_000);
         env.storage().instance().set(&DataKey::StreamCount, &(stream_count + 1));
 
         let mut by_sender: Vec<u64> = env.storage().persistent()
