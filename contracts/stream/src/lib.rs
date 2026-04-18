@@ -224,6 +224,49 @@ impl DripStream {
         math::withdrawable(&env, &info).unwrap_or(0)
     }
 
+    /// Recipient force-cancels a stream that has been paused beyond a threshold.
+    ///
+    /// Prevents the sender from indefinitely pausing the stream to hold
+    /// unstreamed tokens hostage. The threshold is hardcoded to 30 days
+    /// (2_592_000 seconds) — a governance-configurable version is planned.
+    /// Settles atomically like `cancel()`: earned tokens go to recipient,
+    /// unstreamed refund goes to sender.
+    pub fn force_cancel(env: Env) -> Result<(), Error> {
+        const PAUSE_THRESHOLD_SECS: u64 = 2_592_000; // 30 days
+
+        let info = load(&env);
+        assert_not_cancelled(&info)?;
+        if !info.paused { return Err(Error::NotPaused); }
+
+        let now          = env.ledger().timestamp();
+        let paused_secs  = now.saturating_sub(info.paused_at);
+        if paused_secs < PAUSE_THRESHOLD_SECS {
+            return Err(Error::PauseThresholdNotMet);
+        }
+
+        info.recipient.require_auth();
+
+        let tk            = token::Client::new(&env, &info.token);
+        let contract_addr = env.current_contract_address();
+        let balance       = tk.balance(&contract_addr);
+
+        let streamed          = math::streamed_amount(&env, &info)?;
+        let owed_to_recipient = (streamed - info.withdrawn).max(0).min(balance);
+        let refund_to_sender  = (balance - owed_to_recipient).max(0);
+
+        env.storage().instance().set(&DataKey::Cancelled, &true);
+
+        if owed_to_recipient > 0 {
+            tk.transfer(&contract_addr, &info.recipient, &owed_to_recipient);
+        }
+        if refund_to_sender > 0 {
+            tk.transfer(&contract_addr, &info.sender, &refund_to_sender);
+        }
+
+        events::cancelled(&env, &info.sender, refund_to_sender, info.withdrawn);
+        Ok(())
+    }
+
     /// Recipient transfers their right to a new address.
     ///
     /// Any withdrawable balance at the moment of transfer stays accessible

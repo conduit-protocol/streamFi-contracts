@@ -15,5 +15,6 @@ pub enum Error {
     AlreadyPaused       = 9,
     NotPaused           = 10,
     ClawbackDisabled    = 11,
-    ArithmeticOverflow  = 12,
+    ArithmeticOverflow      = 12,
+    PauseThresholdNotMet    = 13,
 }
