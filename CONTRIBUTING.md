@@ -271,20 +271,86 @@ security(governor): validate fee_bps does not exceed 10000
 
 ## Pull Request Process
 
+### Branch naming
+
+```
+feat/<issue-number>-short-slug      # new feature
+fix/<issue-number>-short-slug       # bug fix
+test/<issue-number>-short-slug      # tests only
+docs/<issue-number>-short-slug      # docs only
+refactor/<issue-number>-short-slug  # refactor
+security/<issue-number>-short-slug  # security fix
+```
+
+Examples: `fix/5-extend-index-ttl`, `feat/9-initialized-event`
+
+### 5-commit convention
+
+Every PR must be structured as **exactly 5 logical commits**. No squashing allowed before review — reviewers read the commit history. The standard 5-commit shape for a bug fix or feature:
+
+| # | Commit type | What it contains |
+|---|---|---|
+| 1 | `test(<scope>): add failing test for <issue>` | Tests that reproduce the bug or specify the new behaviour — written **first**, expected to fail on `main` |
+| 2 | `fix(<scope>): <minimal fix>` | The smallest code change that makes commit 1's tests pass |
+| 3 | `test(<scope>): add edge-case and regression tests` | Additional tests covering error variants, boundary values, and related paths touched by the fix |
+| 4 | `docs(<scope>): update inline docs and architecture notes` | Rustdoc comments, any updated `docs/` page, ADR if a design decision was made |
+| 5 | `chore(<scope>): fmt + clippy clean-up` | `cargo fmt --all` and any clippy warnings introduced or surfaced by the change |
+
+**Notes:**
+- If a change truly requires fewer than 5 commits, split one commit further (e.g. separate positive tests from negative tests, or separate docs per module). Five commits is a floor, not a ceiling — complex features may have more, but every PR must have at least 5.
+- Commit bodies (not just subjects) must explain **why**, not just what. Reference the issue number: `Fixes #5`.
+- Fixup commits (`fixup!`) are not allowed in PR branches — rebase and amend before requesting review.
+
+### Example commit sequence for fix/5-extend-index-ttl
+
+```
+test(factory): add test asserting BySender TTL is extended on stream creation
+
+fix(factory): extend_ttl on BySender and ByRecipient indices after each write
+
+test(factory): add integration test for index survival across 100k ledgers
+
+docs(factory): document persistent storage TTL requirements in storage.rs
+
+chore(factory): fmt and clippy after factory changes
+```
+
 ### Before opening a PR
 
+**Author checklist:**
+
+- [ ] Branch name follows the naming convention above
+- [ ] PR title references the issue: `fix(factory): extend index TTL on create (#5)`
+- [ ] PR description links to the issue with `Fixes #<n>` or `Closes #<n>`
+- [ ] Exactly 5 commits (minimum), each with a meaningful body explaining *why*
 - [ ] `cargo fmt --all` — no diff
 - [ ] `cargo clippy --all-targets -- -D warnings` — zero warnings
 - [ ] `cargo test --all` — all tests pass
-- [ ] If adding a new feature, update `docs/architecture.md` if the design changes
-- [ ] If introducing a new security-relevant decision, write an ADR in `docs/adr/`
-- [ ] PR description filled in using the template (`.github/PULL_REQUEST_TEMPLATE.md`)
+- [ ] If adding a new feature, `docs/architecture.md` updated if the design changes
+- [ ] If a significant design decision was made, ADR written in `docs/adr/`
+- [ ] PR description includes a test plan: what you tested, what you could not test
 
 ### Review requirements
 
-- At least **1 approval** from a maintainer before merging.
-- Any PR touching `math.rs`, `errors.rs`, or authentication logic requires **2 approvals**.
-- CI must be green (fmt, clippy, tests).
+- **Mandatory owner review:** Every PR requires approval from **@jaydbrown** (repository owner) before it can be merged. No exceptions — not for docs PRs, not for chore PRs.
+- Any PR touching `math.rs`, `errors.rs`, or authentication logic additionally requires **1 further maintainer approval** (2 approvals total).
+- CI must be green (fmt, clippy, all tests).
+- A maintainer may request a commit be split or re-ordered before approval — commit structure is part of the review.
+
+### Reviewer checklist
+
+When reviewing, check off each item and leave a comment if any fail:
+
+- [ ] First commit is a failing test that demonstrates the problem
+- [ ] Fix commit is minimal — no unrelated changes bundled in
+- [ ] All new error variants are tested (positive + negative path)
+- [ ] Checked arithmetic on all token amounts (`checked_add`, `checked_sub`, etc.)
+- [ ] `require_auth()` called on the correct address before any state mutation
+- [ ] State mutated before cross-contract calls (correct state-machine ordering)
+- [ ] Events emitted for every external state change (`events.rs` helper used)
+- [ ] No `unwrap()` on data that could be absent in a reachable code path
+- [ ] `extend_ttl()` called for every `persistent()` write
+- [ ] 5-commit structure is clean — no `fixup!` commits, no merge commits
 
 ### What reviewers look for
 
