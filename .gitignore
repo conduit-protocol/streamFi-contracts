@@ -1,6 +1,5 @@
 target/
 .contract-ids/
 **/*.wasm
-Cargo.lock
 .DS_Store
 test_snapshots/
