@@ -24,6 +24,7 @@ pub enum Error {
     AlreadyInitialized = 7,
     RateExceedsMax = 8,
     DurationTooShort = 9,
+    ArithmeticOverflow = 10,
 }
 
 #[contract]
@@ -86,6 +87,18 @@ impl DripFactory {
         }
         if start_time < env.ledger().timestamp() {
             return Err(Error::BackdatedStream);
+        }
+        // A fixed-duration stream must be funded for its entire declared
+        // length — otherwise it silently drains before end_time. `deposit
+        // >= rate_per_sec` above only guarantees 1 second of streaming.
+        if end_time > 0 {
+            let duration = (end_time - start_time) as i128;
+            let required = rate_per_sec
+                .checked_mul(duration)
+                .ok_or(Error::ArithmeticOverflow)?;
+            if deposit < required {
+                return Err(Error::InsufficientDeposit);
+            }
         }
 
         // ── Pull deposit from sender ──────────────────────────────────────

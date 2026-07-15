@@ -177,6 +177,30 @@ fn create_stream_rejects_deposit_less_than_one_second() {
 }
 
 #[test]
+fn create_stream_rejects_deposit_short_of_full_duration() {
+    let env = base_env();
+    let client = deploy_factory(&env);
+    let sender = Address::generate(&env);
+    let recip = Address::generate(&env);
+    let now = env.ledger().timestamp();
+    // rate 100/s over a 3_600s window needs a 360_000 deposit; passing
+    // enough for only 1 second (which alone would pass the old check)
+    // must now be rejected because it can't fund the declared end_time.
+    let token = make_token(&env, &sender, 100);
+    let result = client.try_create_stream(
+        &sender,
+        &recip,
+        &token,
+        &100,
+        &100,
+        &now,
+        &(now + 3_600),
+        &false,
+    );
+    assert_eq!(result, Err(Ok(Error::InsufficientDeposit)));
+}
+
+#[test]
 fn create_stream_rejects_start_time_in_past() {
     let env = base_env();
     let client = deploy_factory(&env);
