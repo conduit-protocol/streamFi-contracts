@@ -52,13 +52,11 @@ All arithmetic uses Rust's `checked_*` methods. Overflow returns `Error::Arithme
 
 ## Known Limitations
 
-### 1. No TTL management in scaffold
+### 1. No TTL management in scaffold — ✅ Resolved
 
-Soroban `persistent()` storage entries expire after a configurable number of ledgers if their TTL is not extended. The scaffold does not include TTL extension calls. In production:
-- Every `persistent().get(...)` should be paired with `persistent().extend_ttl(...)`.
-- Expired stream state would cause `unwrap()` panics; use `unwrap_or_default()` for reads in production.
+Soroban `persistent()` storage entries expire after a configurable number of ledgers if their TTL is not extended. The scaffold did not include TTL extension calls beyond the factory's `StreamAddr` registry entry.
 
-**Mitigation:** Add TTL bump calls. Consider a `keep_alive(stream_id)` function on the factory that anyone can call to extend TTLs of active streams.
+**Resolved:** every state-mutating call on all three contracts now extends instance TTL (`DripStream`, `DripFactory`, `DripGovernor`), and `DripFactory::create_stream` extends the `BySender`/`ByRecipient` persistent entries the same way `StreamAddr` already was. A `keep_alive(stream_id)`-style function anyone can call to refresh an inactive stream's TTL without touching its state is still a possible future addition, but is not required for the archival risk itself to be closed.
 
 ### 2. BySender / ByRecipient indices are unbounded vecs
 
@@ -72,17 +70,15 @@ The current `DripGovernor` uses a single `authority` address for all configurati
 
 **Mitigation:** Use a multisig or time-lock contract as the `authority`.
 
-### 4. No minimum deposit validation against end_time
+### 4. No minimum deposit validation against end_time — ✅ Resolved
 
-The factory validates `deposit >= rate_per_sec` (at least 1 second of streaming), but does not validate `deposit >= rate_per_sec × (end_time - start_time)`. A stream can be created where the deposit covers less time than the declared duration. The stream will simply drain early.
+The factory validated `deposit >= rate_per_sec` (at least 1 second of streaming), but did not validate `deposit >= rate_per_sec × (end_time - start_time)`. A stream could be created where the deposit covered less time than the declared duration, and would simply drain early.
 
-**Mitigation:** Add validation: if `end_time > 0`, require `deposit >= rate_per_sec × (end_time - start_time)`.
+**Resolved:** `create_stream` now requires `deposit >= rate_per_sec × (end_time - start_time)` for any stream with `end_time > 0` (open-ended streams are unaffected, since there's no fixed duration to validate against).
 
-### 5. Pause-state attack by sender
+### 5. Pause-state attack by sender — ✅ Mitigated
 
-A malicious sender can pause a stream indefinitely, blocking further accrual for the recipient while retaining full control of unstreamed tokens. The recipient has no unilateral way to force a resume or cancel.
-
-**Mitigation:** Add a `max_pause_duration` parameter at stream creation, after which the recipient can call `force_cancel()` to settle atomically. This is tracked in [issue #12](https://github.com/conduit-protocol/conduit-contracts/issues/12).
+A malicious sender pausing a stream indefinitely, blocking further accrual for the recipient while retaining full control of unstreamed tokens, is mitigated by `force_cancel()`: the recipient can unilaterally settle the stream once it's been paused for more than `PAUSE_THRESHOLD_SECS` (30 days). See `docs/architecture.md` for the settlement details.
 
 ### 6. Clawback can be used adversarially
 
@@ -105,9 +101,15 @@ Do not open a public GitHub issue for security vulnerabilities.
 
 ## Audit Checklist (pre-mainnet)
 
-- [ ] All arithmetic overflow paths tested under adversarial inputs
-- [ ] TTL management added to all persistent storage reads
-- [ ] Governor authority switched to multisig
+- [x] All arithmetic overflow paths tested under adversarial inputs
+- [x] TTL management added to all persistent storage reads (and instance storage — see Known Limitation #1)
+- [x] `initialize()` guarded against re-invocation on all three contracts
+- [x] `withdraw`/`top_up` reject non-positive amounts
+- [x] `create_stream` deposit validated against full stream duration (see Known Limitation #4)
+- [x] `DripGovernor` config (`min_duration_seconds`, `max_rate_per_second`, `fee_bps`) actually enforced by `DripFactory`
+- [x] `Cargo.lock` committed for reproducible builds
+- [ ] Governor authority switched to multisig (see Known Limitation #3)
+- [ ] BySender/ByRecipient indices redesigned to bound growth (see Known Limitation #2)
 - [ ] Full integration test suite passing on testnet
 - [ ] External audit completed by a Soroban-specialised firm
 - [ ] Bug bounty program active before mainnet deployment

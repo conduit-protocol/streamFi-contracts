@@ -93,11 +93,11 @@ fn stream_address(env: Env, stream_id: u64) -> Option<Address>
 fn streams_by_sender(env: Env, sender: Address, offset: u32, limit: u32) -> Vec<u64>
 fn streams_by_recipient(env: Env, recipient: Address, offset: u32, limit: u32) -> Vec<u64>
 fn stream_count(env: Env) -> u64
-fn protocol_fee_bps(env: Env) -> u32   // basis points, e.g. 30 = 0.3%; stub — not yet read from DripGovernor
+fn protocol_fee_bps(env: Env) -> u32   // basis points, e.g. 30 = 0.3%; reads live from DripGovernor
 
 // Governor-only: point future create_stream calls at a new DripStream WASM version.
 // Existing streams are unaffected — each is an independently deployed contract.
-fn upgrade_stream_wasm(env: Env, new_wasm_hash: BytesN<32>)
+fn upgrade_stream_wasm(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error>
 ```
 
 **Validation on `create_stream`:**
@@ -107,6 +107,9 @@ fn upgrade_stream_wasm(env: Env, new_wasm_hash: BytesN<32>)
 - `deposit >= rate_per_sec` (must fund at least 1 second)
 - `end_time == 0 || end_time > start_time`
 - `start_time >= env.ledger().timestamp()` (no backdated streams)
+- `end_time == 0 || deposit >= rate_per_sec × (end_time - start_time)` (must fund the entire declared duration)
+- `rate_per_sec <= DripGovernor::config().max_rate_per_second`
+- `end_time == 0 || (end_time - start_time) >= DripGovernor::config().min_duration_seconds`
 - Token must be a valid Stellar asset contract
 
 ---
@@ -138,10 +141,6 @@ fn set_max_rate(env: Env, max_rate: i128) -> Result<(), Error>           // > 0
 fn transfer_authority(env: Env, new_authority: Address) -> Result<(), Error>
 ```
 
-> **Note:** `DripFactory::protocol_fee_bps()` is currently a hardcoded stub (always returns
-> `30`) — it does not actually read `fee_bps` from `DripGovernor` yet, despite the factory
-> storing a governor address. Wiring that read through is on the roadmap.
-
 ---
 
 ## Error Codes
@@ -168,6 +167,8 @@ not by number alone.
 | `11` | `ClawbackDisabled` | Clawback not enabled on this stream |
 | `12` | `ArithmeticOverflow` | Integer overflow in calculation |
 | `13` | `PauseThresholdNotMet` | `force_cancel` called before the pause threshold (30 days) elapsed |
+| `14` | `AlreadyInitialized` | `initialize()` called on a stream that's already been initialized |
+| `15` | `InvalidAmount` | `withdraw`/`top_up` called with `amount <= 0` |
 
 **`DripFactory::Error`**
 
@@ -177,8 +178,12 @@ not by number alone.
 | `2` | `InvalidDeposit` | `deposit <= 0` |
 | `3` | `InvalidRate` | `rate_per_sec <= 0` |
 | `4` | `InvalidTimeRange` | `end_time != 0 && end_time <= start_time` |
-| `5` | `InsufficientDeposit` | `deposit < rate_per_sec` (can't fund even 1 second) |
+| `5` | `InsufficientDeposit` | `deposit < rate_per_sec` (can't fund even 1 second), or deposit doesn't cover the full `end_time - start_time` |
 | `6` | `BackdatedStream` | `start_time < env.ledger().timestamp()` |
+| `7` | `AlreadyInitialized` | `initialize()` called on a factory that's already been initialized |
+| `8` | `RateExceedsMax` | `rate_per_sec` exceeds `DripGovernor::config().max_rate_per_second` |
+| `9` | `DurationTooShort` | `end_time - start_time` is below `DripGovernor::config().min_duration_seconds` |
+| `10` | `ArithmeticOverflow` | Integer overflow validating `rate_per_sec × duration` |
 
 **`DripGovernor::Error`**
 
@@ -186,6 +191,7 @@ not by number alone.
 |------|------|-------------|
 | `1` | `NotAuthorized` | Caller is not the current authority |
 | `2` | `InvalidParam` | Setter argument failed validation (e.g. `fee_bps > 10_000`, `0` duration/rate) |
+| `3` | `AlreadyInitialized` | `initialize()` called on a governor that's already been initialized |
 
 ---
 
@@ -294,6 +300,9 @@ conduit-contracts/
 - Paused time does not count toward streamed balance (pause freezes the clock).
 - Clawback can only be called by the sender and only if enabled at creation time.
 - Re-entrancy is prevented by Soroban's execution model (no external calls mid-state-mutation).
+- `initialize()` on all three contracts rejects a second call — a stream/factory/governor can't be re-initialized post-deployment to hijack its stored addresses.
+- `withdraw`/`top_up` reject non-positive amounts.
+- Every state-mutating call extends storage TTL (instance storage, plus the factory's `BySender`/`ByRecipient`/`StreamAddr` persistent entries) — see [`docs/security.md`](./docs/security.md) Known Limitation #1.
 
 **Audit status:** Not yet audited. Do not use on Mainnet with real funds.
 
