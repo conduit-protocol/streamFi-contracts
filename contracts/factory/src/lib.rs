@@ -9,6 +9,8 @@ use soroban_sdk::{
     IntoVal, Vec,
 };
 
+use drip_governor::DripGovernorClient;
+
 use storage::DataKey;
 
 #[contracterror]
@@ -98,6 +100,26 @@ impl DripFactory {
                 .ok_or(Error::ArithmeticOverflow)?;
             if deposit < required {
                 return Err(Error::InsufficientDeposit);
+            }
+        }
+
+        // ── Governor-controlled bounds ──────────────────────────────────────
+        // rate_per_sec and (for fixed-duration streams) the declared length
+        // must respect the protocol parameters DripGovernor holds. These were
+        // previously never read by the factory at all.
+        let governor: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::GovernorAddress)
+            .ok_or(Error::NotInitialized)?;
+        let config = DripGovernorClient::new(&env, &governor).config();
+        if rate_per_sec > config.max_rate_per_second {
+            return Err(Error::RateExceedsMax);
+        }
+        if end_time > 0 {
+            let duration = end_time - start_time;
+            if duration < config.min_duration_seconds {
+                return Err(Error::DurationTooShort);
             }
         }
 
@@ -206,10 +228,17 @@ impl DripFactory {
             .unwrap_or(0)
     }
 
-    pub fn protocol_fee_bps(_env: Env) -> u32 {
-        // Fee is read from Governor in a production build.
-        // Stub returns the default of 30 bps (0.3%).
-        30
+    /// Read-only: current protocol fee in basis points.
+    ///
+    /// Reads live from DripGovernor. Falls back to the protocol default (30
+    /// bps) if the factory hasn't been initialized yet — there is no
+    /// governor address to call in that state.
+    pub fn protocol_fee_bps(env: Env) -> u32 {
+        let governor: Option<Address> = env.storage().instance().get(&DataKey::GovernorAddress);
+        match governor {
+            Some(governor) => DripGovernorClient::new(&env, &governor).config().fee_bps,
+            None => 30,
+        }
     }
 
     /// Update the stored stream WASM hash.
