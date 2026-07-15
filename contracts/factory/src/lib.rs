@@ -29,6 +29,16 @@ pub enum Error {
     ArithmeticOverflow = 10,
 }
 
+// Mirrors the TTL extension already applied to StreamAddr entries below.
+const TTL_THRESHOLD: u32 = 100_000;
+const TTL_EXTEND_TO: u32 = 200_000;
+
+fn bump_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+}
+
 #[contract]
 pub struct DripFactory;
 
@@ -44,6 +54,7 @@ impl DripFactory {
         if env.storage().instance().has(&DataKey::StreamCount) {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
+        bump_instance_ttl(&env);
 
         env.storage()
             .instance()
@@ -73,6 +84,7 @@ impl DripFactory {
     ) -> Result<u64, Error> {
         // ── Auth ─────────────────────────────────────────────────────────
         sender.require_auth();
+        bump_instance_ttl(&env);
 
         // ── Validation ───────────────────────────────────────────────────
         if deposit <= 0 {
@@ -167,9 +179,11 @@ impl DripFactory {
             .persistent()
             .set(&DataKey::StreamAddr(stream_id), &stream_addr);
         // Extend TTL on the stream address entry so it outlives ledger pruning.
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::StreamAddr(stream_id), 100_000, 200_000);
+        env.storage().persistent().extend_ttl(
+            &DataKey::StreamAddr(stream_id),
+            TTL_THRESHOLD,
+            TTL_EXTEND_TO,
+        );
         env.storage()
             .instance()
             .set(&DataKey::StreamCount, &(stream_count + 1));
@@ -182,7 +196,12 @@ impl DripFactory {
         by_sender.push_back(stream_id);
         env.storage()
             .persistent()
-            .set(&DataKey::BySender(sender), &by_sender);
+            .set(&DataKey::BySender(sender.clone()), &by_sender);
+        env.storage().persistent().extend_ttl(
+            &DataKey::BySender(sender),
+            TTL_THRESHOLD,
+            TTL_EXTEND_TO,
+        );
 
         let mut by_recipient: Vec<u64> = env
             .storage()
@@ -192,7 +211,12 @@ impl DripFactory {
         by_recipient.push_back(stream_id);
         env.storage()
             .persistent()
-            .set(&DataKey::ByRecipient(recipient), &by_recipient);
+            .set(&DataKey::ByRecipient(recipient.clone()), &by_recipient);
+        env.storage().persistent().extend_ttl(
+            &DataKey::ByRecipient(recipient),
+            TTL_THRESHOLD,
+            TTL_EXTEND_TO,
+        );
 
         Ok(stream_id)
     }
@@ -254,6 +278,7 @@ impl DripFactory {
             .get(&DataKey::GovernorAddress)
             .ok_or(Error::NotInitialized)?;
         governor.require_auth();
+        bump_instance_ttl(&env);
         env.storage()
             .instance()
             .set(&DataKey::StreamWasmHash, &new_wasm_hash);

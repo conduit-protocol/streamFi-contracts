@@ -8,7 +8,7 @@
 use drip_factory::{DripFactory, DripFactoryClient, Error};
 use drip_governor::{DripGovernor, DripGovernorClient};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger, LedgerInfo},
+    testutils::{storage::Instance as _, Address as _, Ledger, LedgerInfo},
     token, Address, BytesN, Env,
 };
 
@@ -130,6 +130,26 @@ fn upgrade_stream_wasm_on_uninitialized_factory_is_rejected() {
     let new_hash = BytesN::from_array(&env, &[2u8; 32]);
     let result = client.try_upgrade_stream_wasm(&new_hash);
     assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
+
+// ── TTL management ─────────────────────────────────────────────────────────────
+
+#[test]
+fn initialize_extends_factory_instance_ttl() {
+    let env = base_env();
+    let client = deploy_factory(&env);
+    let ttl = env.as_contract(&client.address, || env.storage().instance().get_ttl());
+    assert_eq!(ttl, 200_000);
+}
+
+#[test]
+fn upgrade_stream_wasm_extends_instance_ttl() {
+    let env = base_env();
+    let client = deploy_factory(&env);
+    let new_hash = BytesN::from_array(&env, &[3u8; 32]);
+    client.upgrade_stream_wasm(&new_hash);
+    let ttl = env.as_contract(&client.address, || env.storage().instance().get_ttl());
+    assert_eq!(ttl, 200_000);
 }
 
 #[test]

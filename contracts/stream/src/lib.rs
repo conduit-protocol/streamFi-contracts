@@ -64,6 +64,19 @@ fn assert_not_cancelled(info: &StreamInfo) -> Result<(), Error> {
     }
 }
 
+// Instance storage (all of this contract's state) has a TTL like any other
+// Soroban storage entry. Without extending it, an inactive stream would be
+// archived and become inaccessible. Values mirror the TTL extension the
+// factory already applies to its StreamAddr registry entries.
+const TTL_THRESHOLD: u32 = 100_000;
+const TTL_EXTEND_TO: u32 = 200_000;
+
+fn bump_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+}
+
 #[contract]
 pub struct DripStream;
 
@@ -89,6 +102,7 @@ impl DripStream {
         if env.storage().instance().has(&DataKey::Sender) {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
+        bump_ttl(&env);
 
         let s = env.storage().instance();
         s.set(&DataKey::Sender, &sender);
@@ -109,6 +123,7 @@ impl DripStream {
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
+        bump_ttl(&env);
 
         let info = load(&env);
         assert_not_cancelled(&info)?;
@@ -147,6 +162,8 @@ impl DripStream {
     /// the recipient's share MUST be transferred here rather than left for
     /// a later `withdraw()` call.
     pub fn cancel(env: Env) -> Result<(), Error> {
+        bump_ttl(&env);
+
         let info = load(&env);
         assert_not_cancelled(&info)?;
         info.sender.require_auth();
@@ -181,6 +198,8 @@ impl DripStream {
 
     /// Sender pauses the stream.
     pub fn pause(env: Env) -> Result<(), Error> {
+        bump_ttl(&env);
+
         let info = load(&env);
         assert_not_cancelled(&info)?;
         if info.paused {
@@ -200,6 +219,8 @@ impl DripStream {
 
     /// Sender resumes a paused stream.
     pub fn resume(env: Env) -> Result<(), Error> {
+        bump_ttl(&env);
+
         let info = load(&env);
         assert_not_cancelled(&info)?;
         if !info.paused {
@@ -232,6 +253,7 @@ impl DripStream {
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
+        bump_ttl(&env);
 
         let info = load(&env);
         assert_not_cancelled(&info)?;
@@ -249,6 +271,8 @@ impl DripStream {
 
     /// Sender reclaims unstreamed tokens (only if clawback was enabled).
     pub fn clawback(env: Env) -> Result<i128, Error> {
+        bump_ttl(&env);
+
         let info = load(&env);
         assert_not_cancelled(&info)?;
         if !info.clawback_enabled {
@@ -291,6 +315,8 @@ impl DripStream {
     pub fn force_cancel(env: Env) -> Result<(), Error> {
         const PAUSE_THRESHOLD_SECS: u64 = 2_592_000; // 30 days
 
+        bump_ttl(&env);
+
         let info = load(&env);
         assert_not_cancelled(&info)?;
         if !info.paused {
@@ -332,6 +358,8 @@ impl DripStream {
     /// to the new recipient. The sender is intentionally not notified
     /// on-chain (use events); governance can add a sender-veto in future.
     pub fn transfer_recipient(env: Env, new_recipient: Address) -> Result<(), Error> {
+        bump_ttl(&env);
+
         let info = load(&env);
         assert_not_cancelled(&info)?;
         info.recipient.require_auth();

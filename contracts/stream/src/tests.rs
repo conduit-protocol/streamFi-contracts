@@ -6,7 +6,7 @@ extern crate std;
 use std::boxed::Box;
 
 use soroban_sdk::{
-    testutils::{Address as _, Ledger, LedgerInfo},
+    testutils::{storage::Instance as _, Address as _, Ledger, LedgerInfo},
     token, Address, Env,
 };
 
@@ -295,6 +295,31 @@ fn re_initializing_an_active_stream_panics() {
     let attacker = Address::generate(&s.env);
     s.client
         .initialize(&attacker, &attacker, &s.token.address, &1, &0, &0, &false);
+}
+
+// ── TTL management ─────────────────────────────────────────────────────────────
+
+#[test]
+fn initialize_extends_instance_ttl() {
+    let s = Setup::new(100, 3600, false);
+    // Without an explicit extend_ttl call, instance storage TTL is left at
+    // whatever the host assigns on creation, which is well under the
+    // production-safe window. initialize() must bump it immediately.
+    let ttl = s
+        .env
+        .as_contract(&s.client.address, || s.env.storage().instance().get_ttl());
+    assert_eq!(ttl, 200_000);
+}
+
+#[test]
+fn withdraw_extends_instance_ttl() {
+    let s = Setup::new(100, 3600, false);
+    s.advance_secs(100);
+    s.client.withdraw(&1);
+    let ttl = s
+        .env
+        .as_contract(&s.client.address, || s.env.storage().instance().get_ttl());
+    assert_eq!(ttl, 200_000);
 }
 
 // ── Cancelled stream state ────────────────────────────────────────────────────

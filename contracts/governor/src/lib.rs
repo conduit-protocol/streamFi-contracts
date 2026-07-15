@@ -27,6 +27,16 @@ pub enum Error {
     AlreadyInitialized = 3,
 }
 
+// Mirrors the TTL extension convention used by DripFactory/DripStream.
+const TTL_THRESHOLD: u32 = 100_000;
+const TTL_EXTEND_TO: u32 = 200_000;
+
+fn bump_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+}
+
 #[contract]
 pub struct DripGovernor;
 
@@ -46,6 +56,7 @@ impl DripGovernor {
         if env.storage().instance().has(&DataKey::Authority) {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
+        bump_ttl(&env);
 
         let s = env.storage().instance();
         s.set(&DataKey::Authority, &authority);
@@ -129,6 +140,7 @@ impl DripGovernor {
             .get(&DataKey::Authority)
             .ok_or(Error::NotAuthorized)?;
         authority.require_auth();
+        bump_ttl(env);
         Ok(())
     }
 }

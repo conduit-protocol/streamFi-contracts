@@ -1,7 +1,10 @@
 //! Integration tests: DripGovernor parameter management.
 
 use drip_governor::{DripGovernor, DripGovernorClient, Error};
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use soroban_sdk::{
+    testutils::{storage::Instance as _, Address as _},
+    Address, Env,
+};
 
 fn deploy_governor(env: &Env) -> (DripGovernorClient<'_>, Address, Address) {
     let authority = Address::generate(env);
@@ -44,6 +47,29 @@ fn re_initializing_governor_panics() {
     // maximum or redirect fee_recipient.
     let attacker = Address::generate(&env);
     client.initialize(&attacker, &attacker, &attacker);
+}
+
+// ── TTL management ─────────────────────────────────────────────────────────────
+
+#[test]
+fn initialize_extends_instance_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _authority, _fee_recipient) = deploy_governor(&env);
+    let ttl = env.as_contract(&client.address, || env.storage().instance().get_ttl());
+    assert_eq!(ttl, 200_000);
+}
+
+#[test]
+fn set_fee_bps_extends_instance_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _authority, _fee_recipient) = deploy_governor(&env);
+    client.set_fee_bps(&50);
+    let ttl = env.as_contract(&client.address, || env.storage().instance().get_ttl());
+    assert_eq!(ttl, 200_000);
 }
 
 // ── Fee BPS ──────────────────────────────────────────────────────────────────
