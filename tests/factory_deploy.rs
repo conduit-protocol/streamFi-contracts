@@ -79,6 +79,16 @@ fn protocol_fee_bps_returns_default_30() {
 }
 
 #[test]
+fn upgrade_stream_wasm_on_uninitialized_factory_is_rejected() {
+    let env = base_env();
+    let id = env.register_contract(None, DripFactory);
+    let client = DripFactoryClient::new(&env, &id);
+    let new_hash = BytesN::from_array(&env, &[2u8; 32]);
+    let result = client.try_upgrade_stream_wasm(&new_hash);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #7)")]
 fn re_initializing_factory_panics() {
     let env = base_env();
