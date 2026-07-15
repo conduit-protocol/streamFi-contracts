@@ -5,8 +5,11 @@ mod storage;
 
 // Import `token` as `tok` to avoid shadowing by any `token: Address` parameter.
 use soroban_sdk::{
-    contract, contracterror, contractimpl, token as tok, Address, BytesN, Env, IntoVal, Vec,
+    contract, contracterror, contractimpl, panic_with_error, token as tok, Address, BytesN, Env,
+    IntoVal, Vec,
 };
+
+use drip_governor::DripGovernorClient;
 
 use storage::DataKey;
 
@@ -20,6 +23,20 @@ pub enum Error {
     InvalidTimeRange = 4,
     InsufficientDeposit = 5,
     BackdatedStream = 6,
+    AlreadyInitialized = 7,
+    RateExceedsMax = 8,
+    DurationTooShort = 9,
+    ArithmeticOverflow = 10,
+}
+
+// Mirrors the TTL extension already applied to StreamAddr entries below.
+const TTL_THRESHOLD: u32 = 100_000;
+const TTL_EXTEND_TO: u32 = 200_000;
+
+fn bump_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
 }
 
 #[contract]
@@ -28,7 +45,17 @@ pub struct DripFactory;
 #[contractimpl]
 impl DripFactory {
     /// One-time setup — called by the deploy script.
+    ///
+    /// Guards against re-initialization: without this check, anyone could
+    /// call `initialize` again to point the factory at an attacker-controlled
+    /// `stream_wasm_hash` or `governor`, hijacking every subsequent
+    /// `create_stream` call.
     pub fn initialize(env: Env, stream_wasm_hash: BytesN<32>, governor: Address) {
+        if env.storage().instance().has(&DataKey::StreamCount) {
+            panic_with_error!(&env, Error::AlreadyInitialized);
+        }
+        bump_instance_ttl(&env);
+
         env.storage()
             .instance()
             .set(&DataKey::StreamWasmHash, &stream_wasm_hash);
@@ -57,6 +84,7 @@ impl DripFactory {
     ) -> Result<u64, Error> {
         // ── Auth ─────────────────────────────────────────────────────────
         sender.require_auth();
+        bump_instance_ttl(&env);
 
         // ── Validation ───────────────────────────────────────────────────
         if deposit <= 0 {
@@ -73,6 +101,38 @@ impl DripFactory {
         }
         if start_time < env.ledger().timestamp() {
             return Err(Error::BackdatedStream);
+        }
+        // A fixed-duration stream must be funded for its entire declared
+        // length — otherwise it silently drains before end_time. `deposit
+        // >= rate_per_sec` above only guarantees 1 second of streaming.
+        if end_time > 0 {
+            let duration = (end_time - start_time) as i128;
+            let required = rate_per_sec
+                .checked_mul(duration)
+                .ok_or(Error::ArithmeticOverflow)?;
+            if deposit < required {
+                return Err(Error::InsufficientDeposit);
+            }
+        }
+
+        // ── Governor-controlled bounds ──────────────────────────────────────
+        // rate_per_sec and (for fixed-duration streams) the declared length
+        // must respect the protocol parameters DripGovernor holds. These were
+        // previously never read by the factory at all.
+        let governor: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::GovernorAddress)
+            .ok_or(Error::NotInitialized)?;
+        let config = DripGovernorClient::new(&env, &governor).config();
+        if rate_per_sec > config.max_rate_per_second {
+            return Err(Error::RateExceedsMax);
+        }
+        if end_time > 0 {
+            let duration = end_time - start_time;
+            if duration < config.min_duration_seconds {
+                return Err(Error::DurationTooShort);
+            }
         }
 
         // ── Pull deposit from sender ──────────────────────────────────────
@@ -92,7 +152,7 @@ impl DripFactory {
             .storage()
             .instance()
             .get(&DataKey::StreamWasmHash)
-            .unwrap();
+            .ok_or(Error::NotInitialized)?;
 
         // ── Deploy DripStream ────────────────────────────────────────────
         let init_args = soroban_sdk::vec![
@@ -119,9 +179,11 @@ impl DripFactory {
             .persistent()
             .set(&DataKey::StreamAddr(stream_id), &stream_addr);
         // Extend TTL on the stream address entry so it outlives ledger pruning.
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::StreamAddr(stream_id), 100_000, 200_000);
+        env.storage().persistent().extend_ttl(
+            &DataKey::StreamAddr(stream_id),
+            TTL_THRESHOLD,
+            TTL_EXTEND_TO,
+        );
         env.storage()
             .instance()
             .set(&DataKey::StreamCount, &(stream_count + 1));
@@ -134,7 +196,12 @@ impl DripFactory {
         by_sender.push_back(stream_id);
         env.storage()
             .persistent()
-            .set(&DataKey::BySender(sender), &by_sender);
+            .set(&DataKey::BySender(sender.clone()), &by_sender);
+        env.storage().persistent().extend_ttl(
+            &DataKey::BySender(sender),
+            TTL_THRESHOLD,
+            TTL_EXTEND_TO,
+        );
 
         let mut by_recipient: Vec<u64> = env
             .storage()
@@ -144,7 +211,12 @@ impl DripFactory {
         by_recipient.push_back(stream_id);
         env.storage()
             .persistent()
-            .set(&DataKey::ByRecipient(recipient), &by_recipient);
+            .set(&DataKey::ByRecipient(recipient.clone()), &by_recipient);
+        env.storage().persistent().extend_ttl(
+            &DataKey::ByRecipient(recipient),
+            TTL_THRESHOLD,
+            TTL_EXTEND_TO,
+        );
 
         Ok(stream_id)
     }
@@ -180,10 +252,17 @@ impl DripFactory {
             .unwrap_or(0)
     }
 
-    pub fn protocol_fee_bps(_env: Env) -> u32 {
-        // Fee is read from Governor in a production build.
-        // Stub returns the default of 30 bps (0.3%).
-        30
+    /// Read-only: current protocol fee in basis points.
+    ///
+    /// Reads live from DripGovernor. Falls back to the protocol default (30
+    /// bps) if the factory hasn't been initialized yet — there is no
+    /// governor address to call in that state.
+    pub fn protocol_fee_bps(env: Env) -> u32 {
+        let governor: Option<Address> = env.storage().instance().get(&DataKey::GovernorAddress);
+        match governor {
+            Some(governor) => DripGovernorClient::new(&env, &governor).config().fee_bps,
+            None => 30,
+        }
     }
 
     /// Update the stored stream WASM hash.
@@ -191,24 +270,29 @@ impl DripFactory {
     /// Called after a new stream contract version is uploaded so subsequent
     /// `create_stream` calls deploy the new implementation. Existing streams
     /// are unaffected — each is an independent deployed contract.
-    pub fn upgrade_stream_wasm(env: Env, new_wasm_hash: BytesN<32>) {
+    pub fn upgrade_stream_wasm(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
         // Only governor may update the wasm hash.
         let governor: Address = env
             .storage()
             .instance()
             .get(&DataKey::GovernorAddress)
-            .expect("factory not initialized");
+            .ok_or(Error::NotInitialized)?;
         governor.require_auth();
+        bump_instance_ttl(&env);
         env.storage()
             .instance()
             .set(&DataKey::StreamWasmHash, &new_wasm_hash);
+        Ok(())
     }
 }
 
 fn paginate(env: &Env, v: Vec<u64>, offset: u32, limit: u32) -> Vec<u64> {
     let mut result = Vec::new(env);
     let start = offset as usize;
-    let end = (offset + limit) as usize;
+    // offset + limit is caller-controlled and can overflow u32; the release
+    // profile enables overflow-checks, so a raw `+` here would panic this
+    // read-only view call rather than just clamping to the Vec's length.
+    let end = (offset as usize).saturating_add(limit as usize);
     for i in start..end.min(v.len() as usize) {
         result.push_back(v.get(i as u32).unwrap());
     }

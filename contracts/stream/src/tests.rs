@@ -6,7 +6,7 @@ extern crate std;
 use std::boxed::Box;
 
 use soroban_sdk::{
-    testutils::{Address as _, Ledger, LedgerInfo},
+    testutils::{storage::Instance as _, Address as _, Ledger, LedgerInfo},
     token, Address, Env,
 };
 
@@ -266,6 +266,60 @@ fn top_up_on_cancelled_stream_is_rejected() {
 
     let result = s.client.try_top_up(&10_000);
     assert!(result.is_err());
+}
+
+#[test]
+fn top_up_rejects_zero_and_negative_amount() {
+    let s = Setup::new(100, 3600, false);
+    assert_eq!(s.client.try_top_up(&0), Err(Ok(Error::InvalidAmount)));
+    assert_eq!(s.client.try_top_up(&-1), Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn withdraw_rejects_zero_and_negative_amount() {
+    let s = Setup::new(100, 3600, false);
+    s.advance_secs(100);
+    assert_eq!(s.client.try_withdraw(&0), Err(Ok(Error::InvalidAmount)));
+    assert_eq!(s.client.try_withdraw(&-1), Err(Ok(Error::InvalidAmount)));
+}
+
+// ── Initialization guard ──────────────────────────────────────────────────────
+
+#[test]
+#[should_panic(expected = "Error(Contract, #14)")]
+fn re_initializing_an_active_stream_panics() {
+    let s = Setup::new(100, 3600, false);
+    // An attacker calling initialize() again to hijack sender/recipient
+    // must be rejected — otherwise they could redirect the escrowed balance
+    // to themselves via cancel()/clawback().
+    let attacker = Address::generate(&s.env);
+    s.client
+        .initialize(&attacker, &attacker, &s.token.address, &1, &0, &0, &false);
+}
+
+// ── TTL management ─────────────────────────────────────────────────────────────
+
+#[test]
+fn initialize_extends_instance_ttl() {
+    let s = Setup::new(100, 3600, false);
+    // Without an explicit extend_ttl call, instance storage TTL is left at
+    // whatever the host assigns on creation, which is well under the
+    // production-safe window. initialize() must bump it immediately.
+    let ttl = s
+        .env
+        .as_contract(&s.client.address, || s.env.storage().instance().get_ttl());
+    assert_eq!(ttl, 200_000);
+}
+
+#[test]
+fn withdraw_extends_instance_ttl() {
+    let s = Setup::new(100, 3600, false);
+    s.advance_secs(100);
+    s.client.withdraw(&1);
+    let ttl = s
+        .env
+        .as_contract(&s.client.address, || s.env.storage().instance().get_ttl());
+    assert_eq!(ttl, 200_000);
 }
 
 // ── Cancelled stream state ────────────────────────────────────────────────────

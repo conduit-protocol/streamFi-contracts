@@ -102,7 +102,7 @@ The governor holds mutable protocol parameters. In the current version it is con
 
 The governor does not hold any token balance.
 
-**Not yet wired up:** the factory stores a `GovernorAddress` at init and `DripFactory::protocol_fee_bps()` exists as a public read, but it's currently a hardcoded stub that always returns `30` — it does not call into `DripGovernor::config()` yet. Until that's wired up, changing `fee_bps` via the governor has no effect on what the factory reports.
+`DripFactory::create_stream` cross-contract-calls `DripGovernor::config()` to enforce `max_rate_per_second` and (for fixed-duration streams) `min_duration_seconds`, and `DripFactory::protocol_fee_bps()` reads `fee_bps` live from the governor — falling back to the 30bps default only if the factory itself hasn't been initialized yet.
 
 ---
 
@@ -116,11 +116,12 @@ Soroban has three storage tiers. Each has different persistence and TTL semantic
 | `persistent()` | Growing indices (`StreamAddr`, `BySender`, `ByRecipient`), all stream state | Per-entry TTL; must be extended by callers |
 | `temporary()` | Not used | Auto-expires |
 
-**TTL management (production note):** Every read of a `persistent()` entry should be accompanied by a TTL extension call:
+**TTL management:** every state-mutating call on all three contracts extends instance TTL, and `DripFactory` additionally extends the `StreamAddr`/`BySender`/`ByRecipient` persistent entries on `create_stream`:
 ```rust
-env.storage().persistent().extend_ttl(&key, ledgers_to_live, ledgers_to_live);
+env.storage().instance().extend_ttl(threshold, extend_to);
+env.storage().persistent().extend_ttl(&key, threshold, extend_to);
 ```
-The scaffold omits TTL extension for readability. Production deployments must add TTL bumps on every state access, or stream contracts risk expiration.
+Pure read-only functions (`withdrawable`, `streamed_total`, `info`, `config`, `stream_address`, etc.) do not bump TTL themselves — an entry only stays alive if something actually mutates it. A long-idle stream that nobody touches can still expire; a `keep_alive`-style function anyone could call without mutating state remains a possible future addition.
 
 ---
 

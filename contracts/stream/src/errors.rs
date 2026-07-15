@@ -17,4 +17,6 @@ pub enum Error {
     ClawbackDisabled = 11,
     ArithmeticOverflow = 12,
     PauseThresholdNotMet = 13,
+    AlreadyInitialized = 14,
+    InvalidAmount = 15,
 }

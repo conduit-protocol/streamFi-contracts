@@ -10,9 +10,20 @@ All notable changes are documented here. Format based on [Keep a Changelog](http
 
 ### Changed
 - `get_escrow_for_user` visibility scoped; bare `get_escrow` now `pub(crate)` only
+- `DripFactory::create_stream` now cross-contract-calls `DripGovernor::config()` and enforces `max_rate_per_second`/`min_duration_seconds`; `protocol_fee_bps()` reads `fee_bps` live from the governor instead of returning a hardcoded stub
+- `DripFactory::upgrade_stream_wasm` now returns `Result<(), Error>` instead of panicking when the factory isn't initialized
+
+### Fixed
+- **Unprotected re-initialization on all three contracts.** `initialize()` had no auth check and no "already initialized" guard on `DripStream`, `DripFactory`, and `DripGovernor` — anyone could call it again post-deployment to hijack a funded stream's sender/recipient, the factory's stream WASM hash/governor address, or the governor's authority. All three now reject a second `initialize()` call with a new `AlreadyInitialized` error.
+- **Non-positive `withdraw`/`top_up` amounts.** Neither validated `amount > 0`; a negative `amount` in `withdraw` could shrink the stored `Withdrawn` total. Both now return `InvalidAmount` for `amount <= 0`.
+- **Deposit not validated against full stream duration** (Known Limitation #4) — `create_stream` now requires `deposit >= rate_per_sec * (end_time - start_time)` for fixed-duration streams.
+- **Missing TTL management** (Known Limitation #1) — every state-mutating call on all three contracts now extends instance TTL (and, on the factory, the `BySender`/`ByRecipient` persistent indices), matching the extension already applied to `StreamAddr`.
+- `paginate()` in `DripFactory` could panic on `offset + limit` overflow; now uses `saturating_add`.
+- `DripFactory::create_stream`/`upgrade_stream_wasm` panicked via `unwrap()`/`expect()` before `initialize()` instead of returning the already-defined `NotInitialized` error.
 
 ### Security
 - Documented pause-state griefing attack vector in `docs/security.md` (ADR-003 records the fix design)
+- Committed `Cargo.lock` for reproducible builds (previously gitignored)
 
 ---
 

@@ -2,7 +2,9 @@
 
 mod storage;
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Env,
+};
 
 use storage::DataKey;
 
@@ -22,6 +24,17 @@ pub struct GovernorConfig {
 pub enum Error {
     NotAuthorized = 1,
     InvalidParam = 2,
+    AlreadyInitialized = 3,
+}
+
+// Mirrors the TTL extension convention used by DripFactory/DripStream.
+const TTL_THRESHOLD: u32 = 100_000;
+const TTL_EXTEND_TO: u32 = 200_000;
+
+fn bump_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
 }
 
 #[contract]
@@ -30,12 +43,21 @@ pub struct DripGovernor;
 #[contractimpl]
 impl DripGovernor {
     /// Deploy-time initialisation.
+    ///
+    /// Guards against re-initialization: without this check, anyone could
+    /// call `initialize` again to overwrite `Authority` with their own
+    /// address, then set `fee_bps` to the maximum or repoint `fee_recipient`.
     pub fn initialize(
         env: Env,
         authority: Address,
         fee_recipient: Address,
         factory_address: Address,
     ) {
+        if env.storage().instance().has(&DataKey::Authority) {
+            panic_with_error!(&env, Error::AlreadyInitialized);
+        }
+        bump_ttl(&env);
+
         let s = env.storage().instance();
         s.set(&DataKey::Authority, &authority);
         s.set(&DataKey::FeeBps, &30_u32);
@@ -118,6 +140,7 @@ impl DripGovernor {
             .get(&DataKey::Authority)
             .ok_or(Error::NotAuthorized)?;
         authority.require_auth();
+        bump_ttl(env);
         Ok(())
     }
 }
