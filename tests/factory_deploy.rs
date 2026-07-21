@@ -48,12 +48,13 @@ fn deploy_factory(env: &Env) -> DripFactoryClient<'_> {
     client
 }
 
-/// Same as `deploy_factory`, but also hands back the governor client so
-/// tests can adjust `max_rate_per_second` / `min_duration_seconds` and
-/// observe the factory enforcing them.
+/// Same as `deploy_factory`, but also hands back the governor client and its
+/// bootstrap authority so tests can adjust `max_rate_per_second` /
+/// `min_duration_seconds` (which are role-gated) and observe the factory
+/// enforcing them.
 fn deploy_factory_with_governor<'a>(
     env: &'a Env,
-) -> (DripFactoryClient<'a>, DripGovernorClient<'a>) {
+) -> (DripFactoryClient<'a>, DripGovernorClient<'a>, Address) {
     let factory_id = env.register_contract(None, DripFactory);
     let governor_id = env.register_contract(None, DripGovernor);
 
@@ -66,7 +67,7 @@ fn deploy_factory_with_governor<'a>(
     let dummy_hash = BytesN::from_array(env, &[0u8; 32]);
     factory_client.initialize(&dummy_hash, &governor_id);
 
-    (factory_client, governor_client)
+    (factory_client, governor_client, authority)
 }
 
 // ── Fresh factory state ───────────────────────────────────────────────────────
@@ -351,8 +352,8 @@ fn create_stream_rejects_end_equal_to_start() {
 #[test]
 fn create_stream_rejects_rate_above_governor_max() {
     let env = base_env();
-    let (factory, governor) = deploy_factory_with_governor(&env);
-    governor.set_max_rate(&1_000);
+    let (factory, governor, authority) = deploy_factory_with_governor(&env);
+    governor.set_max_rate(&authority, &1_000);
 
     let sender = Address::generate(&env);
     let recip = Address::generate(&env);
@@ -368,8 +369,8 @@ fn create_stream_rejects_rate_above_governor_max() {
 #[test]
 fn create_stream_rejects_duration_below_governor_minimum() {
     let env = base_env();
-    let (factory, governor) = deploy_factory_with_governor(&env);
-    governor.set_min_duration(&7_200);
+    let (factory, governor, authority) = deploy_factory_with_governor(&env);
+    governor.set_min_duration(&authority, &7_200);
 
     let sender = Address::generate(&env);
     let recip = Address::generate(&env);
@@ -392,10 +393,10 @@ fn create_stream_rejects_duration_below_governor_minimum() {
 #[test]
 fn protocol_fee_bps_reflects_live_governor_value() {
     let env = base_env();
-    let (factory, governor) = deploy_factory_with_governor(&env);
+    let (factory, governor, authority) = deploy_factory_with_governor(&env);
     assert_eq!(factory.protocol_fee_bps(), 30);
 
-    governor.set_fee_bps(&75);
+    governor.set_fee_bps(&authority, &75);
     assert_eq!(factory.protocol_fee_bps(), 75);
 }
 
