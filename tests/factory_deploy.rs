@@ -198,6 +198,29 @@ fn create_stream_rejects_zero_deposit() {
 }
 
 #[test]
+fn create_stream_rejects_negative_deposit() {
+    let env = base_env();
+    let client = deploy_factory(&env);
+    let sender = Address::generate(&env);
+    let recip = Address::generate(&env);
+    let token = make_token(&env, &sender, 10_000);
+    let now = env.ledger().timestamp();
+    // A negative amount can never fund a stream — the `deposit > 0`
+    // guard must reject it as InvalidDeposit before any deployment.
+    let result = client.try_create_stream(
+        &sender,
+        &recip,
+        &token,
+        &-1,
+        &100,
+        &(now + 100),
+        &(now + 3_700),
+        &false,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidDeposit)));
+}
+
+#[test]
 fn create_stream_rejects_zero_rate() {
     let env = base_env();
     let client = deploy_factory(&env);

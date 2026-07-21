@@ -40,6 +40,17 @@ impl DripStream {
         if env.storage().instance().has(&DataKey::Sender) {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
+
+        // Fail early on empty streams: a zero (or negative) rate would
+        // create a stream that escrows tokens but never releases any —
+        // an "empty stream". The factory validates this before deploying,
+        // but a DripStream can also be deployed and initialized directly
+        // (ADR-001: one contract per stream), so this contract must
+        // enforce the amount check itself rather than trusting the caller.
+        if rate_per_second <= 0 {
+            panic_with_error!(&env, Error::InvalidAmount);
+        }
+
         ttl::bump(&env);
 
         let s = env.storage().instance();

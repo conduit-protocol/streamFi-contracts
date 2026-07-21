@@ -283,6 +283,69 @@ fn withdraw_rejects_zero_and_negative_amount() {
     assert_eq!(s.client.try_withdraw(&-1), Err(Ok(Error::InvalidAmount)));
 }
 
+// ── Empty-stream guard ───────────────────────────────────────────────────────
+
+/// Deploy a bare DripStream (bypassing the factory — allowed per ADR-001,
+/// one contract per stream) and attempt to initialize it with a zero rate.
+/// Such a stream would escrow tokens but never release any ("empty
+/// stream") and must be rejected at initialization time with
+/// `InvalidAmount` (error #15).
+#[test]
+#[should_panic(expected = "Error(Contract, #15)")]
+fn initialize_rejects_zero_rate() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_addr = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+
+    let stream_id = env.register_contract(None, DripStream);
+    let client = DripStreamClient::new(&env, &stream_id);
+
+    let now: u64 = 1_000_000;
+    client.initialize(
+        &sender,
+        &recipient,
+        &token_addr,
+        &0, // rate_per_second = 0 → empty stream
+        &now,
+        &(now + 3_600),
+        &false,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #15)")]
+fn initialize_rejects_negative_rate() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_addr = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+
+    let stream_id = env.register_contract(None, DripStream);
+    let client = DripStreamClient::new(&env, &stream_id);
+
+    let now: u64 = 1_000_000;
+    client.initialize(
+        &sender,
+        &recipient,
+        &token_addr,
+        &-1, // negative rate → empty stream
+        &now,
+        &(now + 3_600),
+        &false,
+    );
+}
+
 // ── Initialization guard ──────────────────────────────────────────────────────
 
 #[test]

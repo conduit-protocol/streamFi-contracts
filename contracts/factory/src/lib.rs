@@ -60,9 +60,11 @@ impl DripFactory {
     ) -> Result<u64, Error> {
         // ── Auth ─────────────────────────────────────────────────────────
         sender.require_auth();
-        ttl::bump_instance(&env);
 
         // ── Validation ───────────────────────────────────────────────────
+        // Fail early: all input checks run before any state is touched, so
+        // invalid calls (e.g. an empty stream with a non-positive amount)
+        // neither mutate storage nor pay a TTL extension.
         if deposit <= 0 {
             return Err(Error::InvalidDeposit);
         }
@@ -99,6 +101,9 @@ impl DripFactory {
             .ok_or(Error::NotInitialized)?;
         let config = governance::config(&env, &governor);
         governance::enforce_bounds(&config, rate_per_sec, start_time, end_time)?;
+
+        // ── All validation passed — safe to touch state now ──────────────
+        ttl::bump_instance(&env);
 
         // ── Pull deposit from sender ──────────────────────────────────────
         // Using the aliased `tok` to avoid any future shadowing issues.

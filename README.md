@@ -68,6 +68,11 @@ fn streamed_total(env: Env) -> i128
 
 `force_cancel` reuses the `stream_cancelled` event — from the chain's perspective it settles the same way `cancel()` does.
 
+**Validation on `initialize`** (called once at stream creation — by the factory, or by a direct deployer per ADR-001):
+
+- Re-initialization rejected (`AlreadyInitialized`)
+- `rate_per_second > 0` — a zero/negative rate would create an "empty stream" that escrows tokens but never releases any; rejected with `InvalidAmount`
+
 ---
 
 ### `DripFactory`
@@ -101,6 +106,8 @@ fn upgrade_stream_wasm(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error>
 ```
 
 **Validation on `create_stream`:**
+
+All checks run before any state mutation (fail early — invalid calls neither touch storage nor extend TTL):
 
 - `deposit > 0`
 - `rate_per_sec > 0`
