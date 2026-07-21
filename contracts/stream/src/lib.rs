@@ -8,6 +8,7 @@ mod storage;
 #[cfg(test)]
 mod tests;
 mod ttl;
+mod yield_integration;
 
 use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env};
 
