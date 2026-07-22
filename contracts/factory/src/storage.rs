@@ -57,4 +57,11 @@ pub enum DataKey {
     /// Key: `DataKey::GovernorAddress` (no inner type, discriminant only)
     /// Value: `Address` — the on-chain address of the DripGovernor contract
     GovernorAddress,
+
+    /// **Instance storage.** Emergency-pause flag.
+    /// Key: `DataKey::Paused` (no inner type, discriminant only)
+    /// Value: `bool` — `true` while the protocol is under an emergency halt.
+    /// A missing entry (e.g. a factory initialized before this feature
+    /// existed) is treated as `false`/unpaused.
+    Paused,
 }

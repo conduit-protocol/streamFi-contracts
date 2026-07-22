@@ -1,8 +1,8 @@
 #![no_std]
 
-mod auth;
 mod config;
 mod errors;
+mod role;
 mod storage;
 mod ttl;
 
@@ -10,6 +10,7 @@ use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env};
 
 pub use config::GovernorConfig;
 pub use errors::Error;
+pub use role::Role;
 use storage::DataKey;
 
 #[contract]
@@ -19,27 +20,34 @@ pub struct DripGovernor;
 impl DripGovernor {
     /// Deploy-time initialisation.
     ///
-    /// Guards against re-initialization: without this check, anyone could
-    /// call `initialize` again to overwrite `Authority` with their own
-    /// address, then set `fee_bps` to the maximum or repoint `fee_recipient`.
+    /// Guards against re-initialization: without this check, anyone could call
+    /// `initialize` again to grant themselves `Admin`, then set `fee_bps` to
+    /// the maximum or repoint `fee_recipient`.
+    ///
+    /// The deploy `authority` is granted every role, so a single wallet can
+    /// bootstrap the protocol and later delegate fee and rate/duration
+    /// management to separate wallets via [`DripGovernor::grant_role`].
     pub fn initialize(
         env: Env,
         authority: Address,
         fee_recipient: Address,
         factory_address: Address,
     ) {
-        if env.storage().instance().has(&DataKey::Authority) {
+        if env.storage().instance().has(&DataKey::FactoryAddress) {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
         ttl::bump(&env);
 
         let s = env.storage().instance();
-        s.set(&DataKey::Authority, &authority);
         s.set(&DataKey::FeeBps, &30_u32);
         s.set(&DataKey::FeeRecipient, &fee_recipient);
         s.set(&DataKey::MinDurationSeconds, &3600_u64);
         s.set(&DataKey::MaxRatePerSecond, &1_000_000_000_000_000_i128);
         s.set(&DataKey::FactoryAddress, &factory_address);
+
+        role::grant(&env, Role::Admin, &authority);
+        role::grant(&env, Role::FeeManager, &authority);
+        role::grant(&env, Role::RateManager, &authority);
     }
 
     // ── Reads ────────────────────────────────────────────────────────────
@@ -48,10 +56,57 @@ impl DripGovernor {
         config::load(&env)
     }
 
-    // ── Writes (authority-gated) ─────────────────────────────────────────
+    /// Whether `account` currently holds `role`.
+    pub fn has_role(env: Env, role: Role, account: Address) -> bool {
+        role::has_role(&env, role, &account)
+    }
 
-    pub fn set_fee_bps(env: Env, fee_bps: u32) -> Result<(), Error> {
-        auth::require_authority(&env)?;
+    // ── Role administration (Admin-gated) ────────────────────────────────
+
+    /// Grants `role` to `account`. Only an `Admin` may call this.
+    pub fn grant_role(
+        env: Env,
+        caller: Address,
+        role: Role,
+        account: Address,
+    ) -> Result<(), Error> {
+        role::require_role(&env, &caller, Role::Admin)?;
+        role::grant(&env, role, &account);
+        Ok(())
+    }
+
+    /// Revokes `role` from `account`. Only an `Admin` may call this.
+    ///
+    /// Rejected with `LastAdmin` if it would remove the final `Admin`.
+    pub fn revoke_role(
+        env: Env,
+        caller: Address,
+        role: Role,
+        account: Address,
+    ) -> Result<(), Error> {
+        role::require_role(&env, &caller, Role::Admin)?;
+        role::revoke(&env, role, &account)
+    }
+
+    /// Hands the full `Admin` role from `caller` to `new_authority`.
+    ///
+    /// Grants first so the subsequent revoke can never trip the `LastAdmin`
+    /// guard, then revokes `caller`. Kept for API familiarity — equivalent to
+    /// a `grant_role(Admin, new)` followed by `revoke_role(Admin, caller)`.
+    pub fn transfer_authority(
+        env: Env,
+        caller: Address,
+        new_authority: Address,
+    ) -> Result<(), Error> {
+        role::require_role(&env, &caller, Role::Admin)?;
+        role::grant(&env, Role::Admin, &new_authority);
+        role::revoke(&env, Role::Admin, &caller)
+    }
+
+    // ── Parameter writes (role-gated) ────────────────────────────────────
+
+    pub fn set_fee_bps(env: Env, caller: Address, fee_bps: u32) -> Result<(), Error> {
+        role::require_role(&env, &caller, Role::FeeManager)?;
         if fee_bps > 10_000 {
             return Err(Error::InvalidParam);
         }
@@ -59,16 +114,16 @@ impl DripGovernor {
         Ok(())
     }
 
-    pub fn set_fee_recipient(env: Env, recipient: Address) -> Result<(), Error> {
-        auth::require_authority(&env)?;
+    pub fn set_fee_recipient(env: Env, caller: Address, recipient: Address) -> Result<(), Error> {
+        role::require_role(&env, &caller, Role::FeeManager)?;
         env.storage()
             .instance()
             .set(&DataKey::FeeRecipient, &recipient);
         Ok(())
     }
 
-    pub fn set_min_duration(env: Env, seconds: u64) -> Result<(), Error> {
-        auth::require_authority(&env)?;
+    pub fn set_min_duration(env: Env, caller: Address, seconds: u64) -> Result<(), Error> {
+        role::require_role(&env, &caller, Role::RateManager)?;
         if seconds == 0 {
             return Err(Error::InvalidParam);
         }
@@ -78,22 +133,14 @@ impl DripGovernor {
         Ok(())
     }
 
-    pub fn set_max_rate(env: Env, max_rate: i128) -> Result<(), Error> {
-        auth::require_authority(&env)?;
+    pub fn set_max_rate(env: Env, caller: Address, max_rate: i128) -> Result<(), Error> {
+        role::require_role(&env, &caller, Role::RateManager)?;
         if max_rate <= 0 {
             return Err(Error::InvalidParam);
         }
         env.storage()
             .instance()
             .set(&DataKey::MaxRatePerSecond, &max_rate);
-        Ok(())
-    }
-
-    pub fn transfer_authority(env: Env, new_authority: Address) -> Result<(), Error> {
-        auth::require_authority(&env)?;
-        env.storage()
-            .instance()
-            .set(&DataKey::Authority, &new_authority);
         Ok(())
     }
 }
