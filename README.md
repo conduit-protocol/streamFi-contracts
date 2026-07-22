@@ -103,12 +103,20 @@ fn protocol_fee_bps(env: Env) -> u32   // basis points, e.g. 30 = 0.3%; reads li
 // Governor-only: point future create_stream calls at a new DripStream WASM version.
 // Existing streams are unaffected — each is an independently deployed contract.
 fn upgrade_stream_wasm(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error>
+
+// Governor-only: emergency halt. While paused, create_stream reverts with
+// ContractPaused before pulling any deposit. Already-deployed streams keep
+// running — front-ends and the stream contract can gate withdrawals on is_paused.
+fn pause(env: Env) -> Result<(), Error>
+fn unpause(env: Env) -> Result<(), Error>
+fn is_paused(env: Env) -> bool
 ```
 
 **Validation on `create_stream`:**
 
 All checks run before any state mutation (fail early — invalid calls neither touch storage nor extend TTL):
 
+- Factory not under emergency pause (`is_paused() == false`, else `ContractPaused`)
 - `deposit > 0`
 - `rate_per_sec > 0`
 - `deposit >= rate_per_sec` (must fund at least 1 second)
@@ -123,7 +131,7 @@ All checks run before any state mutation (fail early — invalid calls neither t
 
 ### `DripGovernor`
 
-Protocol configuration and upgrade authority. Holds mutable parameters that DripFactory reads at stream creation time. Controlled by a multisig authority address (future: on-chain governance).
+Protocol configuration and upgrade authority. Holds mutable parameters that DripFactory reads at stream creation time. Access is governed by role-based access control (RBAC), so independent wallets can own distinct slices of protocol administration.
 
 **Configurable parameters:**
 
@@ -135,18 +143,35 @@ Protocol configuration and upgrade authority. Holds mutable parameters that Drip
 | `max_rate_per_second` | `10^15` | Maximum rate cap |
 | `factory_address` | set at init | The DripFactory this governor controls |
 
+**Roles:**
+
+| Role | Governs | Granted at init to |
+|------|---------|--------------------|
+| `Admin` | `grant_role` / `revoke_role` (including `Admin` itself) | the deploy authority |
+| `FeeManager` | `set_fee_bps`, `set_fee_recipient` | the deploy authority |
+| `RateManager` | `set_max_rate`, `set_min_duration` | the deploy authority |
+
+A role may be held by any number of accounts, and one account may hold any combination of roles. The deploy `authority` starts with all three, so it can bootstrap the protocol and then delegate fee and rate management to separate wallets. The final `Admin` cannot be revoked (`LastAdmin`), so governance can never be permanently frozen.
+
 **Public functions:**
 
 ```rust
-fn config(env: Env) -> GovernorConfig   // read-only: full config struct
+fn config(env: Env) -> GovernorConfig                 // read-only: full config struct
+fn has_role(env: Env, role: Role, account: Address) -> bool
 
-// All setters below require authority.require_auth() and return InvalidParam on bad input
-fn set_fee_bps(env: Env, fee_bps: u32) -> Result<(), Error>              // 0..=10_000
-fn set_fee_recipient(env: Env, recipient: Address) -> Result<(), Error>
-fn set_min_duration(env: Env, seconds: u64) -> Result<(), Error>         // > 0
-fn set_max_rate(env: Env, max_rate: i128) -> Result<(), Error>           // > 0
-fn transfer_authority(env: Env, new_authority: Address) -> Result<(), Error>
+// Role administration — caller must hold Admin
+fn grant_role(env: Env, caller: Address, role: Role, account: Address) -> Result<(), Error>
+fn revoke_role(env: Env, caller: Address, role: Role, account: Address) -> Result<(), Error>  // LastAdmin if it drops the final Admin
+fn transfer_authority(env: Env, caller: Address, new_authority: Address) -> Result<(), Error>  // grant Admin to new, revoke from caller
+
+// Parameter setters — caller must hold the gating role; return InvalidParam on bad input
+fn set_fee_bps(env: Env, caller: Address, fee_bps: u32) -> Result<(), Error>              // FeeManager;  0..=10_000
+fn set_fee_recipient(env: Env, caller: Address, recipient: Address) -> Result<(), Error>  // FeeManager
+fn set_min_duration(env: Env, caller: Address, seconds: u64) -> Result<(), Error>         // RateManager; > 0
+fn set_max_rate(env: Env, caller: Address, max_rate: i128) -> Result<(), Error>           // RateManager; > 0
 ```
+
+Each `caller` must `require_auth()` and hold the role gating the call, otherwise the call reverts with `NotAuthorized`.
 
 ---
 
@@ -196,9 +221,10 @@ not by number alone.
 
 | Code | Name | Description |
 |------|------|-------------|
-| `1` | `NotAuthorized` | Caller is not the current authority |
+| `1` | `NotAuthorized` | Caller does not hold the role gating the call |
 | `2` | `InvalidParam` | Setter argument failed validation (e.g. `fee_bps > 10_000`, `0` duration/rate) |
 | `3` | `AlreadyInitialized` | `initialize()` called on a governor that's already been initialized |
+| `4` | `LastAdmin` | `revoke_role` would remove the final `Admin`, freezing governance |
 
 ---
 

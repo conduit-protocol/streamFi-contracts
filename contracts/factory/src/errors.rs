@@ -14,4 +14,10 @@ pub enum Error {
     RateExceedsMax = 8,
     DurationTooShort = 9,
     ArithmeticOverflow = 10,
+    /// The factory is under an emergency pause; new stream creation is halted.
+    ContractPaused = 11,
+    /// `pause` was called while the factory was already paused.
+    AlreadyPaused = 12,
+    /// `unpause` was called while the factory was not paused.
+    NotPaused = 13,
 }

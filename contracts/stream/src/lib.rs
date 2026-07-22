@@ -37,7 +37,7 @@ impl DripStream {
         end_time: u64,
         clawback_enabled: bool,
     ) {
-        if env.storage().instance().has(&DataKey::Sender) {
+        if env.storage().instance().has(&DataKey::Config) {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
 
@@ -68,6 +68,25 @@ impl DripStream {
         s.set(&DataKey::Withdrawn, &0_i128);
         s.set(&DataKey::PausedAt, &0_u64);
         s.set(&DataKey::Flags, &flags);
+        // Write the entire stream state as a single struct — one storage
+        // write instead of eleven.  All subsequent reads go through
+        // state::load(), which fetches the whole struct in one call.
+        state::save(
+            &env,
+            &StreamInfo {
+                sender,
+                recipient,
+                token,
+                rate_per_second,
+                start_time,
+                end_time,
+                clawback_enabled,
+                withdrawn: 0,
+                paused: false,
+                paused_at: 0,
+                cancelled: false,
+            },
+        );
     }
 
     /// Recipient withdraws `amount` tokens.
@@ -133,6 +152,9 @@ impl DripStream {
         // (Soroban's execution model already prevents re-entrancy, but this
         // is still the correct ordering for state-machine correctness).
         state::set_cancelled(&env);
+        let mut cancelled_info = info.clone();
+        cancelled_info.cancelled = true;
+        state::save(&env, &cancelled_info);
 
         // Pay the recipient their earned-but-unwithdrawn portion.
         if owed_to_recipient > 0 {
@@ -164,6 +186,10 @@ impl DripStream {
 
         state::set_paused(&env, true);
         env.storage().instance().set(&DataKey::PausedAt, &now);
+        let mut updated = info.clone();
+        updated.paused = true;
+        updated.paused_at = now;
+        state::save(&env, &updated);
 
         events::paused(&env, &info.sender, now, w);
         Ok(())
@@ -191,10 +217,14 @@ impl DripStream {
         state::set_paused(&env, false);
         env.storage().instance().set(&DataKey::PausedAt, &0_u64);
 
+        let mut updated = info.clone();
+        updated.start_time = new_start;
+        updated.paused = false;
+        updated.paused_at = 0;
         if info.end_time > 0 {
-            let new_end = info.end_time + paused_duration;
-            env.storage().instance().set(&DataKey::EndTime, &new_end);
+            updated.end_time = info.end_time + paused_duration;
         }
+        state::save(&env, &updated);
 
         events::resumed(&env, &info.sender, now);
         Ok(())
@@ -292,6 +322,9 @@ impl DripStream {
         let refund_to_sender = (balance - owed_to_recipient).max(0);
 
         state::set_cancelled(&env);
+        let mut cancelled_info = info.clone();
+        cancelled_info.cancelled = true;
+        state::save(&env, &cancelled_info);
 
         if owed_to_recipient > 0 {
             tk.transfer(&contract_addr, &info.recipient, &owed_to_recipient);
@@ -316,9 +349,9 @@ impl DripStream {
         state::assert_not_cancelled(&info)?;
         info.recipient.require_auth();
 
-        env.storage()
-            .instance()
-            .set(&DataKey::Recipient, &new_recipient);
+        let mut updated = info.clone();
+        updated.recipient = new_recipient.clone();
+        state::save(&env, &updated);
         events::recipient_transferred(&env, &info.recipient, &new_recipient);
         Ok(())
     }

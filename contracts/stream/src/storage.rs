@@ -15,6 +15,12 @@ pub enum DataKey {
     Withdrawn,
     PausedAt,
     Flags,
+    ClawbackEnabled,
+    Cancelled,
+    /// Single-key representation of all stream fields.
+    /// Replaces the 11 individual keys above for new writes — loaded in one
+    /// storage read instead of eleven.
+    Config,
 }
 
 #[contracttype]

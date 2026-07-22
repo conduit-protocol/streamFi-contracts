@@ -3,6 +3,7 @@
 mod deploy;
 mod errors;
 mod governance;
+mod pause;
 mod query;
 mod storage;
 mod ttl;
@@ -60,6 +61,15 @@ impl DripFactory {
     ) -> Result<u64, Error> {
         // ── Auth ─────────────────────────────────────────────────────────
         sender.require_auth();
+
+        // ── Emergency pause ──────────────────────────────────────────────
+        // Checked before any validation or state access so a halted protocol
+        // rejects new streams immediately, without pulling a deposit or paying
+        // a TTL extension. Already-deployed streams are independent contracts
+        // and are unaffected by this flag.
+        if pause::is_paused(&env) {
+            return Err(Error::ContractPaused);
+        }
 
         // ── Validation ───────────────────────────────────────────────────
         // Fail early: all input checks run before any state is touched, so
@@ -269,5 +279,57 @@ impl DripFactory {
             .instance()
             .set(&DataKey::StreamWasmHash, &new_wasm_hash);
         Ok(())
+    }
+
+    /// Emergency halt: stop all new stream creation.
+    ///
+    /// Intended for an extreme protocol emergency. While paused, every
+    /// `create_stream` call reverts with `ContractPaused` before any deposit
+    /// is pulled. Existing streams are independent deployed contracts and keep
+    /// running; front-ends and the stream contract can gate withdrawals by
+    /// reading `is_paused`.
+    ///
+    /// Gated on the governor, matching `upgrade_stream_wasm` — the same
+    /// authority that controls protocol parameters controls the halt.
+    pub fn pause(env: Env) -> Result<(), Error> {
+        let governor: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::GovernorAddress)
+            .ok_or(Error::NotInitialized)?;
+        governor.require_auth();
+        if pause::is_paused(&env) {
+            return Err(Error::AlreadyPaused);
+        }
+        ttl::bump_instance(&env);
+        pause::set_paused(&env, true);
+        Ok(())
+    }
+
+    /// Lift the emergency pause, allowing `create_stream` again.
+    ///
+    /// Gated on the governor, matching `pause`.
+    pub fn unpause(env: Env) -> Result<(), Error> {
+        let governor: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::GovernorAddress)
+            .ok_or(Error::NotInitialized)?;
+        governor.require_auth();
+        if !pause::is_paused(&env) {
+            return Err(Error::NotPaused);
+        }
+        ttl::bump_instance(&env);
+        pause::set_paused(&env, false);
+        Ok(())
+    }
+
+    /// Read-only: whether the factory is currently under an emergency pause.
+    ///
+    /// Returns `false` for a factory that predates this feature (the flag was
+    /// never written). Exposed so the stream contract and off-chain infra can
+    /// enforce the halt on withdrawals as well as creation.
+    pub fn is_paused(env: Env) -> bool {
+        pause::is_paused(&env)
     }
 }

@@ -42,9 +42,9 @@ fn re_initializing_governor_panics() {
     env.mock_all_auths();
 
     let (client, _authority, _fee_recipient) = deploy_governor(&env);
-    // An attacker calling initialize() again to install themselves as
-    // Authority must be rejected — otherwise they could set fee_bps to the
-    // maximum or redirect fee_recipient.
+    // An attacker calling initialize() again to grant themselves Admin must be
+    // rejected — otherwise they could set fee_bps to the maximum or redirect
+    // fee_recipient.
     let attacker = Address::generate(&env);
     client.initialize(&attacker, &attacker, &attacker);
 }
@@ -66,8 +66,8 @@ fn set_fee_bps_extends_instance_ttl() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, _authority, _fee_recipient) = deploy_governor(&env);
-    client.set_fee_bps(&50);
+    let (client, authority, _fee_recipient) = deploy_governor(&env);
+    client.set_fee_bps(&authority, &50);
     let ttl = env.as_contract(&client.address, || env.storage().instance().get_ttl());
     assert_eq!(ttl, 200_000);
 }
@@ -79,8 +79,8 @@ fn authority_can_update_fee_bps() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, _authority, _) = deploy_governor(&env);
-    client.set_fee_bps(&50);
+    let (client, authority, _) = deploy_governor(&env);
+    client.set_fee_bps(&authority, &50);
     assert_eq!(client.config().fee_bps, 50);
 }
 
@@ -89,8 +89,8 @@ fn fee_bps_of_zero_is_valid() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, _, _) = deploy_governor(&env);
-    client.set_fee_bps(&0);
+    let (client, authority, _) = deploy_governor(&env);
+    client.set_fee_bps(&authority, &0);
     assert_eq!(client.config().fee_bps, 0);
 }
 
@@ -99,8 +99,8 @@ fn fee_bps_of_10000_is_valid() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, _, _) = deploy_governor(&env);
-    client.set_fee_bps(&10_000);
+    let (client, authority, _) = deploy_governor(&env);
+    client.set_fee_bps(&authority, &10_000);
     assert_eq!(client.config().fee_bps, 10_000);
 }
 
@@ -109,8 +109,8 @@ fn fee_bps_exceeding_10000_is_rejected() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, _, _) = deploy_governor(&env);
-    let result = client.try_set_fee_bps(&10_001);
+    let (client, authority, _) = deploy_governor(&env);
+    let result = client.try_set_fee_bps(&authority, &10_001);
     assert_eq!(result, Err(Ok(Error::InvalidParam)));
 }
 
@@ -121,8 +121,8 @@ fn authority_can_set_min_duration() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, _, _) = deploy_governor(&env);
-    client.set_min_duration(&7_200);
+    let (client, authority, _) = deploy_governor(&env);
+    client.set_min_duration(&authority, &7_200);
     assert_eq!(client.config().min_duration_seconds, 7_200);
 }
 
@@ -131,8 +131,8 @@ fn zero_min_duration_is_rejected() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, _, _) = deploy_governor(&env);
-    let result = client.try_set_min_duration(&0);
+    let (client, authority, _) = deploy_governor(&env);
+    let result = client.try_set_min_duration(&authority, &0);
     assert_eq!(result, Err(Ok(Error::InvalidParam)));
 }
 
@@ -143,8 +143,8 @@ fn authority_can_set_max_rate() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, _, _) = deploy_governor(&env);
-    client.set_max_rate(&500_000_000);
+    let (client, authority, _) = deploy_governor(&env);
+    client.set_max_rate(&authority, &500_000_000);
     assert_eq!(client.config().max_rate_per_second, 500_000_000);
 }
 
@@ -153,8 +153,8 @@ fn zero_max_rate_is_rejected() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, _, _) = deploy_governor(&env);
-    let result = client.try_set_max_rate(&0);
+    let (client, authority, _) = deploy_governor(&env);
+    let result = client.try_set_max_rate(&authority, &0);
     assert_eq!(result, Err(Ok(Error::InvalidParam)));
 }
 
@@ -163,8 +163,8 @@ fn negative_max_rate_is_rejected() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, _, _) = deploy_governor(&env);
-    let result = client.try_set_max_rate(&-1);
+    let (client, authority, _) = deploy_governor(&env);
+    let result = client.try_set_max_rate(&authority, &-1);
     assert_eq!(result, Err(Ok(Error::InvalidParam)));
 }
 
@@ -175,9 +175,9 @@ fn authority_can_change_fee_recipient() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, _, _) = deploy_governor(&env);
+    let (client, authority, _) = deploy_governor(&env);
     let new_recipient = Address::generate(&env);
-    client.set_fee_recipient(&new_recipient);
+    client.set_fee_recipient(&authority, &new_recipient);
     assert_eq!(client.config().fee_recipient, new_recipient);
 }
 
@@ -188,11 +188,12 @@ fn authority_transfers_correctly() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, _old_authority, _) = deploy_governor(&env);
+    let (client, old_authority, _) = deploy_governor(&env);
     let new_authority = Address::generate(&env);
-    client.transfer_authority(&new_authority);
+    client.transfer_authority(&old_authority, &new_authority);
 
-    // Post-transfer, a config read still works (authority is stored, not verified on read)
+    // Post-transfer, a config read still works (roles are stored, not verified
+    // on read).
     let config = client.config();
     assert_eq!(config.fee_bps, 30); // defaults unchanged
 }

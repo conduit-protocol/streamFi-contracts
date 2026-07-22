@@ -5,10 +5,15 @@ All notable changes are documented here. Format based on [Keep a Changelog](http
 ## [Unreleased]
 
 ### Added
+- Emergency pause on `DripFactory` — governor-gated `pause()`/`unpause()` halt all new `create_stream` calls during a protocol emergency; `is_paused()` view exposes the flag so the stream contract and off-chain infra can also gate withdrawals. Adds `ContractPaused` (11), `AlreadyPaused` (12), and `NotPaused` (13) error codes and a `Paused` instance-storage key
 - `force_cancel()` on `DripStream` — recipient can settle atomically after sender leaves stream paused for more than 30 days (`PauseThresholdNotMet` error returned if threshold not met)
 - `PauseThresholdNotMet` error code (13) added to `Error` enum
 
+### Added
+- Role-based access control (RBAC) on `DripGovernor` — replaces the single `Authority` with `Admin`, `FeeManager`, and `RateManager` roles so independent wallets can own fee policy and rate/duration bounds. Adds `grant_role`, `revoke_role`, and `has_role`; `Admin` gates role administration, `FeeManager` gates `set_fee_bps`/`set_fee_recipient`, and `RateManager` gates `set_max_rate`/`set_min_duration`. A role may be held by multiple accounts, and the last `Admin` cannot be revoked (`LastAdmin`, code 4)
+
 ### Changed
+- **`DripGovernor` setters are now role-gated and take an explicit `caller`.** `set_fee_bps`, `set_fee_recipient`, `set_min_duration`, `set_max_rate`, and `transfer_authority` each take a leading `caller: Address` that must `require_auth()` and hold the gating role, replacing the implicit single-authority check. `initialize` grants the deploy authority all three roles. The `Authority` storage key is removed in favour of `Role`/`AdminCount` keys
 - `get_escrow_for_user` visibility scoped; bare `get_escrow` now `pub(crate)` only
 - `DripFactory::create_stream` now cross-contract-calls `DripGovernor::config()` and enforces `max_rate_per_second`/`min_duration_seconds`; `protocol_fee_bps()` reads `fee_bps` live from the governor instead of returning a hardcoded stub
 - `DripFactory::upgrade_stream_wasm` now returns `Result<(), Error>` instead of panicking when the factory isn't initialized
