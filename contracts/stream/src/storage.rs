@@ -1,6 +1,6 @@
 use soroban_sdk::{contracttype, Address};
 
-pub const FLAG_PAUSED: u32 = 1 << 0;
+pub const FLAG_PAUSED: u32 = 1;
 pub const FLAG_CLAWBACK_ENABLED: u32 = 1 << 1;
 pub const FLAG_CANCELLED: u32 = 1 << 2;
 

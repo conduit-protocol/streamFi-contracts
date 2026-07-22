@@ -25,11 +25,7 @@ pub fn load(env: &Env) -> StreamInfo {
             .instance()
             .get(&DataKey::PausedAt)
             .unwrap_or(0),
-        flags: env
-            .storage()
-            .instance()
-            .get(&DataKey::Flags)
-            .unwrap_or(0),
+        flags: env.storage().instance().get(&DataKey::Flags).unwrap_or(0),
     }
 }
 

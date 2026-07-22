@@ -19,6 +19,7 @@ const MIN_REBATE_THRESHOLD: i128 = 100;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
 pub struct YieldConfig {
     pub vault_address: Address,
     pub is_active: bool,
@@ -34,12 +35,14 @@ pub struct YieldConfig {
 /// Rebate calculation error types
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
+#[allow(dead_code)]
 pub enum RebateError {
     ArithmeticOverflow = 1,
     InvalidRate = 2,
     InsufficientPrincipal = 3,
 }
 
+#[allow(dead_code)]
 impl From<RebateError> for soroban_sdk::Error {
     fn from(err: RebateError) -> Self {
         soroban_sdk::Error::from_contract_error(err as u32)
