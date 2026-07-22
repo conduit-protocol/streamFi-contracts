@@ -1,5 +1,9 @@
 use soroban_sdk::{contracttype, Address};
 
+pub const FLAG_PAUSED: u32 = 1 << 0;
+pub const FLAG_CLAWBACK_ENABLED: u32 = 1 << 1;
+pub const FLAG_CANCELLED: u32 = 1 << 2;
+
 #[contracttype]
 pub enum DataKey {
     Sender,
@@ -9,10 +13,8 @@ pub enum DataKey {
     StartTime,
     EndTime,
     Withdrawn,
-    Paused,
     PausedAt,
-    ClawbackEnabled,
-    Cancelled,
+    Flags,
 }
 
 #[contracttype]
@@ -25,8 +27,20 @@ pub struct StreamInfo {
     pub start_time: u64,
     pub end_time: u64,
     pub withdrawn: i128,
-    pub paused: bool,
     pub paused_at: u64,
-    pub clawback_enabled: bool,
-    pub cancelled: bool,
+    pub flags: u32,
+}
+
+impl StreamInfo {
+    pub fn is_paused(&self) -> bool {
+        (self.flags & FLAG_PAUSED) != 0
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        (self.flags & FLAG_CANCELLED) != 0
+    }
+
+    pub fn is_clawback_enabled(&self) -> bool {
+        (self.flags & FLAG_CLAWBACK_ENABLED) != 0
+    }
 }

@@ -13,7 +13,7 @@ mod yield_integration;
 use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env};
 
 pub use errors::Error;
-use storage::{DataKey, StreamInfo};
+use storage::{DataKey, StreamInfo, FLAG_CLAWBACK_ENABLED};
 
 #[contract]
 pub struct DripStream;
@@ -53,6 +53,11 @@ impl DripStream {
 
         ttl::bump(&env);
 
+        let mut flags: u32 = 0;
+        if clawback_enabled {
+            flags |= FLAG_CLAWBACK_ENABLED;
+        }
+
         let s = env.storage().instance();
         s.set(&DataKey::Sender, &sender);
         s.set(&DataKey::Recipient, &recipient);
@@ -60,11 +65,9 @@ impl DripStream {
         s.set(&DataKey::RatePerSecond, &rate_per_second);
         s.set(&DataKey::StartTime, &start_time);
         s.set(&DataKey::EndTime, &end_time);
-        s.set(&DataKey::ClawbackEnabled, &clawback_enabled);
         s.set(&DataKey::Withdrawn, &0_i128);
-        s.set(&DataKey::Paused, &false);
         s.set(&DataKey::PausedAt, &0_u64);
-        s.set(&DataKey::Cancelled, &false);
+        s.set(&DataKey::Flags, &flags);
     }
 
     /// Recipient withdraws `amount` tokens.
@@ -129,7 +132,7 @@ impl DripStream {
         // Mark cancelled before any transfers to prevent re-entrancy
         // (Soroban's execution model already prevents re-entrancy, but this
         // is still the correct ordering for state-machine correctness).
-        env.storage().instance().set(&DataKey::Cancelled, &true);
+        state::set_cancelled(&env);
 
         // Pay the recipient their earned-but-unwithdrawn portion.
         if owed_to_recipient > 0 {
@@ -151,7 +154,7 @@ impl DripStream {
 
         let info = state::load(&env);
         state::assert_not_cancelled(&info)?;
-        if info.paused {
+        if info.is_paused() {
             return Err(Error::AlreadyPaused);
         }
         info.sender.require_auth();
@@ -159,7 +162,7 @@ impl DripStream {
         let now = env.ledger().timestamp();
         let w = math::withdrawable(&env, &info)?;
 
-        env.storage().instance().set(&DataKey::Paused, &true);
+        state::set_paused(&env, true);
         env.storage().instance().set(&DataKey::PausedAt, &now);
 
         events::paused(&env, &info.sender, now, w);
@@ -172,7 +175,7 @@ impl DripStream {
 
         let info = state::load(&env);
         state::assert_not_cancelled(&info)?;
-        if !info.paused {
+        if !info.is_paused() {
             return Err(Error::NotPaused);
         }
         info.sender.require_auth();
@@ -185,7 +188,7 @@ impl DripStream {
         env.storage()
             .instance()
             .set(&DataKey::StartTime, &new_start);
-        env.storage().instance().set(&DataKey::Paused, &false);
+        state::set_paused(&env, false);
         env.storage().instance().set(&DataKey::PausedAt, &0_u64);
 
         if info.end_time > 0 {
@@ -224,7 +227,7 @@ impl DripStream {
 
         let info = state::load(&env);
         state::assert_not_cancelled(&info)?;
-        if !info.clawback_enabled {
+        if !info.is_clawback_enabled() {
             return Err(Error::ClawbackDisabled);
         }
         info.sender.require_auth();
@@ -248,7 +251,7 @@ impl DripStream {
     /// Read-only: current withdrawable balance for the recipient.
     pub fn withdrawable(env: Env) -> i128 {
         let info = state::load(&env);
-        if info.cancelled {
+        if info.is_cancelled() {
             return 0;
         }
         math::withdrawable(&env, &info).unwrap_or(0)
@@ -268,7 +271,7 @@ impl DripStream {
 
         let info = state::load(&env);
         state::assert_not_cancelled(&info)?;
-        if !info.paused {
+        if !info.is_paused() {
             return Err(Error::NotPaused);
         }
 
@@ -288,7 +291,7 @@ impl DripStream {
         let owed_to_recipient = (streamed - info.withdrawn).max(0).min(balance);
         let refund_to_sender = (balance - owed_to_recipient).max(0);
 
-        env.storage().instance().set(&DataKey::Cancelled, &true);
+        state::set_cancelled(&env);
 
         if owed_to_recipient > 0 {
             tk.transfer(&contract_addr, &info.recipient, &owed_to_recipient);
@@ -326,7 +329,7 @@ impl DripStream {
     /// without the caller needing to reimplement the rate × elapsed math.
     pub fn streamed_total(env: Env) -> i128 {
         let info = state::load(&env);
-        if info.cancelled {
+        if info.is_cancelled() {
             return 0;
         }
         math::streamed_amount(&env, &info).unwrap_or(0)

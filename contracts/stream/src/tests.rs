@@ -425,9 +425,9 @@ fn info_returns_correct_initial_state() {
     let inf = s.client.info();
 
     assert_eq!(inf.rate_per_second, 250);
-    assert!(!inf.paused);
-    assert!(!inf.cancelled);
-    assert!(inf.clawback_enabled);
+    assert!(!inf.is_paused());
+    assert!(!inf.is_cancelled());
+    assert!(inf.is_clawback_enabled());
     assert_eq!(inf.withdrawn, 0);
 }
 
@@ -438,7 +438,7 @@ fn info_reflects_pause_state() {
     s.client.pause();
 
     let inf = s.client.info();
-    assert!(inf.paused);
+    assert!(inf.is_paused());
     assert!(inf.paused_at > 0);
 }
 

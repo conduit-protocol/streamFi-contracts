@@ -1,6 +1,6 @@
 use soroban_sdk::Env;
 
-use crate::storage::{DataKey, StreamInfo};
+use crate::storage::{DataKey, StreamInfo, FLAG_CANCELLED, FLAG_PAUSED};
 use crate::Error;
 
 pub fn load(env: &Env) -> StreamInfo {
@@ -20,26 +20,16 @@ pub fn load(env: &Env) -> StreamInfo {
             .instance()
             .get(&DataKey::Withdrawn)
             .unwrap_or(0),
-        paused: env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false),
         paused_at: env
             .storage()
             .instance()
             .get(&DataKey::PausedAt)
             .unwrap_or(0),
-        clawback_enabled: env
+        flags: env
             .storage()
             .instance()
-            .get(&DataKey::ClawbackEnabled)
-            .unwrap_or(false),
-        cancelled: env
-            .storage()
-            .instance()
-            .get(&DataKey::Cancelled)
-            .unwrap_or(false),
+            .get(&DataKey::Flags)
+            .unwrap_or(0),
     }
 }
 
@@ -47,8 +37,24 @@ pub fn save_withdrawn(env: &Env, amount: i128) {
     env.storage().instance().set(&DataKey::Withdrawn, &amount);
 }
 
+pub fn set_paused(env: &Env, paused: bool) {
+    let mut flags: u32 = env.storage().instance().get(&DataKey::Flags).unwrap_or(0);
+    if paused {
+        flags |= FLAG_PAUSED;
+    } else {
+        flags &= !FLAG_PAUSED;
+    }
+    env.storage().instance().set(&DataKey::Flags, &flags);
+}
+
+pub fn set_cancelled(env: &Env) {
+    let mut flags: u32 = env.storage().instance().get(&DataKey::Flags).unwrap_or(0);
+    flags |= FLAG_CANCELLED;
+    env.storage().instance().set(&DataKey::Flags, &flags);
+}
+
 pub fn assert_not_cancelled(info: &StreamInfo) -> Result<(), Error> {
-    if info.cancelled {
+    if info.is_cancelled() {
         Err(Error::StreamCancelled)
     } else {
         Ok(())
