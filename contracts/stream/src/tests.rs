@@ -528,7 +528,15 @@ fn extend_duration_rejects_on_arithmetic_overflow() {
 
     // Use an extremely large rate so (rate × 2) overflows i128
     let huge_rate: i128 = i128::MAX;
-    client.initialize(&sender, &recipient, &token_addr, &huge_rate, &now, &(now + 10), &false);
+    client.initialize(
+        &sender,
+        &recipient,
+        &token_addr,
+        &huge_rate,
+        &now,
+        &(now + 10),
+        &false,
+    );
 
     let result = client.try_extend_duration(&2);
     assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
