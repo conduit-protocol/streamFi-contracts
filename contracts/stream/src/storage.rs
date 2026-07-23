@@ -24,7 +24,7 @@ pub enum DataKey {
 }
 
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamInfo {
     pub sender: Address,
     pub recipient: Address,
