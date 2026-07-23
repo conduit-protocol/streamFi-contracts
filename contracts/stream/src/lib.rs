@@ -13,7 +13,7 @@ mod yield_integration;
 use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env};
 
 pub use errors::Error;
-use storage::{DataKey, StreamInfo, FLAG_CLAWBACK_ENABLED};
+use storage::{DataKey, StreamInfo, FLAG_CANCELLED, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED};
 
 #[contract]
 pub struct DripStream;
@@ -69,7 +69,7 @@ impl DripStream {
         s.set(&DataKey::PausedAt, &0_u64);
         s.set(&DataKey::Flags, &flags);
         // Write the entire stream state as a single struct — one storage
-        // write instead of eleven.  All subsequent reads go through
+        // write instead of eleven. All subsequent reads go through
         // state::load(), which fetches the whole struct in one call.
         state::save(
             &env,
@@ -80,11 +80,9 @@ impl DripStream {
                 rate_per_second,
                 start_time,
                 end_time,
-                clawback_enabled,
                 withdrawn: 0,
-                paused: false,
                 paused_at: 0,
-                cancelled: false,
+                flags,
             },
         );
     }
@@ -153,7 +151,7 @@ impl DripStream {
         // is still the correct ordering for state-machine correctness).
         state::set_cancelled(&env);
         let mut cancelled_info = info.clone();
-        cancelled_info.cancelled = true;
+        cancelled_info.flags |= FLAG_CANCELLED;
         state::save(&env, &cancelled_info);
 
         // Pay the recipient their earned-but-unwithdrawn portion.
@@ -187,7 +185,7 @@ impl DripStream {
         state::set_paused(&env, true);
         env.storage().instance().set(&DataKey::PausedAt, &now);
         let mut updated = info.clone();
-        updated.paused = true;
+        updated.flags |= FLAG_PAUSED;
         updated.paused_at = now;
         state::save(&env, &updated);
 
@@ -219,7 +217,7 @@ impl DripStream {
 
         let mut updated = info.clone();
         updated.start_time = new_start;
-        updated.paused = false;
+        updated.flags &= !FLAG_PAUSED;
         updated.paused_at = 0;
         if info.end_time > 0 {
             updated.end_time = info.end_time + paused_duration;
@@ -323,7 +321,7 @@ impl DripStream {
 
         state::set_cancelled(&env);
         let mut cancelled_info = info.clone();
-        cancelled_info.cancelled = true;
+        cancelled_info.flags |= FLAG_CANCELLED;
         state::save(&env, &cancelled_info);
 
         if owed_to_recipient > 0 {

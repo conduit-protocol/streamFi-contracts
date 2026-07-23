@@ -10,7 +10,7 @@ use soroban_sdk::{
     token, Address, Env,
 };
 
-use crate::{DripStream, DripStreamClient, Error};
+use crate::{storage::DataKey, DripStream, DripStreamClient, Error};
 
 /// Deploy a mock token and a DripStream, returning both clients and
 /// the sender/recipient addresses.
@@ -466,4 +466,38 @@ fn multiple_sequential_withdrawals_sum_correctly() {
 
     assert_eq!(w1 + w2 + w3, 900_000);
     assert_eq!(s.token.balance(&s.recipient), 900_000);
+}
+
+#[test]
+fn legacy_storage_layout_still_loads_and_tracks_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_addr = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+
+    let now: u64 = 1_000_000;
+    let stream_id = env.register_contract(None, DripStream);
+    env.as_contract(&stream_id, || {
+        let storage = env.storage().instance();
+        storage.set(&DataKey::Sender, &sender);
+        storage.set(&DataKey::Recipient, &recipient);
+        storage.set(&DataKey::Token, &token_addr);
+        storage.set(&DataKey::RatePerSecond, &100_i128);
+        storage.set(&DataKey::StartTime, &now);
+        storage.set(&DataKey::EndTime, &(now + 3_600));
+        storage.set(&DataKey::Withdrawn, &0_i128);
+        storage.set(&DataKey::PausedAt, &0_u64);
+        storage.set(&DataKey::Flags, &0_u32);
+    });
+
+    let info = env.as_contract(&stream_id, || crate::state::load(&env));
+    assert_eq!(info.rate_per_second, 100);
+    assert!(!info.is_paused());
+    assert!(!info.is_cancelled());
+    assert!(!info.is_clawback_enabled());
 }
