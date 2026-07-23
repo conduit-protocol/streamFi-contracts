@@ -1,6 +1,6 @@
 use soroban_sdk::Env;
 
-use crate::storage::{DataKey, StreamInfo, FLAG_CANCELLED, FLAG_PAUSED};
+use crate::storage::{DataKey, StreamInfo, FLAG_CANCELLED, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED};
 use crate::Error;
 
 /// Load the full stream state in a single storage read.
@@ -18,6 +18,27 @@ pub fn load(env: &Env) -> StreamInfo {
     }
 
     // Legacy path: read each field individually (pre-optimisation streams).
+    // Reconstructs the packed `flags` bitfield from the old dedicated
+    // ClawbackEnabled/Cancelled keys plus the existing Flags key (which
+    // already held the Paused bit before the single-key consolidation).
+    let mut flags: u32 = env.storage().instance().get(&DataKey::Flags).unwrap_or(0);
+    if env
+        .storage()
+        .instance()
+        .get(&DataKey::ClawbackEnabled)
+        .unwrap_or(false)
+    {
+        flags |= FLAG_CLAWBACK_ENABLED;
+    }
+    if env
+        .storage()
+        .instance()
+        .get(&DataKey::Cancelled)
+        .unwrap_or(false)
+    {
+        flags |= FLAG_CANCELLED;
+    }
+
     StreamInfo {
         sender: env.storage().instance().get(&DataKey::Sender).unwrap(),
         recipient: env.storage().instance().get(&DataKey::Recipient).unwrap(),
@@ -39,23 +60,7 @@ pub fn load(env: &Env) -> StreamInfo {
             .instance()
             .get(&DataKey::PausedAt)
             .unwrap_or(0),
-        flags: env.storage().instance().get(&DataKey::Flags).unwrap_or(0),
-        flags: env
-            .storage()
-            .instance()
-            .get(&DataKey::Flags)
-            .unwrap_or(0),
-        sender: s.get(&DataKey::Sender).unwrap(),
-        recipient: s.get(&DataKey::Recipient).unwrap(),
-        token: s.get(&DataKey::Token).unwrap(),
-        rate_per_second: s.get(&DataKey::RatePerSecond).unwrap(),
-        start_time: s.get(&DataKey::StartTime).unwrap(),
-        end_time: s.get(&DataKey::EndTime).unwrap(),
-        withdrawn: s.get(&DataKey::Withdrawn).unwrap_or(0),
-        paused: s.get(&DataKey::Paused).unwrap_or(false),
-        paused_at: s.get(&DataKey::PausedAt).unwrap_or(0),
-        clawback_enabled: s.get(&DataKey::ClawbackEnabled).unwrap_or(false),
-        cancelled: s.get(&DataKey::Cancelled).unwrap_or(false),
+        flags,
     }
 }
 

@@ -13,7 +13,7 @@ mod yield_integration;
 use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env};
 
 pub use errors::Error;
-use storage::{DataKey, StreamInfo, FLAG_CLAWBACK_ENABLED};
+use storage::{DataKey, StreamInfo, FLAG_CANCELLED, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED};
 
 #[contract]
 pub struct DripStream;
@@ -80,11 +80,9 @@ impl DripStream {
                 rate_per_second,
                 start_time,
                 end_time,
-                clawback_enabled,
+                flags,
                 withdrawn: 0,
-                paused: false,
                 paused_at: 0,
-                cancelled: false,
             },
         );
     }
@@ -153,7 +151,7 @@ impl DripStream {
         // is still the correct ordering for state-machine correctness).
         state::set_cancelled(&env);
         let mut cancelled_info = info.clone();
-        cancelled_info.cancelled = true;
+        cancelled_info.flags |= FLAG_CANCELLED;
         state::save(&env, &cancelled_info);
 
         // Pay the recipient their earned-but-unwithdrawn portion.
@@ -187,7 +185,7 @@ impl DripStream {
         state::set_paused(&env, true);
         env.storage().instance().set(&DataKey::PausedAt, &now);
         let mut updated = info.clone();
-        updated.paused = true;
+        updated.flags |= FLAG_PAUSED;
         updated.paused_at = now;
         state::save(&env, &updated);
 
@@ -219,7 +217,7 @@ impl DripStream {
 
         let mut updated = info.clone();
         updated.start_time = new_start;
-        updated.paused = false;
+        updated.flags &= !FLAG_PAUSED;
         updated.paused_at = 0;
         if info.end_time > 0 {
             updated.end_time = info.end_time + paused_duration;
@@ -231,15 +229,22 @@ impl DripStream {
     }
 
     /// Sender deposits additional tokens into the stream.
+    ///
+    /// Auth is checked immediately after the minimal state load needed to
+    /// know `sender` -- before `ttl::bump` (a storage write) or the
+    /// cancellation check -- so an unauthenticated call fails as cheaply
+    /// as possible instead of paying for storage-extension instructions
+    /// it never needed.
     pub fn top_up(env: Env, amount: i128) -> Result<(), Error> {
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
-        ttl::bump(&env);
 
         let info = state::load(&env);
-        state::assert_not_cancelled(&info)?;
         info.sender.require_auth();
+
+        ttl::bump(&env);
+        state::assert_not_cancelled(&info)?;
 
         let tk = token::Client::new(&env, &info.token);
         let contract_addr = env.current_contract_address();
@@ -323,7 +328,7 @@ impl DripStream {
 
         state::set_cancelled(&env);
         let mut cancelled_info = info.clone();
-        cancelled_info.cancelled = true;
+        cancelled_info.flags |= FLAG_CANCELLED;
         state::save(&env, &cancelled_info);
 
         if owed_to_recipient > 0 {
