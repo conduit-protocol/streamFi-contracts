@@ -249,6 +249,55 @@ impl DripStream {
         Ok(())
     }
 
+    /// Sender extends the stream duration by `extra_time_seconds`.
+    ///
+    /// Transfers the exact required deposit (rate_per_second × extra_time_seconds)
+    /// from the sender into the contract and updates `end_time`.
+    pub fn extend_duration(env: Env, extra_time_seconds: u64) -> Result<(), Error> {
+        if extra_time_seconds == 0 {
+            return Err(Error::InvalidTimeRange);
+        }
+        ttl::bump(&env);
+
+        let info = state::load(&env);
+        state::assert_not_cancelled(&info)?;
+        info.sender.require_auth();
+
+        let mut end_time: u64 = info.end_time;
+        if end_time == 0 {
+            return Err(Error::InvalidTimeRange);
+        }
+
+        let rate_per_sec: i128 = info.rate_per_second;
+
+        let required_deposit = (extra_time_seconds as i128)
+            .checked_mul(rate_per_sec)
+            .ok_or(Error::ArithmeticOverflow)?;
+
+        let tk = token::Client::new(&env, &info.token);
+        let contract_addr = env.current_contract_address();
+
+        // Transfer required deposit from sender into the contract
+        tk.transfer(&info.sender, &contract_addr, &required_deposit);
+
+        // Update end_time with overflow check
+        end_time = end_time
+            .checked_add(extra_time_seconds)
+            .ok_or(Error::ArithmeticOverflow)?;
+
+        // Persist new end_time in both single-key state and legacy key
+        env.storage().instance().set(&DataKey::EndTime, &end_time);
+        let mut updated = info.clone();
+        updated.end_time = end_time;
+        state::save(&env, &updated);
+
+        // Emit topped_up event to indicate funds were deposited
+        let new_balance = tk.balance(&contract_addr);
+        events::topped_up(&env, &info.sender, required_deposit, new_balance);
+
+        Ok(())
+    }
+
     /// Sender reclaims unstreamed tokens (only if clawback was enabled).
     pub fn clawback(env: Env) -> Result<i128, Error> {
         ttl::bump(&env);

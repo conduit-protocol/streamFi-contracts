@@ -468,13 +468,32 @@ fn multiple_sequential_withdrawals_sum_correctly() {
     assert_eq!(s.token.balance(&s.recipient), 900_000);
 }
 
+// ── Extend duration ─────────────────────────────────────────────────────────
+
 #[test]
-fn legacy_storage_layout_still_loads_and_tracks_state() {
+fn extend_duration_success() {
+    let s = Setup::new(100, 3_600, false);
+    let before_end = s.client.info().end_time;
+
+    // Mint exact deposit needed to extend by 100s (100 × 100 = 10_000)
+    let token_admin = token::StellarAssetClient::new(&s.env, &s.token.address);
+    token_admin.mint(&s.sender, &10_000);
+
+    let contract_before = s.token.balance(&s.client.address);
+    s.client.extend_duration(&100);
+
+    assert_eq!(s.client.info().end_time, before_end + 100);
+    assert_eq!(s.token.balance(&s.client.address), contract_before + 10_000);
+}
+
+#[test]
+fn extend_duration_rejected_for_open_ended() {
     let env = Env::default();
     env.mock_all_auths();
 
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
+
     let token_admin = Address::generate(&env);
     let token_addr = env
         .register_stellar_asset_contract_v2(token_admin.clone())
@@ -482,6 +501,55 @@ fn legacy_storage_layout_still_loads_and_tracks_state() {
 
     let now: u64 = 1_000_000;
     let stream_id = env.register_contract(None, DripStream);
+    let client = DripStreamClient::new(&env, &stream_id);
+
+    client.initialize(&sender, &recipient, &token_addr, &100, &now, &0, &false);
+
+    let result = client.try_extend_duration(&100);
+    assert_eq!(result, Err(Ok(Error::InvalidTimeRange)));
+}
+
+#[test]
+fn extend_duration_rejects_on_arithmetic_overflow() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let token_addr = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+
+    let now: u64 = 1_000_000;
+    let stream_id = env.register_contract(None, DripStream);
+    let client = DripStreamClient::new(&env, &stream_id);
+
+    // Use an extremely large rate so (rate × 2) overflows i128
+    let huge_rate: i128 = i128::MAX;
+    client.initialize(&sender, &recipient, &token_addr, &huge_rate, &now, &(now + 10), &false);
+
+    let result = client.try_extend_duration(&2);
+    assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
+}
+
+#[test]
+fn legacy_storage_layout_still_loads_and_tracks_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let token_addr = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+
+    let now: u64 = 1_000_000;
+    let stream_id = env.register_contract(None, DripStream);
+
     env.as_contract(&stream_id, || {
         let storage = env.storage().instance();
         storage.set(&DataKey::Sender, &sender);
