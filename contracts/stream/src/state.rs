@@ -7,61 +7,55 @@ use crate::Error;
 ///
 /// Tries the consolidated `Config` key first (written by all new
 /// `initialize()` calls). Falls back to reading each field individually
-/// for streams that were initialised before this optimisation landed —
-/// this keeps old on-chain instances readable without a migration.
+/// for streams that were initialized before this optimisation landed —
+/// this keeps older on-chain instances readable without a migration.
 pub fn load(env: &Env) -> StreamInfo {
     let s = env.storage().instance();
 
-    // Fast path: stream was initialised with the consolidated key.
-    if let Some(info) = s.get::<_, StreamInfo>(&DataKey::Config) {
-        return info;
+    // Fast path: stream was initialized with the consolidated key.
+    if s.has(&DataKey::Config) {
+        if let Some(info) = s.get::<_, StreamInfo>(&DataKey::Config) {
+            return info;
+        }
     }
 
     // Legacy path: read each field individually (pre-optimisation streams).
+    let sender = s.get(&DataKey::Sender).unwrap();
+    let recipient = s.get(&DataKey::Recipient).unwrap();
+    let token = s.get(&DataKey::Token).unwrap();
+    let rate_per_second = s.get(&DataKey::RatePerSecond).unwrap();
+    let start_time = s.get(&DataKey::StartTime).unwrap();
+    let end_time = s.get(&DataKey::EndTime).unwrap();
+    let withdrawn = s.get(&DataKey::Withdrawn).unwrap_or(0);
+    let paused_at = s.get(&DataKey::PausedAt).unwrap_or(0);
+    let flags = s.get(&DataKey::Flags).unwrap_or(0);
+
     StreamInfo {
-        sender: env.storage().instance().get(&DataKey::Sender).unwrap(),
-        recipient: env.storage().instance().get(&DataKey::Recipient).unwrap(),
-        token: env.storage().instance().get(&DataKey::Token).unwrap(),
-        rate_per_second: env
-            .storage()
-            .instance()
-            .get(&DataKey::RatePerSecond)
-            .unwrap(),
-        start_time: env.storage().instance().get(&DataKey::StartTime).unwrap(),
-        end_time: env.storage().instance().get(&DataKey::EndTime).unwrap(),
-        withdrawn: env
-            .storage()
-            .instance()
-            .get(&DataKey::Withdrawn)
-            .unwrap_or(0),
-        paused_at: env
-            .storage()
-            .instance()
-            .get(&DataKey::PausedAt)
-            .unwrap_or(0),
-        flags: env.storage().instance().get(&DataKey::Flags).unwrap_or(0),
-        flags: env
-            .storage()
-            .instance()
-            .get(&DataKey::Flags)
-            .unwrap_or(0),
-        sender: s.get(&DataKey::Sender).unwrap(),
-        recipient: s.get(&DataKey::Recipient).unwrap(),
-        token: s.get(&DataKey::Token).unwrap(),
-        rate_per_second: s.get(&DataKey::RatePerSecond).unwrap(),
-        start_time: s.get(&DataKey::StartTime).unwrap(),
-        end_time: s.get(&DataKey::EndTime).unwrap(),
-        withdrawn: s.get(&DataKey::Withdrawn).unwrap_or(0),
-        paused: s.get(&DataKey::Paused).unwrap_or(false),
-        paused_at: s.get(&DataKey::PausedAt).unwrap_or(0),
-        clawback_enabled: s.get(&DataKey::ClawbackEnabled).unwrap_or(false),
-        cancelled: s.get(&DataKey::Cancelled).unwrap_or(false),
+        sender,
+        recipient,
+        token,
+        rate_per_second,
+        start_time,
+        end_time,
+        withdrawn,
+        paused_at,
+        flags,
     }
 }
 
-/// Persist the entire stream state in a single storage write.
+/// Persist the entire stream state and keep the legacy individual keys in sync.
 pub fn save(env: &Env, info: &StreamInfo) {
-    env.storage().instance().set(&DataKey::Config, info);
+    let s = env.storage().instance();
+    s.set(&DataKey::Config, info);
+    s.set(&DataKey::Sender, &info.sender);
+    s.set(&DataKey::Recipient, &info.recipient);
+    s.set(&DataKey::Token, &info.token);
+    s.set(&DataKey::RatePerSecond, &info.rate_per_second);
+    s.set(&DataKey::StartTime, &info.start_time);
+    s.set(&DataKey::EndTime, &info.end_time);
+    s.set(&DataKey::Withdrawn, &info.withdrawn);
+    s.set(&DataKey::PausedAt, &info.paused_at);
+    s.set(&DataKey::Flags, &info.flags);
 }
 
 /// Update only the `withdrawn` counter without touching the other fields.
@@ -74,19 +68,19 @@ pub fn save_withdrawn(env: &Env, amount: i128) {
 }
 
 pub fn set_paused(env: &Env, paused: bool) {
-    let mut flags: u32 = env.storage().instance().get(&DataKey::Flags).unwrap_or(0);
+    let mut info = load(env);
     if paused {
-        flags |= FLAG_PAUSED;
+        info.flags |= FLAG_PAUSED;
     } else {
-        flags &= !FLAG_PAUSED;
+        info.flags &= !FLAG_PAUSED;
     }
-    env.storage().instance().set(&DataKey::Flags, &flags);
+    save(env, &info);
 }
 
 pub fn set_cancelled(env: &Env) {
-    let mut flags: u32 = env.storage().instance().get(&DataKey::Flags).unwrap_or(0);
-    flags |= FLAG_CANCELLED;
-    env.storage().instance().set(&DataKey::Flags, &flags);
+    let mut info = load(env);
+    info.flags |= FLAG_CANCELLED;
+    save(env, &info);
 }
 
 pub fn assert_not_cancelled(info: &StreamInfo) -> Result<(), Error> {
