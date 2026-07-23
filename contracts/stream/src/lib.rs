@@ -13,7 +13,7 @@ mod yield_integration;
 use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env};
 
 pub use errors::Error;
-use storage::{DataKey, StreamInfo};
+use storage::{DataKey, StreamInfo, FLAG_CLAWBACK_ENABLED};
 
 #[contract]
 pub struct DripStream;
@@ -53,6 +53,21 @@ impl DripStream {
 
         ttl::bump(&env);
 
+        let mut flags: u32 = 0;
+        if clawback_enabled {
+            flags |= FLAG_CLAWBACK_ENABLED;
+        }
+
+        let s = env.storage().instance();
+        s.set(&DataKey::Sender, &sender);
+        s.set(&DataKey::Recipient, &recipient);
+        s.set(&DataKey::Token, &token);
+        s.set(&DataKey::RatePerSecond, &rate_per_second);
+        s.set(&DataKey::StartTime, &start_time);
+        s.set(&DataKey::EndTime, &end_time);
+        s.set(&DataKey::Withdrawn, &0_i128);
+        s.set(&DataKey::PausedAt, &0_u64);
+        s.set(&DataKey::Flags, &flags);
         // Write the entire stream state as a single struct — one storage
         // write instead of eleven.  All subsequent reads go through
         // state::load(), which fetches the whole struct in one call.
@@ -136,6 +151,7 @@ impl DripStream {
         // Mark cancelled before any transfers to prevent re-entrancy
         // (Soroban's execution model already prevents re-entrancy, but this
         // is still the correct ordering for state-machine correctness).
+        state::set_cancelled(&env);
         let mut cancelled_info = info.clone();
         cancelled_info.cancelled = true;
         state::save(&env, &cancelled_info);
@@ -160,7 +176,7 @@ impl DripStream {
 
         let info = state::load(&env);
         state::assert_not_cancelled(&info)?;
-        if info.paused {
+        if info.is_paused() {
             return Err(Error::AlreadyPaused);
         }
         info.sender.require_auth();
@@ -168,6 +184,8 @@ impl DripStream {
         let now = env.ledger().timestamp();
         let w = math::withdrawable(&env, &info)?;
 
+        state::set_paused(&env, true);
+        env.storage().instance().set(&DataKey::PausedAt, &now);
         let mut updated = info.clone();
         updated.paused = true;
         updated.paused_at = now;
@@ -183,7 +201,7 @@ impl DripStream {
 
         let info = state::load(&env);
         state::assert_not_cancelled(&info)?;
-        if !info.paused {
+        if !info.is_paused() {
             return Err(Error::NotPaused);
         }
         info.sender.require_auth();
@@ -193,6 +211,11 @@ impl DripStream {
 
         // Shift start_time forward by paused duration so paused time doesn't count
         let new_start: u64 = info.start_time + paused_duration;
+        env.storage()
+            .instance()
+            .set(&DataKey::StartTime, &new_start);
+        state::set_paused(&env, false);
+        env.storage().instance().set(&DataKey::PausedAt, &0_u64);
 
         let mut updated = info.clone();
         updated.start_time = new_start;
@@ -234,7 +257,7 @@ impl DripStream {
 
         let info = state::load(&env);
         state::assert_not_cancelled(&info)?;
-        if !info.clawback_enabled {
+        if !info.is_clawback_enabled() {
             return Err(Error::ClawbackDisabled);
         }
         info.sender.require_auth();
@@ -258,7 +281,7 @@ impl DripStream {
     /// Read-only: current withdrawable balance for the recipient.
     pub fn withdrawable(env: Env) -> i128 {
         let info = state::load(&env);
-        if info.cancelled {
+        if info.is_cancelled() {
             return 0;
         }
         math::withdrawable(&env, &info).unwrap_or(0)
@@ -278,7 +301,7 @@ impl DripStream {
 
         let info = state::load(&env);
         state::assert_not_cancelled(&info)?;
-        if !info.paused {
+        if !info.is_paused() {
             return Err(Error::NotPaused);
         }
 
@@ -298,6 +321,7 @@ impl DripStream {
         let owed_to_recipient = (streamed - info.withdrawn).max(0).min(balance);
         let refund_to_sender = (balance - owed_to_recipient).max(0);
 
+        state::set_cancelled(&env);
         let mut cancelled_info = info.clone();
         cancelled_info.cancelled = true;
         state::save(&env, &cancelled_info);
@@ -338,7 +362,7 @@ impl DripStream {
     /// without the caller needing to reimplement the rate × elapsed math.
     pub fn streamed_total(env: Env) -> i128 {
         let info = state::load(&env);
-        if info.cancelled {
+        if info.is_cancelled() {
             return 0;
         }
         math::streamed_amount(&env, &info).unwrap_or(0)

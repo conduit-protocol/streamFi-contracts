@@ -16,7 +16,7 @@ pub fn streamed_amount(env: &Env, info: &StreamInfo) -> Result<i128, Error> {
     // Clamp to end_time if set
     let effective_now = if info.end_time > 0 && now > info.end_time {
         info.end_time
-    } else if info.paused {
+    } else if info.is_paused() {
         info.paused_at
     } else {
         now
