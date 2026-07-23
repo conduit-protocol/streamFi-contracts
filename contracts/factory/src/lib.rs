@@ -5,8 +5,8 @@ mod errors;
 mod governance;
 mod pause;
 mod query;
-mod storage;
-mod ttl;
+pub mod storage;
+pub mod ttl;
 
 // Import `token` as `tok` to avoid shadowing by any `token: Address` parameter.
 use soroban_sdk::{
@@ -266,6 +266,10 @@ impl DripFactory {
     /// Called after a new stream contract version is uploaded so subsequent
     /// `create_stream` calls deploy the new implementation. Existing streams
     /// are unaffected — each is an independent deployed contract.
+    ///
+    /// As a maintenance operation, this also drives the bounded TTL walker
+    /// so the persistent-by-ID registry stays alive during protocol-upgrade
+    /// activity even if no `create_stream` calls happen between upgrades.
     pub fn upgrade_stream_wasm(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
         // Only governor may update the wasm hash.
         let governor: Address = env
@@ -275,6 +279,7 @@ impl DripFactory {
             .ok_or(Error::NotInitialized)?;
         governor.require_auth();
         ttl::bump_instance(&env);
+        ttl::bump_persistent_bucket(&env);
         env.storage()
             .instance()
             .set(&DataKey::StreamWasmHash, &new_wasm_hash);
@@ -302,6 +307,10 @@ impl DripFactory {
             return Err(Error::AlreadyPaused);
         }
         ttl::bump_instance(&env);
+        // Maintenance op — drive the bounded TTL walker so the persistent
+        // registry doesn't silently archive during an emergency-pause idle
+        // period.
+        ttl::bump_persistent_bucket(&env);
         pause::set_paused(&env, true);
         Ok(())
     }
@@ -320,6 +329,10 @@ impl DripFactory {
             return Err(Error::NotPaused);
         }
         ttl::bump_instance(&env);
+        // Maintenance op — drive the bounded TTL walker so the persistent
+        // registry doesn't silently archive while the protocol is coming
+        // back online and `create_stream` hasn't yet resumed.
+        ttl::bump_persistent_bucket(&env);
         pause::set_paused(&env, false);
         Ok(())
     }

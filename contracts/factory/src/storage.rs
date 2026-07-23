@@ -64,4 +64,15 @@ pub enum DataKey {
     /// A missing entry (e.g. a factory initialized before this feature
     /// existed) is treated as `false`/unpaused.
     Paused,
+
+    /// **Instance storage.** Cursor for the bounded persistent-entry TTL
+    /// walker. Each call into `pause`/`unpause`/`upgrade_stream_wasm`
+    /// advances this cursor by `ttl::BATCH_LIMIT` IDs (modulo `StreamCount`)
+    /// and bumps the persistent `StreamAddr(id)` TTLs in that window. This
+    /// keeps the registry alive during idle periods independently of
+    /// `create_stream` (which only bumps entries it touches).
+    /// Key: `DataKey::LastBumpedId` (no inner type, discriminant only)
+    /// Value: `u64` — the last stream ID whose persistent `StreamAddr` TTL
+    /// was bumped by the walker. Missing entry is treated as `0`.
+    LastBumpedId,
 }

@@ -127,6 +127,19 @@ impl DripGovernor {
         if seconds == 0 {
             return Err(Error::InvalidParam);
         }
+        // Cross-check against current `MaxRatePerSecond`: the product
+        // `max_rate * min_duration` is the upper bound on stream principal a
+        // caller may commit, and capacity math (in `DripFactory::create_stream`)
+        // relies on it fitting in a single `i128` (which has
+        // ~10^38 capacity). Reject up-front instead of letting valid-looking
+        // parameters fail at create_stream with `ArithmeticOverflow`.
+        let max_rate: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxRatePerSecond)
+            .unwrap_or(1_000_000_000_000_000);
+        let secs_i: i128 = seconds as i128;
+        max_rate.checked_mul(secs_i).ok_or(Error::InvalidParam)?;
         env.storage()
             .instance()
             .set(&DataKey::MinDurationSeconds, &seconds);
@@ -138,6 +151,16 @@ impl DripGovernor {
         if max_rate <= 0 {
             return Err(Error::InvalidParam);
         }
+        // Mirror cross-check on the `min_duration_seconds` side (see
+        // `set_min_duration`). Both setters read the counterpart from storage,
+        // so whichever order the two settings arrive in is safe.
+        let min_duration: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinDurationSeconds)
+            .unwrap_or(3_600);
+        let secs_i: i128 = min_duration as i128;
+        max_rate.checked_mul(secs_i).ok_or(Error::InvalidParam)?;
         env.storage()
             .instance()
             .set(&DataKey::MaxRatePerSecond, &max_rate);

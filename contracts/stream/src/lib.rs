@@ -4,7 +4,7 @@ mod errors;
 mod events;
 mod math;
 mod state;
-mod storage;
+pub mod storage;
 #[cfg(test)]
 mod tests;
 mod ttl;
@@ -182,8 +182,10 @@ impl DripStream {
         let now = env.ledger().timestamp();
         let w = math::withdrawable(&env, &info)?;
 
-        state::set_paused(&env, true);
-        env.storage().instance().set(&DataKey::PausedAt, &now);
+        // Single consolidated save — no separate `state::set_paused()` call
+        // (which would save the same struct a second time) and no direct
+        // `DataKey::PausedAt` write (`state::save` already covers paused_at
+        // via the consolidated `Config` key).
         let mut updated = info.clone();
         updated.flags |= FLAG_PAUSED;
         updated.paused_at = now;
@@ -207,14 +209,13 @@ impl DripStream {
         let now = env.ledger().timestamp();
         let paused_duration = now - info.paused_at;
 
-        // Shift start_time forward by paused duration so paused time doesn't count
+        // Shift start_time forward by paused duration so paused time doesn't
+        // count; end_time is shifted by the same amount on resume so the
+        // contracted duration is preserved in wall-clock terms.
         let new_start: u64 = info.start_time + paused_duration;
-        env.storage()
-            .instance()
-            .set(&DataKey::StartTime, &new_start);
-        state::set_paused(&env, false);
-        env.storage().instance().set(&DataKey::PausedAt, &0_u64);
 
+        // Single consolidated save — no separate `state::set_paused()` or
+        // direct `DataKey::StartTime` / `DataKey::PausedAt` writes.
         let mut updated = info.clone();
         updated.start_time = new_start;
         updated.flags &= !FLAG_PAUSED;
@@ -285,8 +286,8 @@ impl DripStream {
             .checked_add(extra_time_seconds)
             .ok_or(Error::ArithmeticOverflow)?;
 
-        // Persist new end_time in both single-key state and legacy key
-        env.storage().instance().set(&DataKey::EndTime, &end_time);
+        // Single consolidated save — no direct `DataKey::EndTime` write
+        // (already covered by the consolidated save).
         let mut updated = info.clone();
         updated.end_time = end_time;
         state::save(&env, &updated);

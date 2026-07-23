@@ -67,6 +67,14 @@ pub fn save_withdrawn(env: &Env, amount: i128) {
     save(env, &info);
 }
 
+/// Mark the stream as paused or resumed.
+///
+/// No longer called by `DripStream::pause`/`resume` directly — those
+/// methods now build an updated `StreamInfo` and call `state::save` once.
+/// Retained as a re-export-able helper because the legacy dual-write flow
+/// (the one this commit removed) referenced it; downstream call sites should
+/// prefer building the struct in-line and calling `save` directly.
+#[allow(dead_code)]
 pub fn set_paused(env: &Env, paused: bool) {
     let mut info = load(env);
     if paused {
