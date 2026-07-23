@@ -6,8 +6,9 @@ extern crate std;
 use std::boxed::Box;
 
 use soroban_sdk::{
-    testutils::{storage::Instance as _, Address as _, Ledger, LedgerInfo},
-    token, Address, Env,
+    symbol_short,
+    testutils::{storage::Instance as _, Address as _, Events as _, Ledger, LedgerInfo},
+    token, Address, Env, IntoVal,
 };
 
 use crate::{storage::DataKey, DripStream, DripStreamClient, Error};
@@ -466,6 +467,56 @@ fn multiple_sequential_withdrawals_sum_correctly() {
 
     assert_eq!(w1 + w2 + w3, 900_000);
     assert_eq!(s.token.balance(&s.recipient), 900_000);
+}
+
+// ── Event delivery recovery ─────────────────────────────────────────────────
+
+#[test]
+fn delayed_consumer_retains_payloads_and_can_detect_sequence_gaps() {
+    let s = Setup::new(100, 3_600, false);
+
+    // Simulate rapid state changes while a consumer is disconnected. The
+    // consumer reads the committed events only after all mutations complete.
+    s.advance_secs(10);
+    let paused_at = s.env.ledger().timestamp();
+    s.client.pause();
+
+    s.advance_secs(5);
+    let resumed_at = s.env.ledger().timestamp();
+    s.client.resume();
+
+    let token_admin = token::StellarAssetClient::new(&s.env, &s.token.address);
+    token_admin.mint(&s.sender, &500);
+    s.client.top_up(&500);
+    let balance_after_top_up = s.token.balance(&s.client.address);
+
+    assert_eq!(s.client.event_sequence(), 3);
+
+    let all_events = s.env.events().all();
+    let stream_events: std::vec::Vec<_> = all_events
+        .iter()
+        .filter(|(contract, _, _)| contract == &s.client.address)
+        .collect();
+
+    assert_eq!(stream_events.len(), 3);
+    assert_eq!(
+        stream_events[0].1,
+        (symbol_short!("paused"), s.sender.clone(), 1_u64).into_val(&s.env)
+    );
+    assert_eq!(stream_events[0].2, (paused_at, 1_000_i128).into_val(&s.env));
+    assert_eq!(
+        stream_events[1].1,
+        (symbol_short!("resumed"), s.sender.clone(), 2_u64).into_val(&s.env)
+    );
+    assert_eq!(stream_events[1].2, resumed_at.into_val(&s.env));
+    assert_eq!(
+        stream_events[2].1,
+        (symbol_short!("topped_up"), s.sender.clone(), 3_u64).into_val(&s.env)
+    );
+    assert_eq!(
+        stream_events[2].2,
+        (500_i128, balance_after_top_up).into_val(&s.env)
+    );
 }
 
 // ── Extend duration ─────────────────────────────────────────────────────────

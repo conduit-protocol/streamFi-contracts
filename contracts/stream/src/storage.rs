@@ -21,6 +21,11 @@ pub enum DataKey {
     /// Replaces the 11 individual keys above for new writes — loaded in one
     /// storage read instead of eleven.
     Config,
+    /// Monotonic identifier attached to every contract event.
+    ///
+    /// Consumers compare this value with the last sequence they processed
+    /// after reconnecting so missing ledger events cannot go unnoticed.
+    EventSequence,
 }
 
 #[contracttype]

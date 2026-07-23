@@ -68,6 +68,7 @@ impl DripStream {
         s.set(&DataKey::Withdrawn, &0_i128);
         s.set(&DataKey::PausedAt, &0_u64);
         s.set(&DataKey::Flags, &flags);
+        s.set(&DataKey::EventSequence, &0_u64);
         // Write the entire stream state as a single struct — one storage
         // write instead of eleven. All subsequent reads go through
         // state::load(), which fetches the whole struct in one call.
@@ -418,5 +419,17 @@ impl DripStream {
     /// Read-only: full stream state.
     pub fn info(env: Env) -> StreamInfo {
         state::load(&env)
+    }
+
+    /// Latest committed event sequence.
+    ///
+    /// Event consumers can compare this value with the last sequence they
+    /// processed after reconnecting. A gap means the missing ledger range
+    /// must be replayed before live processing continues.
+    pub fn event_sequence(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::EventSequence)
+            .unwrap_or(0)
     }
 }
