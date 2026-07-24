@@ -20,4 +20,5 @@ pub enum Error {
     AlreadyPaused = 12,
     /// `unpause` was called while the factory was not paused.
     NotPaused = 13,
+    DurationExceedsMax = 14,
 }

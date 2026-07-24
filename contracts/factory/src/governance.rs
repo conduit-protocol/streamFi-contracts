@@ -26,6 +26,9 @@ pub fn enforce_bounds(
         if duration < config.min_duration_seconds {
             return Err(Error::DurationTooShort);
         }
+        if duration > config.max_duration_seconds {
+            return Err(Error::DurationExceedsMax);
+        }
     }
     Ok(())
 }

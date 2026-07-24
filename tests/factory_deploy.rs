@@ -391,6 +391,30 @@ fn create_stream_rejects_duration_below_governor_minimum() {
 }
 
 #[test]
+fn create_stream_rejects_duration_above_governor_maximum() {
+    let env = base_env();
+    let (factory, governor, admin) = deploy_factory_with_governor(&env);
+    governor.set_max_duration(&admin, &7_200);
+
+    let sender = Address::generate(&env);
+    let recip = Address::generate(&env);
+    let token = make_token(&env, &sender, 2_000_000);
+    let now = env.ledger().timestamp();
+    // duration of 3_600s is fine, but we set max to 7_200; try exceeding it
+    let result = factory.try_create_stream(
+        &sender,
+        &recip,
+        &token,
+        &2_000_000,
+        &100,
+        &now,
+        &(now + 10_800),
+        &false,
+    );
+    assert_eq!(result, Err(Ok(Error::DurationExceedsMax)));
+}
+
+#[test]
 fn protocol_fee_bps_reflects_live_governor_value() {
     let env = base_env();
     let (factory, governor, authority) = deploy_factory_with_governor(&env);

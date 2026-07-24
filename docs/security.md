@@ -106,7 +106,7 @@ Do not open a public GitHub issue for security vulnerabilities.
 - [x] `initialize()` guarded against re-invocation on all three contracts
 - [x] `withdraw`/`top_up` reject non-positive amounts
 - [x] `create_stream` deposit validated against full stream duration (see Known Limitation #4)
-- [x] `DripGovernor` config (`min_duration_seconds`, `max_rate_per_second`, `fee_bps`) actually enforced by `DripFactory`
+- [x] `DripGovernor` config (`min_duration_seconds`, `max_duration_seconds`, `max_rate_per_second`, `fee_bps`) actually enforced by `DripFactory`
 - [x] `Cargo.lock` committed for reproducible builds
 - [ ] Governor authority switched to multisig (see Known Limitation #3)
 - [ ] BySender/ByRecipient indices redesigned to bound growth (see Known Limitation #2)

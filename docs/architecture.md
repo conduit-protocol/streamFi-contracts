@@ -102,7 +102,7 @@ The governor holds mutable protocol parameters. In the current version it is con
 
 The governor does not hold any token balance.
 
-`DripFactory::create_stream` cross-contract-calls `DripGovernor::config()` to enforce `max_rate_per_second` and (for fixed-duration streams) `min_duration_seconds`, and `DripFactory::protocol_fee_bps()` reads `fee_bps` live from the governor — falling back to the 30bps default only if the factory itself hasn't been initialized yet.
+`DripFactory::create_stream` cross-contract-calls `DripGovernor::config()` to enforce `max_rate_per_second`, `min_duration_seconds`, and `max_duration_seconds` (for fixed-duration streams), and `DripFactory::protocol_fee_bps()` reads `fee_bps` live from the governor — falling back to the 30bps default only if the factory itself hasn't been initialized yet.
 
 ---
 

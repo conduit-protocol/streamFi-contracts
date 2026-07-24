@@ -216,6 +216,7 @@ not by number alone.
 | `8` | `RateExceedsMax` | `rate_per_sec` exceeds `DripGovernor::config().max_rate_per_second` |
 | `9` | `DurationTooShort` | `end_time - start_time` is below `DripGovernor::config().min_duration_seconds` |
 | `10` | `ArithmeticOverflow` | Integer overflow validating `rate_per_sec × duration` |
+| `11` | `DurationExceedsMax` | `end_time - start_time` exceeds `DripGovernor::config().max_duration_seconds` |
 
 **`DripGovernor::Error`**
 
