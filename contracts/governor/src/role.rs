@@ -91,3 +91,17 @@ pub fn require_role(env: &Env, caller: &Address, role: Role) -> Result<(), Error
     ttl::bump(env);
     Ok(())
 }
+
+/// Requires that `caller` authorized the transaction and holds `role` **or**
+/// is an `Admin`.  Admin acts as a super-user: even after delegating
+/// `FeeManager` / `RateManager` to dedicated wallets the deployer can still
+/// adjust every parameter directly.
+pub fn require_role_or_admin(env: &Env, caller: &Address, role: Role) -> Result<(), Error> {
+    caller.require_auth();
+    if has_role(env, Role::Admin, caller) || has_role(env, role, caller) {
+        ttl::bump(env);
+        Ok(())
+    } else {
+        Err(Error::NotAuthorized)
+    }
+}
