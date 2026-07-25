@@ -85,6 +85,18 @@ fn authority_can_update_fee_bps() {
 }
 
 #[test]
+fn administrative_updates_emit_events() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _) = deploy_governor(&env);
+    client.set_fee_bps(&authority, &50);
+
+    let events = env.events().all();
+    assert!(!events.is_empty());
+}
+
+#[test]
 fn fee_bps_of_zero_is_valid() {
     let env = Env::default();
     env.mock_all_auths();
