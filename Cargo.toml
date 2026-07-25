@@ -19,8 +19,6 @@ publish     = false
 autobins    = false
 autoexamples = false
 
-[dependencies]
-soroban-sdk = { workspace = true }
 
 [dev-dependencies]
 drip-stream   = { path = "contracts/stream",   features = ["testutils"] }
