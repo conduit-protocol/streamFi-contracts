@@ -79,9 +79,9 @@ pub fn save_withdrawn(env: &Env, amount: i128) {
 pub fn set_paused(env: &Env, paused: bool) {
     let mut info = load(env);
     if paused {
-        info.flags |= FLAG_PAUSED;
+        info.flags |= crate::storage::FLAG_PAUSED;
     } else {
-        info.flags &= !FLAG_PAUSED;
+        info.flags &= !crate::storage::FLAG_PAUSED;
     }
     save(env, &info);
 }
