@@ -20,7 +20,6 @@ publish     = false
 autobins    = false
 autoexamples = false
 
-
 [dev-dependencies]
 drip-stream   = { path = "contracts/stream",   features = ["testutils"] }
 drip-factory  = { path = "contracts/factory",  features = ["testutils"] }

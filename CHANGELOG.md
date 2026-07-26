@@ -29,6 +29,10 @@ All notable changes are documented here. Format based on [Keep a Changelog](http
 - **Missing TTL management** (Known Limitation #1) — every state-mutating call on all three contracts now extends instance TTL (and, on the factory, the `BySender`/`ByRecipient` persistent indices), matching the extension already applied to `StreamAddr`.
 - `paginate()` in `DripFactory` could panic on `offset + limit` overflow; now uses `saturating_add`.
 - `DripFactory::create_stream`/`upgrade_stream_wasm` panicked via `unwrap()`/`expect()` before `initialize()` instead of returning the already-defined `NotInitialized` error.
+- **`cargo build --all` / `cargo test --all` did not compile.** The workspace root package (`conduit-integration-tests`) declared `pub mod batch_transfer_processor;` and `pub mod oracle;` in `src/lib.rs`, both of which import `soroban_sdk` directly, but the package only listed `soroban-sdk` under `[dev-dependencies]`. Every plain build or test run failed with `unresolved import soroban_sdk`, so `batch_transfer_processor`'s reentrancy-guarded 100-entry batch limit and `oracle`'s staleness/lock guard were never actually exercised by CI. Added `soroban-sdk` to `[dependencies]` for the root package, matching the pattern already used by every contract crate.
+- `tests/governor_config.rs::administrative_updates_emit_events` failed to compile (`no method named all found for struct Events`) because the `soroban_sdk::testutils::Events` trait was never imported.
+- Removed an unused `FLAG_PAUSED` import in `contracts/stream/src/state.rs` that failed `cargo clippy --all-targets -- -D warnings`.
+- Scoped the WASM clippy CI step (`cargo clippy --target wasm32-unknown-unknown`) to exclude `conduit-integration-tests` — that package is a native `std`-based test harness, not a contract, and conflicts with `soroban_sdk`'s WASM `panic_impl` when compiled for `wasm32-unknown-unknown`. Matches the existing `build-wasm` CI job, which already only builds the three real contract crates.
 
 ### Security
 - Documented pause-state griefing attack vector in `docs/security.md` (ADR-003 records the fix design)

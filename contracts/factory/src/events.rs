@@ -20,10 +20,8 @@ use soroban_sdk::{symbol_short, Address, Env};
 /// Topics: `("paused", governor)` — the governor that authorized the halt.
 /// Data:   `paused_at` — the ledger timestamp at which the halt took effect.
 pub fn paused(env: &Env, governor: &Address, paused_at: u64) {
-    env.events().publish(
-        (symbol_short!("paused"), governor.clone()),
-        paused_at,
-    );
+    env.events()
+        .publish((symbol_short!("paused"), governor.clone()), paused_at);
 }
 
 /// Emitted when the factory transitions from paused back to unpaused.
@@ -31,8 +29,6 @@ pub fn paused(env: &Env, governor: &Address, paused_at: u64) {
 /// Topics: `("unpaused", governor)` — the governor that lifted the halt.
 /// Data:   `resumed_at` — the ledger timestamp at which creation resumed.
 pub fn unpaused(env: &Env, governor: &Address, resumed_at: u64) {
-    env.events().publish(
-        (symbol_short!("unpaused"), governor.clone()),
-        resumed_at,
-    );
+    env.events()
+        .publish((symbol_short!("unpaused"), governor.clone()), resumed_at);
 }

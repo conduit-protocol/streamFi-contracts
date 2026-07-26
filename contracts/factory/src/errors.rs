@@ -36,4 +36,6 @@ pub enum Error {
     NetworkMismatch = 20,
     /// Signed payload has expired (deadline passed).
     SignatureExpired = 21,
+    /// The recipient is the all-zero Stellar account address.
+    InvalidRecipient = 22,
 }

@@ -2,7 +2,12 @@ use soroban_sdk::{symbol_short, Address, Env};
 
 use crate::Role;
 
-pub fn initialized(env: &Env, authority: &Address, fee_recipient: &Address, factory_address: &Address) {
+pub fn initialized(
+    env: &Env,
+    authority: &Address,
+    fee_recipient: &Address,
+    factory_address: &Address,
+) {
     env.events().publish(
         (symbol_short!("init"), authority.clone()),
         (fee_recipient.clone(), factory_address.clone()),
@@ -31,10 +36,8 @@ pub fn transfer_authority(env: &Env, caller: &Address, new_authority: &Address) 
 }
 
 pub fn set_fee_bps(env: &Env, caller: &Address, fee_bps: u32) {
-    env.events().publish(
-        (symbol_short!("fee_bps"), caller.clone()),
-        fee_bps,
-    );
+    env.events()
+        .publish((symbol_short!("fee_bps"), caller.clone()), fee_bps);
 }
 
 pub fn set_fee_recipient(env: &Env, caller: &Address, recipient: &Address) {
@@ -45,22 +48,16 @@ pub fn set_fee_recipient(env: &Env, caller: &Address, recipient: &Address) {
 }
 
 pub fn set_min_duration(env: &Env, caller: &Address, seconds: u64) {
-    env.events().publish(
-        (symbol_short!("min_dur"), caller.clone()),
-        seconds,
-    );
+    env.events()
+        .publish((symbol_short!("min_dur"), caller.clone()), seconds);
 }
 
 pub fn set_max_rate(env: &Env, caller: &Address, max_rate: i128) {
-    env.events().publish(
-        (symbol_short!("max_rate"), caller.clone()),
-        max_rate,
-    );
+    env.events()
+        .publish((symbol_short!("max_rate"), caller.clone()), max_rate);
 }
 
 pub fn set_max_duration(env: &Env, caller: &Address, seconds: u64) {
-    env.events().publish(
-        (symbol_short!("max_dur"), caller.clone()),
-        seconds,
-    );
+    env.events()
+        .publish((symbol_short!("max_dur"), caller.clone()), seconds);
 }

@@ -1,10 +1,10 @@
 #![cfg(test)]
 
+use drip_stream::{DripStream, DripStreamClient, Error};
 use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
     token, Address, Env,
 };
-use drip_stream::{DripStream, DripStreamClient, Error};
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -76,8 +76,7 @@ fn test_reentrancy_guard_released_after_successful_withdraw() {
     let env = base_env();
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let (client, _token_addr) =
-        deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
+    let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
     // Advance time to have some withdrawable balance
     env.ledger().set(LedgerInfo {
@@ -96,8 +95,7 @@ fn test_reentrancy_guard_released_after_withdraw_error() {
     let env = base_env();
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let (client, _token_addr) =
-        deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
+    let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
     // Withdraw 0 — should fail with InvalidAmount but release the lock
     assert_eq!(guard_depth(&env, &client.address), 0);
@@ -111,8 +109,7 @@ fn test_reentrancy_guard_released_after_cancel() {
     let env = base_env();
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let (client, _token_addr) =
-        deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
+    let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
     assert_eq!(guard_depth(&env, &client.address), 0);
     client.cancel();
@@ -124,8 +121,7 @@ fn test_reentrancy_guard_released_after_pause_resume() {
     let env = base_env();
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let (client, _token_addr) =
-        deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
+    let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
     assert_eq!(guard_depth(&env, &client.address), 0);
     client.pause();
@@ -139,8 +135,7 @@ fn test_reentrancy_guard_released_after_top_up() {
     let env = base_env();
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let (client, token_addr) =
-        deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
+    let (client, token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
     let tok_admin = token::StellarAssetClient::new(&env, &token_addr);
     tok_admin.mint(&sender, &50_000);
@@ -155,8 +150,7 @@ fn test_reentrancy_guard_released_after_clawback() {
     let env = base_env();
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let (client, _token_addr) =
-        deploy_funded_stream(&env, &sender, &recipient, 100, 3600, true);
+    let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, true);
 
     assert_eq!(guard_depth(&env, &client.address), 0);
     let amount = client.clawback();
@@ -169,8 +163,7 @@ fn test_reentrancy_guard_released_after_force_cancel() {
     let env = base_env();
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let (client, _token_addr) =
-        deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
+    let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
     client.pause();
 
@@ -191,8 +184,7 @@ fn test_reentrancy_guard_released_after_transfer_recipient() {
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
     let new_recipient = Address::generate(&env);
-    let (client, _token_addr) =
-        deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
+    let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
     assert_eq!(guard_depth(&env, &client.address), 0);
     client.transfer_recipient(&new_recipient);
@@ -206,8 +198,7 @@ fn test_reentrancy_guard_blocks_on_manually_held_lock() {
     let env = base_env();
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let (client, _token_addr) =
-        deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
+    let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
     // Advance time
     env.ledger().set(LedgerInfo {
@@ -248,8 +239,7 @@ fn test_reentrancy_guard_blocks_all_mutating_operations_when_locked() {
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
     let new_recipient = Address::generate(&env);
-    let (client, token_addr) =
-        deploy_funded_stream(&env, &sender, &recipient, 100, 3600, true);
+    let (client, token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, true);
 
     // Fund a top-up
     let tok_admin = token::StellarAssetClient::new(&env, &token_addr);
@@ -268,14 +258,17 @@ fn test_reentrancy_guard_blocks_all_mutating_operations_when_locked() {
     });
 
     // All mutating operations must be blocked
-    assert_eq!(client.try_withdraw(&50), Err(Ok(Error::ReentrancyForbidden)));
-    assert_eq!(client.try_cancel(), Err(Ok(Error::ReentrancyForbidden)));
-    assert_eq!(client.try_pause(), Err(Ok(Error::ReentrancyForbidden)));
-    assert_eq!(client.try_top_up(&50_000), Err(Ok(Error::ReentrancyForbidden)));
     assert_eq!(
-        client.try_clawback(),
+        client.try_withdraw(&50),
         Err(Ok(Error::ReentrancyForbidden))
     );
+    assert_eq!(client.try_cancel(), Err(Ok(Error::ReentrancyForbidden)));
+    assert_eq!(client.try_pause(), Err(Ok(Error::ReentrancyForbidden)));
+    assert_eq!(
+        client.try_top_up(&50_000),
+        Err(Ok(Error::ReentrancyForbidden))
+    );
+    assert_eq!(client.try_clawback(), Err(Ok(Error::ReentrancyForbidden)));
     assert_eq!(
         client.try_transfer_recipient(&new_recipient),
         Err(Ok(Error::ReentrancyForbidden))
@@ -299,8 +292,7 @@ fn test_guard_depth_counter_increments_and_decrements() {
     let env = base_env();
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let (client, _token_addr) =
-        deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
+    let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
     // Depth starts at 0
     assert_eq!(guard_depth(&env, &client.address), 0);
@@ -338,8 +330,7 @@ fn test_guard_resets_between_independent_calls() {
     let env = base_env();
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let (client, _token_addr) =
-        deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
+    let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
     // Perform many calls in sequence — the guard should reset each time
     for i in 1..=50 {
@@ -409,8 +400,7 @@ fn test_guard_released_on_invalid_amount() {
     let env = base_env();
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let (client, _token_addr) =
-        deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
+    let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
     // Try to withdraw a negative amount — should fail but release guard
     assert_eq!(guard_depth(&env, &client.address), 0);
@@ -424,8 +414,7 @@ fn test_guard_released_on_nothing_to_withdraw() {
     let env = base_env();
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let (client, _token_addr) =
-        deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
+    let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
     // At t=0, nothing is withdrawable
     assert_eq!(guard_depth(&env, &client.address), 0);
@@ -439,8 +428,7 @@ fn test_guard_released_on_cancelled_stream() {
     let env = base_env();
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let (client, _token_addr) =
-        deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
+    let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
     client.cancel();
     assert_eq!(guard_depth(&env, &client.address), 0);
@@ -460,8 +448,7 @@ fn test_guard_released_on_already_paused() {
     let env = base_env();
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let (client, _token_addr) =
-        deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
+    let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
     client.pause();
     assert_eq!(guard_depth(&env, &client.address), 0);
@@ -476,8 +463,7 @@ fn test_guard_released_on_not_paused() {
     let env = base_env();
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let (client, _token_addr) =
-        deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
+    let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
     let result = client.try_resume();
     assert_eq!(result, Err(Ok(Error::NotPaused)));
@@ -489,8 +475,7 @@ fn test_guard_released_on_clawback_disabled() {
     let env = base_env();
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let (client, _token_addr) =
-        deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
+    let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
     let result = client.try_clawback();
     assert_eq!(result, Err(Ok(Error::ClawbackDisabled)));
@@ -502,8 +487,7 @@ fn test_guard_released_on_pause_threshold_not_met() {
     let env = base_env();
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let (client, _token_addr) =
-        deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
+    let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
     client.pause();
 
@@ -520,8 +504,7 @@ fn test_guard_released_on_extend_duration_zero() {
     let env = base_env();
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let (client, _token_addr) =
-        deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
+    let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
     let result = client.try_extend_duration(&0);
     assert_eq!(result, Err(Ok(Error::InvalidTimeRange)));
@@ -536,8 +519,7 @@ fn test_sequential_operations_all_release_guard() {
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
     let new_recipient = Address::generate(&env);
-    let (client, token_addr) =
-        deploy_funded_stream(&env, &sender, &recipient, 100, 36000, true);
+    let (client, token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 36000, true);
 
     let tok_admin = token::StellarAssetClient::new(&env, &token_addr);
     tok_admin.mint(&sender, &500_000);

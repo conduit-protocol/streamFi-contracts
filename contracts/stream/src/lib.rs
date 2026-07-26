@@ -130,7 +130,7 @@ impl DripStream {
             .withdrawn
             .checked_add(to_send)
             .ok_or(Error::ArithmeticOverflow)?;
-        
+
         let mut updated = info.clone();
         updated.withdrawn = new_withdrawn;
         state::save(env, &updated);

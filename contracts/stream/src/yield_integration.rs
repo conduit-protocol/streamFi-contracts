@@ -150,7 +150,8 @@ pub fn calculate_rebate(env: &Env) -> Result<i128, RebateError> {
     let mock_time_elapsed = 86_400_u64; // 1 day
 
     // Calculate rebate using fixed-point arithmetic
-    let rebate = calculate_rebate_with_params(env, mock_principal, mock_apy_bps, mock_time_elapsed)?;
+    let rebate =
+        calculate_rebate_with_params(env, mock_principal, mock_apy_bps, mock_time_elapsed)?;
 
     env.events().publish(
         ("YIELD", "CALCULATE"),

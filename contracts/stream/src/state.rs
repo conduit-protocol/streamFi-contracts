@@ -1,6 +1,6 @@
 use soroban_sdk::Env;
 
-use crate::storage::{DataKey, StreamInfo, FLAG_CANCELLED, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED};
+use crate::storage::{DataKey, StreamInfo, FLAG_CANCELLED, FLAG_CLAWBACK_ENABLED};
 use crate::Error;
 
 /// Load the full stream state in a single storage read.
@@ -161,10 +161,7 @@ pub fn unlock(env: &Env) {
 ///     state::with_guard(&env, |env| Self::_withdraw(env, amount))
 /// }
 /// ```
-pub fn with_guard<R>(
-    env: &Env,
-    f: impl FnOnce(&Env) -> Result<R, Error>,
-) -> Result<R, Error> {
+pub fn with_guard<R>(env: &Env, f: impl FnOnce(&Env) -> Result<R, Error>) -> Result<R, Error> {
     lock(env)?;
     let result = f(env);
     unlock(env);

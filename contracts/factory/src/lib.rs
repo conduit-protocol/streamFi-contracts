@@ -24,6 +24,18 @@ use storage::DataKey;
 /// transaction's instruction budget mid-execution.
 pub const MAX_BATCH_SIZE: u32 = 100;
 
+/// Returns true when `address` is the all-zero Stellar account address.
+///
+/// The zero Stellar account is represented by an Ed25519 public key
+/// consisting entirely of zero bytes.
+fn is_zero_stellar_account(env: &Env, address: &Address) -> bool {
+    let zero_account = Address::from_string(&soroban_sdk::String::from_str(
+        env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+
+    address == &zero_account
+}
 #[contract]
 pub struct DripFactory;
 
@@ -77,6 +89,11 @@ impl DripFactory {
         // and are unaffected by this flag.
         if pause::is_paused(&env) {
             return Err(Error::ContractPaused);
+        }
+
+        // ── Recipient validation ─────────────────────────────────────────
+        if is_zero_stellar_account(&env, &recipient) {
+            return Err(Error::InvalidRecipient);
         }
 
         // ── Validation ───────────────────────────────────────────────────

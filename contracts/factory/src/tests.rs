@@ -6,7 +6,7 @@ extern crate std;
 
 use soroban_sdk::{
     testutils::{Address as _, Events as _},
-    Address, BytesN, Env,
+    Address, BytesN, Env, String,
 };
 
 use crate::{DripFactory, DripFactoryClient, Error};
@@ -136,4 +136,32 @@ fn rapid_repeated_calls_never_diverge_from_the_invoked_sequence() {
         assert_eq!(s.client.is_paused(), expected_paused);
         assert_eq!(s.event_count(), base + successful_transitions);
     }
+}
+
+#[test]
+fn create_stream_rejects_zero_stellar_recipient() {
+    let env = base_env();
+    let client = deploy_factory(&env);
+    let sender = Address::generate(&env);
+
+    let zero_recipient = Address::from_string(&String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+
+    let token = make_token(&env, &sender, 100_000);
+    let now = env.ledger().timestamp();
+
+    let result = client.try_create_stream(
+        &sender,
+        &zero_recipient,
+        &token,
+        &100_000,
+        &100,
+        &(now + 100),
+        &(now + 3_700),
+        &false,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidRecipient)));
 }

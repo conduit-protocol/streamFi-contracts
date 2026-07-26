@@ -2,7 +2,8 @@
 
 use drip_governor::{DripGovernor, DripGovernorClient, Error};
 use soroban_sdk::{
-    Address, Env, testutils::{Address as _, Events, storage::Instance as _},
+    testutils::{storage::Instance as _, Address as _, Events},
+    Address, Env,
 };
 
 fn deploy_governor(env: &Env) -> (DripGovernorClient<'_>, Address, Address) {
@@ -18,7 +19,7 @@ fn deploy_governor(env: &Env) -> (DripGovernorClient<'_>, Address, Address) {
     (client, authority, fee_recipient)
 }
 
-fn instance_ttl(env: &Env, client: &DripGovernorClient<'_>) -> u32 {
+fn instance_ttl(env: &Env, client: &DripGovernorClient<'_>) -> i128 {
     env.as_contract(&client.address, || env.storage().instance().get_ttl())
 }
 

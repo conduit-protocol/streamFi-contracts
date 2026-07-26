@@ -53,7 +53,7 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Clippy (WASM target)
-        run: cargo clippy --all --target wasm32-unknown-unknown -- -D warnings
+        run: cargo clippy --workspace --exclude conduit-integration-tests --target wasm32-unknown-unknown -- -D warnings
 
       - name: Format check
         run: cargo fmt --all --check
