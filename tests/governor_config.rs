@@ -2,8 +2,7 @@
 
 use drip_governor::{DripGovernor, DripGovernorClient, Error};
 use soroban_sdk::{
-    testutils::{storage::Instance as _, Address as _},
-    Address, Env,
+    Address, Env, testutils::{Address as _, Events, storage::Instance as _},
 };
 
 fn deploy_governor(env: &Env) -> (DripGovernorClient<'_>, Address, Address) {
@@ -17,6 +16,10 @@ fn deploy_governor(env: &Env) -> (DripGovernorClient<'_>, Address, Address) {
     client.initialize(&authority, &fee_recipient, &factory_address);
 
     (client, authority, fee_recipient)
+}
+
+fn instance_ttl(env: &Env, client: &DripGovernorClient<'_>) -> u32 {
+    env.as_contract(&client.address, || env.storage().instance().get_ttl())
 }
 
 // ── Defaults ─────────────────────────────────────────────────────────────────
@@ -42,9 +45,6 @@ fn re_initializing_governor_panics() {
     env.mock_all_auths();
 
     let (client, _authority, _fee_recipient) = deploy_governor(&env);
-    // An attacker calling initialize() again to grant themselves Admin must be
-    // rejected — otherwise they could set fee_bps to the maximum or redirect
-    // fee_recipient.
     let attacker = Address::generate(&env);
     client.initialize(&attacker, &attacker, &attacker);
 }
@@ -57,8 +57,7 @@ fn initialize_extends_instance_ttl() {
     env.mock_all_auths();
 
     let (client, _authority, _fee_recipient) = deploy_governor(&env);
-    let ttl = env.as_contract(&client.address, || env.storage().instance().get_ttl());
-    assert_eq!(ttl, 200_000);
+    assert_eq!(instance_ttl(&env, &client), 200_000);
 }
 
 #[test]
@@ -68,8 +67,38 @@ fn set_fee_bps_extends_instance_ttl() {
 
     let (client, authority, _fee_recipient) = deploy_governor(&env);
     client.set_fee_bps(&authority, &50);
-    let ttl = env.as_contract(&client.address, || env.storage().instance().get_ttl());
-    assert_eq!(ttl, 200_000);
+    assert_eq!(instance_ttl(&env, &client), 200_000);
+}
+
+#[test]
+fn set_min_duration_extends_instance_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _fee_recipient) = deploy_governor(&env);
+    client.set_min_duration(&authority, &7_200);
+    assert_eq!(instance_ttl(&env, &client), 200_000);
+}
+
+#[test]
+fn set_max_rate_extends_instance_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _fee_recipient) = deploy_governor(&env);
+    client.set_max_rate(&authority, &500_000_000);
+    assert_eq!(instance_ttl(&env, &client), 200_000);
+}
+
+#[test]
+fn set_fee_recipient_extends_instance_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _) = deploy_governor(&env);
+    let new_recipient = Address::generate(&env);
+    client.set_fee_recipient(&authority, &new_recipient);
+    assert_eq!(instance_ttl(&env, &client), 200_000);
 }
 
 // ── Fee BPS ──────────────────────────────────────────────────────────────────
@@ -204,8 +233,6 @@ fn authority_transfers_correctly() {
     let new_authority = Address::generate(&env);
     client.transfer_authority(&old_authority, &new_authority);
 
-    // Post-transfer, a config read still works (roles are stored, not verified
-    // on read).
     let config = client.config();
-    assert_eq!(config.fee_bps, 30); // defaults unchanged
+    assert_eq!(config.fee_bps, 30);
 }

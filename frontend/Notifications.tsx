@@ -1,4 +1,6 @@
+/// <reference types="react" />
 import React from 'react';
+// @ts-ignore: Missing Apollo Client module/type declarations
 import { useQuery, useMutation, gql } from '@apollo/client';
 
 export const GET_NOTIFICATIONS = gql`
