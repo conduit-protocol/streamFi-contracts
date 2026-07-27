@@ -1,5 +1,5 @@
 /// <reference types="react" />
-import React from 'react';
+import React, { useState } from 'react';
 // @ts-ignore: Missing Apollo Client module/type declarations
 import { useQuery, useMutation, gql } from '@apollo/client';
 
@@ -25,8 +25,24 @@ const TRIGGER_ACTION = gql`
   }
 `;
 
+// Validation helper defined outside component to avoid recreation on every render.
+function validateNotificationMessage(message: string): string[] {
+  const errors: string[] = [];
+
+  if (!message || message.trim().length === 0) {
+    errors.push('Message cannot be empty.');
+  }
+
+  if (message.length > 500) {
+    errors.push('Message must be 500 characters or less.');
+  }
+
+  return errors;
+}
+
 export const Notifications: React.FC = () => {
   const { data, loading, error } = useQuery(GET_NOTIFICATIONS);
+  const [validationErrors, setValidationErrors] = useState<string[]>([]);
 
   const [triggerAction, { loading: mutationLoading }] = useMutation(
     TRIGGER_ACTION,
@@ -47,20 +63,48 @@ export const Notifications: React.FC = () => {
   }
 
   const handleAction = async () => {
+    // Clear any previous errors before re-validating
+    setValidationErrors([]);
+
+    const message = 'Action completed successfully';
+
+    // FIX for Bug: Notifications bypasses validation
+    // Validate the payload before sending to the smart contract.
+    // This ensures invalid payloads (empty messages, oversized content)
+    // are caught client-side and never reach the contract.
+    const errors = validateNotificationMessage(message);
+    if (errors.length > 0) {
+      setValidationErrors(errors);
+      return;
+    }
+
     try {
       await triggerAction({
         variables: {
-          message: 'Action completed successfully',
+          message,
         },
       });
+      // Clear validation errors on successful submission
+      setValidationErrors([]);
     } catch (e) {
-      console.error('Action failed gracefully', e);
+      // Set error message for runtime failures
+      setValidationErrors([
+        e instanceof Error ? e.message : 'Action failed. Please try again.',
+      ]);
     }
   };
 
   return (
     <div className="notifications">
       <h2>Notifications</h2>
+
+      {validationErrors.length > 0 && (
+        <ul className="validation-errors">
+          {validationErrors.map((err) => (
+            <li key={err}>{err}</li>
+          ))}
+        </ul>
+      )}
 
       <button
         type="button"
