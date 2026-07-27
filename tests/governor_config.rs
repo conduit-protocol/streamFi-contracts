@@ -148,6 +148,29 @@ fn zero_min_duration_is_rejected() {
     assert_eq!(result, Err(Ok(Error::InvalidParam)));
 }
 
+#[test]
+fn min_duration_exceeding_max_duration_is_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _) = deploy_governor(&env);
+    let max_dur = client.config().max_duration_seconds;
+    let result = client.try_set_min_duration(&authority, &(max_dur + 1));
+    assert_eq!(result, Err(Ok(Error::InvalidParam)));
+}
+
+#[test]
+fn max_duration_below_min_duration_is_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _) = deploy_governor(&env);
+    let min_dur = client.config().min_duration_seconds;
+    let result = client.try_set_max_duration(&authority, &(min_dur - 1));
+    assert_eq!(result, Err(Ok(Error::InvalidParam)));
+}
+
+
 // ── Max rate ─────────────────────────────────────────────────────────────────
 
 #[test]

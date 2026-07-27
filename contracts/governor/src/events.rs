@@ -14,6 +14,20 @@ pub fn initialized(
     );
 }
 
+/// Emitted when an `Admin` grants `role` to `account`.
+///
+/// # Indexer & Context Note
+/// Unlike single-holder governance parameters (such as `fee_recipient` or `fee_bps`),
+/// roles in `DripGovernor` are multi-holder role sets (multiple accounts can hold
+/// `Admin`, `FeeManager`, or `RateManager` concurrently).
+///
+/// Role-change events emit self-contained membership deltas:
+/// - Topic: `("grant", caller)` — identifies the authorizing Admin.
+/// - Data: `(role, account)` — specifies the exact role and grantee account being added.
+///
+/// Off-chain indexers maintain active role membership by tracking `grant` (add)
+/// and `revoke` (remove) deltas. Events are emitted only when an actual state
+/// transition occurs (i.e. when `account` did not already hold `role`).
 pub fn grant_role(env: &Env, caller: &Address, role: Role, account: &Address) {
     env.events().publish(
         (symbol_short!("grant"), caller.clone()),
@@ -21,12 +35,23 @@ pub fn grant_role(env: &Env, caller: &Address, role: Role, account: &Address) {
     );
 }
 
+/// Emitted when an `Admin` revokes `role` from `account`.
+///
+/// # Indexer & Context Note
+/// Role-change events emit self-contained membership deltas for multi-holder RBAC:
+/// - Topic: `("revoke", caller)` — identifies the authorizing Admin.
+/// - Data: `(role, account)` — specifies the exact role and account being removed.
+///
+/// Off-chain indexers remove `account` from the active holder set for `role` upon
+/// observing this event. Events are emitted only when an actual state transition
+/// occurs (i.e. when `account` held `role` prior to revocation).
 pub fn revoke_role(env: &Env, caller: &Address, role: Role, account: &Address) {
     env.events().publish(
         (symbol_short!("revoke"), caller.clone()),
         (role, account.clone()),
     );
 }
+
 
 pub fn transfer_authority(env: &Env, caller: &Address, new_authority: &Address) {
     env.events().publish(

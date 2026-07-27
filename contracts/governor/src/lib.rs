@@ -74,8 +74,9 @@ impl DripGovernor {
         account: Address,
     ) -> Result<(), Error> {
         role::require_role(&env, &caller, Role::Admin)?;
-        role::grant(&env, role, &account);
-        events::grant_role(&env, &caller, role, &account);
+        if role::grant(&env, role, &account) {
+            events::grant_role(&env, &caller, role, &account);
+        }
         Ok(())
     }
 
@@ -89,8 +90,9 @@ impl DripGovernor {
         account: Address,
     ) -> Result<(), Error> {
         role::require_role(&env, &caller, Role::Admin)?;
-        role::revoke(&env, role, &account)?;
-        events::revoke_role(&env, &caller, role, &account);
+        if role::revoke(&env, role, &account)? {
+            events::revoke_role(&env, &caller, role, &account);
+        }
         Ok(())
     }
 
@@ -137,6 +139,14 @@ impl DripGovernor {
         if seconds == 0 {
             return Err(Error::InvalidParam);
         }
+        let max_duration: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxDurationSeconds)
+            .unwrap_or(315_360_000);
+        if seconds > max_duration {
+            return Err(Error::InvalidParam);
+        }
         // Cross-check against current `MaxRatePerSecond`: the product
         // `max_rate * min_duration` is the upper bound on stream principal a
         // caller may commit, and capacity math (in `DripFactory::create_stream`)
@@ -178,9 +188,18 @@ impl DripGovernor {
         events::set_max_rate(&env, &caller, max_rate);
         Ok(())
     }
+
     pub fn set_max_duration(env: Env, caller: Address, seconds: u64) -> Result<(), Error> {
         role::require_role_or_admin(&env, &caller, Role::RateManager)?;
         if seconds == 0 {
+            return Err(Error::InvalidParam);
+        }
+        let min_duration: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinDurationSeconds)
+            .unwrap_or(3_600);
+        if seconds < min_duration {
             return Err(Error::InvalidParam);
         }
         env.storage()
@@ -189,4 +208,5 @@ impl DripGovernor {
         events::set_max_duration(&env, &caller, seconds);
         Ok(())
     }
+
 }

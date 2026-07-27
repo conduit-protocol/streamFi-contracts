@@ -91,6 +91,31 @@ fn granting_is_idempotent() {
     assert!(!client.has_role(&Role::Admin, &other_admin));
 }
 
+#[test]
+fn redundant_grant_or_revoke_does_not_emit_duplicate_events() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority) = deploy_governor(&env);
+    let fee_manager = Address::generate(&env);
+
+    let base_events = env.events().all().len();
+    client.grant_role(&authority, &Role::FeeManager, &fee_manager);
+    assert_eq!(env.events().all().len(), base_events + 1);
+
+    // Redundant grant: state unchanged, no duplicate event emitted.
+    client.grant_role(&authority, &Role::FeeManager, &fee_manager);
+    assert_eq!(env.events().all().len(), base_events + 1);
+
+    client.revoke_role(&authority, &Role::FeeManager, &fee_manager);
+    assert_eq!(env.events().all().len(), base_events + 2);
+
+    // Redundant revoke: state unchanged, no duplicate event emitted.
+    client.revoke_role(&authority, &Role::FeeManager, &fee_manager);
+    assert_eq!(env.events().all().len(), base_events + 2);
+}
+
+
 // ── Authorization ──────────────────────────────────────────────────────────────
 
 #[test]
