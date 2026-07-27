@@ -15,9 +15,8 @@ use soroban_sdk::{
 };
 
 pub use errors::Error;
-pub use storage::{BatchStreamRequest, FactoryStatus};
 use storage::DataKey;
-
+pub use storage::{BatchStreamRequest, FactoryStatus};
 
 /// Maximum number of streams accepted by a single `create_batch_streams`
 /// call. Bounds per-transaction Soroban CPU instructions so an oversized
@@ -494,4 +493,3 @@ impl DripFactory {
         }
     }
 }
-

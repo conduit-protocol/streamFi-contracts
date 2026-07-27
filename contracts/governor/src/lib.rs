@@ -208,5 +208,4 @@ impl DripGovernor {
         events::set_max_duration(&env, &caller, seconds);
         Ok(())
     }
-
 }

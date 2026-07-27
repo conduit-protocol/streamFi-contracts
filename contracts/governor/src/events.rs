@@ -52,7 +52,6 @@ pub fn revoke_role(env: &Env, caller: &Address, role: Role, account: &Address) {
     );
 }
 
-
 pub fn transfer_authority(env: &Env, caller: &Address, new_authority: &Address) {
     env.events().publish(
         (symbol_short!("transfer"), caller.clone()),

@@ -75,7 +75,6 @@ fn factory_status_reflects_pause_state_and_protocol_fee() {
     assert_eq!(status_paused.protocol_fee_bps, 30);
 }
 
-
 // ── Pause / unpause lifecycle ──────────────────────────────────────────────────
 
 #[test]

@@ -170,7 +170,6 @@ fn max_duration_below_min_duration_is_rejected() {
     assert_eq!(result, Err(Ok(Error::InvalidParam)));
 }
 
-
 // ── Max rate ─────────────────────────────────────────────────────────────────
 
 #[test]

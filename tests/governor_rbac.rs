@@ -4,7 +4,10 @@
 //! authority, rejection of unauthorized callers, and the last-admin guard.
 
 use drip_governor::{DripGovernor, DripGovernorClient, Error, Role};
-use soroban_sdk::{testutils::{Address as _, Events as _}, Address, Env};
+use soroban_sdk::{
+    testutils::{Address as _, Events as _},
+    Address, Env,
+};
 
 /// Deploys a governor and returns the client plus the bootstrap authority
 /// (which starts out holding every role).
@@ -114,7 +117,6 @@ fn redundant_grant_or_revoke_does_not_emit_duplicate_events() {
     client.revoke_role(&authority, &Role::FeeManager, &fee_manager);
     assert_eq!(env.events().all().len(), base_events + 2);
 }
-
 
 // ── Authorization ──────────────────────────────────────────────────────────────
 

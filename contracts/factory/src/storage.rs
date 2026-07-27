@@ -27,7 +27,6 @@ pub struct FactoryStatus {
     pub protocol_fee_bps: u32,
 }
 
-
 /// Storage keys for the DripFactory contract.
 ///
 /// The `#[contracttype]` macro serializes each variant as an XDR tagged union:

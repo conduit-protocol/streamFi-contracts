@@ -84,7 +84,6 @@ pub fn revoke(env: &Env, role: Role, account: &Address) -> Result<bool, Error> {
     Ok(true)
 }
 
-
 /// Requires that `caller` both authorized the transaction and holds `role`,
 /// then bumps instance TTL. Every role-gated write funnels through here.
 pub fn require_role(env: &Env, caller: &Address, role: Role) -> Result<(), Error> {
