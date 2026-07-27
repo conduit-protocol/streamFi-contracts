@@ -1,0 +1,98 @@
+/* Profile layout — CSS Modules
+ *
+ * FIX for Bug: Profile Page incorrect styling
+ * CSS modules are not applied correctly in production builds, leading to broken flexbox layouts.
+ * Using CSS Modules ensures classes survive dead-code elimination in production.
+ */
+
+.profile {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding: 1.5rem;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.title {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.avatarSection {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 1rem;
+  padding: 1.5rem;
+  background: var(--color-surface, #1e1e2e);
+  border: 1px solid var(--color-border, #313145);
+  border-radius: 0.75rem;
+}
+
+.avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--color-accent, #89b4fa);
+  color: var(--color-text, #cdd6f4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.userInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.displayName {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0;
+  color: var(--color-text, #cdd6f4);
+}
+
+.address {
+  font-size: 0.85rem;
+  color: var(--color-text-secondary, #a6adc8);
+  margin: 0;
+  word-break: break-all;
+}
+
+.stats {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.statItem {
+  flex: 1 1 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 1rem 1.25rem;
+  background: var(--color-surface, #1e1e2e);
+  border: 1px solid var(--color-border, #313145);
+  border-radius: 0.5rem;
+}
+
+.statLabel {
+  font-size: 0.8rem;
+  color: var(--color-text-secondary, #a6adc8);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.statValue {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--color-text, #cdd6f4);
+}
