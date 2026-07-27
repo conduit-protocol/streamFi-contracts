@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use drip_oracle::{OracleConfig, TwapOracle, TwapOracleClient};
+use drip_oracle::{OracleConfig, TwapOracleClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Env,

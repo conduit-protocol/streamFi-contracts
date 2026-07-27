@@ -22,9 +22,6 @@ const STATE_VERSION_KEY: Symbol = symbol_short!("B_Ver");
 /// Storage key for the callback sequence counter.
 const CALLBACK_SEQ_KEY: Symbol = symbol_short!("B_CbSeq");
 
-/// Storage key that holds the last known-good state version snapshot.
-const SNAPSHOT_KEY: Symbol = symbol_short!("B_Snap");
-
 #[contractimpl]
 impl BatchTransferProcessor {
     pub fn process_batch(env: Env, amounts: soroban_sdk::Vec<u64>) -> Result<u64, Error> {
@@ -125,11 +122,6 @@ fn bump_state_version(env: &Env) {
         .checked_add(1)
         .expect("state version counter overflowed u64");
     env.storage().instance().set(&STATE_VERSION_KEY, &v);
-}
-
-/// Save a snapshot of the state version at the start of processing.
-fn save_snapshot(env: &Env, version: u64) {
-    env.storage().instance().set(&SNAPSHOT_KEY, &version);
 }
 
 /// Load the callback sequence counter.
