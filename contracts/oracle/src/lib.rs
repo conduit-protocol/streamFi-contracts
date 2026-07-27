@@ -377,4 +377,48 @@ mod tests {
         let result = client.try_calculate_fiat_stream_payout(&(u64::MAX));
         assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
     }
+
+    /// Regression test for the nested-lock warning on
+    /// `calculate_fiat_stream_payout`.
+    ///
+    /// `calculate_fiat_stream_payout` calls `get_twap_price` internally,
+    /// which acquires its own re-entrancy guard. If this method were ever
+    /// wrapped in an outer `with_guard` call, the depth counter would
+    /// already be at 1 and the nested `get_twap_price` call would
+    /// deadlock with `OracleLocked`.
+    ///
+    /// This test documents/locks in that invariant so a future refactor
+    /// that accidentally adds an outer guard is caught immediately.
+    #[test]
+    fn calculate_fiat_stream_payout_deadlocks_when_outer_lock_held() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let oracle_addr = Address::generate(&env);
+        let config = OracleConfig {
+            oracle_address: oracle_addr,
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 300,
+        };
+        client.configure_oracle(&admin, &config);
+        client.submit_price(&admin, &50_000_000);
+
+        // Verify the happy path works without a held lock.
+        let payout = client.calculate_fiat_stream_payout(&100);
+        assert_eq!(payout, 50);
+
+        // Simulate an outer re-entrancy guard already held at depth 1.
+        // This is exactly what would happen if someone wrapped
+        // `calculate_fiat_stream_payout` in a `with_guard` call.
+        let lock_key = soroban_sdk::symbol_short!("O_Lock");
+        env.as_contract(&client.address, || {
+            env.storage().instance().set(&lock_key, &1_u32);
+        });
+
+        // The nested `get_twap_price` call inside
+        // `calculate_fiat_stream_payout` must now deadlock.
+        let result = client.try_calculate_fiat_stream_payout(&100);
+        assert_eq!(result, Err(Ok(Error::OracleLocked)));
+    }
 }

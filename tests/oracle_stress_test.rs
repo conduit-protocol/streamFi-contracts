@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use conduit_integration_tests::oracle::{OracleConfig, TwapOracleIntegrationClient};
+use drip_oracle::{OracleConfig, TwapOracle, TwapOracleClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Env,
@@ -14,9 +14,9 @@ fn test_oracle_concurrency_locking() {
 
     let contract_id = env.register_contract(
         None,
-        conduit_integration_tests::oracle::TwapOracleIntegration,
+        drip_oracle::TwapOracle,
     );
-    let client = TwapOracleIntegrationClient::new(&env, &contract_id);
+    let client = TwapOracleClient::new(&env, &contract_id);
 
     client.initialize(&admin);
 
@@ -63,9 +63,9 @@ fn test_concurrent_stress_simulation() {
     let admin = Address::generate(&env);
     let contract_id = env.register_contract(
         None,
-        conduit_integration_tests::oracle::TwapOracleIntegration,
+        drip_oracle::TwapOracle,
     );
-    let client = TwapOracleIntegrationClient::new(&env, &contract_id);
+    let client = TwapOracleClient::new(&env, &contract_id);
 
     client.initialize(&admin);
     let config = OracleConfig {
@@ -93,9 +93,9 @@ fn test_precision_safe_math() {
     let admin = Address::generate(&env);
     let contract_id = env.register_contract(
         None,
-        conduit_integration_tests::oracle::TwapOracleIntegration,
+        drip_oracle::TwapOracle,
     );
-    let client = TwapOracleIntegrationClient::new(&env, &contract_id);
+    let client = TwapOracleClient::new(&env, &contract_id);
 
     client.initialize(&admin);
     let config = OracleConfig {
@@ -129,9 +129,9 @@ fn test_staleness_check() {
     let admin = Address::generate(&env);
     let contract_id = env.register_contract(
         None,
-        conduit_integration_tests::oracle::TwapOracleIntegration,
+        drip_oracle::TwapOracle,
     );
-    let client = TwapOracleIntegrationClient::new(&env, &contract_id);
+    let client = TwapOracleClient::new(&env, &contract_id);
 
     client.initialize(&admin);
     let config = OracleConfig {

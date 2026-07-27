@@ -1,3 +1,5 @@
+#![no_std]
+
 use soroban_sdk::{contract, contracterror, contractimpl, symbol_short, Env, Symbol};
 
 #[contracterror]
@@ -115,8 +117,13 @@ fn load_state_version(env: &Env) -> u64 {
 }
 
 /// Increment the state version.
+///
+/// Uses `checked_add` for consistency with the rest of the crate's
+/// checked-arithmetic convention (see `process_batch`'s amount-summing loop).
 fn bump_state_version(env: &Env) {
-    let v = load_state_version(env) + 1;
+    let v = load_state_version(env)
+        .checked_add(1)
+        .expect("state version counter overflowed u64");
     env.storage().instance().set(&STATE_VERSION_KEY, &v);
 }
 
