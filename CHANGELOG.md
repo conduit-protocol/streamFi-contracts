@@ -5,9 +5,7 @@ All notable changes are documented here. Format based on [Keep a Changelog](http
 ## [Unreleased]
 
 ### Fixed
-- Token selector stale Apollo cache — added `onRefreshNeeded` callback for parent cache invalidation (conduit-protocol/streamFi-app#270, closes #153)
-
-### Fixed
+- Settings page crash on load — created `app/settings/page.tsx` with properly guarded state initialization (conduit-protocol/streamFi-app#270, closes #156)
 - Token selector stale Apollo cache — added `onRefreshNeeded` callback for parent cache invalidation (conduit-protocol/streamFi-app#270, closes #153)
 
 ### Added
