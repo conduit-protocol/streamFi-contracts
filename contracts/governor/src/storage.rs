@@ -34,4 +34,6 @@ pub enum DataKey {
     /// Number of accounts currently holding `Role::Admin`. Tracked so the last
     /// admin can never be revoked, which would freeze governance permanently.
     AdminCount,
+    /// Emergency-pause flag. When `true`, parameter writes are blocked.
+    Paused,
 }

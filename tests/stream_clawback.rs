@@ -80,7 +80,7 @@ fn clawback_reclaims_unstreamed_portion() {
     advance(&env, 600); // 600s streamed → 600_000 owed to recipient
 
     let sender_before = tok.balance(&sender);
-    let reclaimed = client.clawback();
+    let reclaimed = client.clawback(&sender);
 
     // Unstreamed = 3_600_000 − 600_000 = 3_000_000
     assert_eq!(reclaimed, 3_000_000);
@@ -110,7 +110,7 @@ fn clawback_after_partial_withdrawal_accounts_for_withdrawn() {
     // Owed to recipient (earned but not withdrawn): 900_000 − 500_000 = 400_000
     // Clawback should get: 3_100_000 − 400_000 = 2_700_000
     let sender_before = tok.balance(&sender);
-    let reclaimed = client.clawback();
+    let reclaimed = client.clawback(&sender);
 
     assert_eq!(reclaimed, 2_700_000);
     assert_eq!(tok.balance(&sender) - sender_before, 2_700_000);
@@ -129,7 +129,7 @@ fn clawback_on_finished_stream_reclaims_nothing() {
     advance(&env, 200); // past end_time — all 100_000 is owed to recipient
 
     let sender_before = tok.balance(&sender);
-    let reclaimed = client.clawback();
+    let reclaimed = client.clawback(&sender);
 
     assert_eq!(reclaimed, 0);
     assert_eq!(tok.balance(&sender) - sender_before, 0);
@@ -148,7 +148,7 @@ fn clawback_on_non_clawback_stream_is_rejected() {
     let recip = Address::generate(&env);
     let (client, _) = deploy_stream_with_clawback(&env, &sender, &recip, 100, 3_600, false);
     advance(&env, 100);
-    let result = client.try_clawback();
+    let result = client.try_clawback(&sender);
     assert_eq!(result, Err(Ok(Error::ClawbackDisabled)));
 }
 
@@ -160,8 +160,8 @@ fn clawback_on_cancelled_stream_is_rejected() {
     let sender = Address::generate(&env);
     let recip = Address::generate(&env);
     let (client, _) = deploy_stream_with_clawback(&env, &sender, &recip, 100, 3_600, true);
-    client.cancel();
-    let result = client.try_clawback(); // stream cancelled
+    client.cancel(&sender);
+    let result = client.try_clawback(&sender); // stream cancelled
     assert_eq!(result, Err(Ok(Error::StreamCancelled)));
 }
 
@@ -178,12 +178,12 @@ fn clawback_while_paused_uses_paused_timestamp() {
     let tok = token::Client::new(&env, &token_addr);
 
     advance(&env, 300); // 300_000 streamed at pause point
-    client.pause();
+    client.pause(&sender);
     advance(&env, 500); // paused — no additional accrual
 
     // Owed = 300_000; unstreamed = 3_300_000
     let sender_before = tok.balance(&sender);
-    let reclaimed = client.clawback();
+    let reclaimed = client.clawback(&sender);
 
     assert_eq!(reclaimed, 3_300_000);
     assert_eq!(tok.balance(&sender) - sender_before, 3_300_000);

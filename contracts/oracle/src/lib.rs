@@ -2,11 +2,36 @@
 
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env};
 
+/// Protocol administration roles for the oracle.
+///
+/// Separates concerns so independent wallets can own price submission
+/// versus oracle configuration:
+///
+/// - `Admin`       — configure oracle, grant/revoke roles, emergency pause.
+/// - `PriceFeeder` — submit prices (or Admin, acting as super-user).
+#[contracttype]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Role {
+    Admin,
+    PriceFeeder,
+}
+
+/// Composite key identifying a single (role, account) grant.
+#[contracttype]
+#[derive(Clone)]
+pub struct RoleKey {
+    pub role: Role,
+    pub account: Address,
+}
+
 #[contracttype]
 pub enum DataKey {
     Admin,
     Config,
     Price,
+    Role(RoleKey),
+    AdminCount,
+    Paused,
 }
 
 #[contracttype]
@@ -39,6 +64,14 @@ pub enum Error {
     NoPriceAvailable = 1008,
     ArithmeticOverflow = 1009,
     InvalidDecimals = 1010,
+    /// The oracle is under an emergency pause; price submission is halted.
+    ContractPaused = 1011,
+    /// `pause` was called while the oracle was already paused.
+    AlreadyPaused = 1012,
+    /// `unpause` was called while the oracle was not paused.
+    NotPaused = 1013,
+    /// Refused to revoke the last `Admin`, which would freeze oracle governance.
+    LastAdmin = 1014,
 }
 
 #[contract]
@@ -46,16 +79,61 @@ pub struct TwapOracle;
 
 #[contractimpl]
 impl TwapOracle {
+    /// One-time setup — called by the deploy script.
+    ///
+    /// Grants every role to `admin` so a single wallet can bootstrap the
+    /// oracle and later delegate price submission to a separate
+    /// `PriceFeeder` wallet via [`TwapOracle::grant_role`].
     pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
+        grant_role_inner(&env, Role::Admin, &admin);
         Ok(())
     }
 
+    // ── Role administration (Admin-gated) ────────────────────────────────
+
+    /// Whether `account` currently holds `role`.
+    pub fn has_role(env: Env, role: Role, account: Address) -> bool {
+        has_role(&env, role, &account)
+    }
+
+    /// Grants `role` to `account`. Only an `Admin` may call this.
+    pub fn grant_role(
+        env: Env,
+        caller: Address,
+        role: Role,
+        account: Address,
+    ) -> Result<(), Error> {
+        require_role_or_admin(&env, &caller, Role::Admin)?;
+        if grant_role_inner(&env, role, &account) {
+            events::grant_role(&env, &caller, role, &account);
+        }
+        Ok(())
+    }
+
+    /// Revokes `role` from `account`. Only an `Admin` may call this.
+    ///
+    /// Rejected with `LastAdmin` if it would remove the final `Admin`.
+    pub fn revoke_role(
+        env: Env,
+        caller: Address,
+        role: Role,
+        account: Address,
+    ) -> Result<(), Error> {
+        require_role_or_admin(&env, &caller, Role::Admin)?;
+        if revoke_role_inner(&env, role, &account)? {
+            events::revoke_role(&env, &caller, role, &account);
+        }
+        Ok(())
+    }
+
+    // ── Reads ────────────────────────────────────────────────────────────
+
     pub fn configure_oracle(env: Env, caller: Address, config: OracleConfig) -> Result<(), Error> {
-        require_admin(&env, &caller)?;
+        require_role_or_admin(&env, &caller, Role::Admin)?;
 
         if config.decimals > 38 {
             return Err(Error::InvalidDecimals);
@@ -65,8 +143,14 @@ impl TwapOracle {
         Ok(())
     }
 
+    /// Submit a price observation. Gated on `PriceFeeder` (or `Admin`).
+    ///
+    /// Blocked while the oracle is under an emergency pause.
     pub fn submit_price(env: Env, caller: Address, price: u64) -> Result<(), Error> {
-        require_admin(&env, &caller)?;
+        if is_paused(&env) {
+            return Err(Error::ContractPaused);
+        }
+        require_role_or_admin(&env, &caller, Role::PriceFeeder)?;
 
         if price == 0 {
             return Err(Error::InvalidPrice);
@@ -141,19 +225,118 @@ impl TwapOracle {
 
         Ok(value as u64)
     }
+
+    // ── Emergency pause (Admin-gated) ────────────────────────────────────
+
+    /// Emergency halt: freeze price submission.
+    ///
+    /// While paused, `submit_price` reverts with `ContractPaused` before
+    /// any state is touched. Read-only methods (`get_twap_price`,
+    /// `calculate_fiat_stream_payout`) continue to work with the last
+    /// committed price.
+    pub fn pause(env: Env, caller: Address) -> Result<(), Error> {
+        require_role_or_admin(&env, &caller, Role::Admin)?;
+        if is_paused(&env) {
+            return Err(Error::AlreadyPaused);
+        }
+        set_paused(&env, true);
+        events::paused(&env, &caller, env.ledger().timestamp());
+        Ok(())
+    }
+
+    /// Lift the emergency pause, allowing `submit_price` again.
+    pub fn unpause(env: Env, caller: Address) -> Result<(), Error> {
+        require_role_or_admin(&env, &caller, Role::Admin)?;
+        if !is_paused(&env) {
+            return Err(Error::NotPaused);
+        }
+        set_paused(&env, false);
+        events::unpaused(&env, &caller, env.ledger().timestamp());
+        Ok(())
+    }
+
+    /// Read-only: whether the oracle is currently under an emergency pause.
+    pub fn is_paused(env: Env) -> bool {
+        is_paused(&env)
+    }
 }
 
-fn require_admin(env: &Env, caller: &Address) -> Result<(), Error> {
-    let admin: Address = env
-        .storage()
-        .instance()
-        .get(&DataKey::Admin)
-        .ok_or(Error::OracleNotConfigured)?;
-    if *caller != admin {
-        return Err(Error::NotAuthorized);
+// ── Internal helpers ───────────────────────────────────────────────────────
+
+fn has_role(env: &Env, role: Role, account: &Address) -> bool {
+    let key = DataKey::Role(RoleKey {
+        role,
+        account: account.clone(),
+    });
+    env.storage().instance().has(&key)
+}
+
+fn grant_role_inner(env: &Env, role: Role, account: &Address) -> bool {
+    if has_role(env, role, account) {
+        return false;
     }
+    let key = DataKey::Role(RoleKey {
+        role,
+        account: account.clone(),
+    });
+    env.storage().instance().set(&key, &true);
+    if role == Role::Admin {
+        let next: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::AdminCount)
+            .unwrap_or(0)
+            + 1;
+        env.storage().instance().set(&DataKey::AdminCount, &next);
+    }
+    true
+}
+
+fn revoke_role_inner(env: &Env, role: Role, account: &Address) -> Result<bool, Error> {
+    if !has_role(env, role, account) {
+        return Ok(false);
+    }
+    if role == Role::Admin {
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::AdminCount)
+            .unwrap_or(0);
+        if count <= 1 {
+            return Err(Error::LastAdmin);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::AdminCount, &(count - 1));
+    }
+    let key = DataKey::Role(RoleKey {
+        role,
+        account: account.clone(),
+    });
+    env.storage().instance().remove(&key);
+    Ok(true)
+}
+
+/// Requires that `caller` authorized the transaction and holds `role` **or**
+/// is an `Admin`. Admin acts as a super-user.
+fn require_role_or_admin(env: &Env, caller: &Address, role: Role) -> Result<(), Error> {
     caller.require_auth();
-    Ok(())
+    if has_role(env, Role::Admin, caller) || has_role(env, role, caller) {
+        Ok(())
+    } else {
+        Err(Error::NotAuthorized)
+    }
+}
+
+fn is_paused(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false)
+}
+
+fn set_paused(env: &Env, paused: bool) {
+    env.storage().instance().set(&DataKey::Paused, &paused);
 }
 
 /// Execute `f` under the re-entrancy guard, releasing the lock afterwards.
@@ -177,6 +360,38 @@ fn with_guard<R>(env: &Env, f: impl FnOnce() -> Result<R, Error>) -> Result<R, E
     result
 }
 
+// ── Events ────────────────────────────────────────────────────────────────
+
+mod events {
+    use soroban_sdk::{symbol_short, Address, Env};
+
+    use super::Role;
+
+    pub fn grant_role(env: &Env, caller: &Address, role: Role, account: &Address) {
+        env.events().publish(
+            (symbol_short!("grant"), caller.clone()),
+            (role, account.clone()),
+        );
+    }
+
+    pub fn revoke_role(env: &Env, caller: &Address, role: Role, account: &Address) {
+        env.events().publish(
+            (symbol_short!("revoke"), caller.clone()),
+            (role, account.clone()),
+        );
+    }
+
+    pub fn paused(env: &Env, caller: &Address, paused_at: u64) {
+        env.events()
+            .publish((symbol_short!("paused"), caller.clone()), paused_at);
+    }
+
+    pub fn unpaused(env: &Env, caller: &Address, resumed_at: u64) {
+        env.events()
+            .publish((symbol_short!("unpaused"), caller.clone()), resumed_at);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -198,16 +413,17 @@ mod tests {
     }
 
     #[test]
-    fn initialize_sets_admin() {
-        let (_env, client, admin) = setup();
+    fn initialize_sets_admin_and_grants_role() {
+        let (env, client, admin) = setup();
         client.initialize(&admin);
+        assert!(client.has_role(&Role::Admin, &admin));
         // Second init should fail
         let result = client.try_initialize(&admin);
         assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
     }
 
     #[test]
-    fn configure_oracle_requires_admin() {
+    fn configure_oracle_requires_admin_role() {
         let (env, client, admin) = setup();
         client.initialize(&admin);
 
@@ -242,12 +458,33 @@ mod tests {
     }
 
     #[test]
-    fn submit_price_requires_admin() {
+    fn submit_price_requires_price_feeder_role() {
         let (env, client, admin) = setup();
         client.initialize(&admin);
 
         let result = client.try_submit_price(&Address::generate(&env), &100);
         assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+    }
+
+    #[test]
+    fn admin_can_submit_price() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let result = client.try_submit_price(&admin, &100);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn price_feeder_can_submit_price() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let feeder = Address::generate(&env);
+        client.grant_role(&admin, &Role::PriceFeeder, &feeder);
+
+        let result = client.try_submit_price(&feeder, &100);
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -380,15 +617,6 @@ mod tests {
 
     /// Regression test for the nested-lock warning on
     /// `calculate_fiat_stream_payout`.
-    ///
-    /// `calculate_fiat_stream_payout` calls `get_twap_price` internally,
-    /// which acquires its own re-entrancy guard. If this method were ever
-    /// wrapped in an outer `with_guard` call, the depth counter would
-    /// already be at 1 and the nested `get_twap_price` call would
-    /// deadlock with `OracleLocked`.
-    ///
-    /// This test documents/locks in that invariant so a future refactor
-    /// that accidentally adds an outer guard is caught immediately.
     #[test]
     fn calculate_fiat_stream_payout_deadlocks_when_outer_lock_held() {
         let (env, client, admin) = setup();
@@ -409,16 +637,145 @@ mod tests {
         assert_eq!(payout, 50);
 
         // Simulate an outer re-entrancy guard already held at depth 1.
-        // This is exactly what would happen if someone wrapped
-        // `calculate_fiat_stream_payout` in a `with_guard` call.
         let lock_key = soroban_sdk::symbol_short!("O_Lock");
         env.as_contract(&client.address, || {
             env.storage().instance().set(&lock_key, &1_u32);
         });
 
-        // The nested `get_twap_price` call inside
-        // `calculate_fiat_stream_payout` must now deadlock.
         let result = client.try_calculate_fiat_stream_payout(&100);
         assert_eq!(result, Err(Ok(Error::OracleLocked)));
+    }
+
+    // ── Role management tests ────────────────────────────────────────────
+
+    #[test]
+    fn admin_can_grant_and_revoke_price_feeder() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let feeder = Address::generate(&env);
+        client.grant_role(&admin, &Role::PriceFeeder, &feeder);
+        assert!(client.has_role(&Role::PriceFeeder, &feeder));
+
+        client.revoke_role(&admin, &Role::PriceFeeder, &feeder);
+        assert!(!client.has_role(&Role::PriceFeeder, &feeder));
+    }
+
+    #[test]
+    fn non_admin_cannot_grant_roles() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let stranger = Address::generate(&env);
+        let result = client.try_grant_role(&stranger, &Role::PriceFeeder, &Address::generate(&env));
+        assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+    }
+
+    #[test]
+    fn revoking_last_admin_is_rejected() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let result = client.try_revoke_role(&admin, &Role::Admin, &admin);
+        assert_eq!(result, Err(Ok(Error::LastAdmin)));
+    }
+
+    #[test]
+    fn admin_can_be_revoked_after_granting_second_admin() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let second = Address::generate(&env);
+        client.grant_role(&admin, &Role::Admin, &second);
+        client.revoke_role(&admin, &Role::Admin, &admin);
+
+        assert!(!client.has_role(&Role::Admin, &admin));
+        assert!(client.has_role(&Role::Admin, &second));
+    }
+
+    // ── Emergency pause tests ────────────────────────────────────────────
+
+    #[test]
+    fn admin_can_pause_and_unpause() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        assert!(!client.is_paused());
+        client.pause(&admin);
+        assert!(client.is_paused());
+        client.unpause(&admin);
+        assert!(!client.is_paused());
+    }
+
+    #[test]
+    fn pause_blocks_submit_price() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let oracle_addr = Address::generate(&env);
+        let config = OracleConfig {
+            oracle_address: oracle_addr,
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 300,
+        };
+        client.configure_oracle(&admin, &config);
+        client.submit_price(&admin, &50_000_000);
+
+        client.pause(&admin);
+        let result = client.try_submit_price(&admin, &100);
+        assert_eq!(result, Err(Ok(Error::ContractPaused)));
+    }
+
+    #[test]
+    fn submit_price_works_after_unpause() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        client.pause(&admin);
+        client.unpause(&admin);
+
+        let result = client.try_submit_price(&admin, &100);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn double_pause_is_rejected() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        client.pause(&admin);
+        let result = client.try_pause(&admin);
+        assert_eq!(result, Err(Ok(Error::AlreadyPaused)));
+    }
+
+    #[test]
+    fn unpause_when_not_paused_is_rejected() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let result = client.try_unpause(&admin);
+        assert_eq!(result, Err(Ok(Error::NotPaused)));
+    }
+
+    #[test]
+    fn get_twap_price_works_while_paused() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let oracle_addr = Address::generate(&env);
+        let config = OracleConfig {
+            oracle_address: oracle_addr,
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 300,
+        };
+        client.configure_oracle(&admin, &config);
+        client.submit_price(&admin, &50_000_000);
+
+        client.pause(&admin);
+        // Read-only methods still work with the last committed price.
+        let price = client.get_twap_price();
+        assert_eq!(price, 50_000_000);
     }
 }

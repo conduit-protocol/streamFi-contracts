@@ -46,6 +46,12 @@ pub enum DataKey {
     /// Future contract upgrades must check this before assuming the
     /// persisted `StreamInfo`/`Config` layout is compatible.
     StorageVersion,
+    /// Optional operator address delegated by the sender.
+    ///
+    /// When set, the operator can perform sender-level actions (pause,
+    /// cancel, clawback, top_up, extend_duration) on behalf of the sender.
+    /// Absent key means no operator has been delegated.
+    Operator,
 }
 
 #[contracttype]

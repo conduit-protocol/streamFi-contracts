@@ -85,3 +85,13 @@ pub fn set_max_duration(env: &Env, caller: &Address, seconds: u64) {
     env.events()
         .publish((symbol_short!("max_dur"), caller.clone()), seconds);
 }
+
+pub fn paused(env: &Env, caller: &Address, paused_at: u64) {
+    env.events()
+        .publish((symbol_short!("paused"), caller.clone()), paused_at);
+}
+
+pub fn unpaused(env: &Env, caller: &Address, resumed_at: u64) {
+    env.events()
+        .publish((symbol_short!("unpaused"), caller.clone()), resumed_at);
+}

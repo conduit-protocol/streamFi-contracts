@@ -76,7 +76,7 @@ fn pause_freezes_withdrawable_amount() {
     let withdrawable_at_pause = client.withdrawable(); // 200_000
     assert_eq!(withdrawable_at_pause, 200_000);
 
-    client.pause();
+    client.pause(&sender);
 
     advance(&env, 500); // 500 more seconds pass — should not count
     assert_eq!(client.withdrawable(), withdrawable_at_pause); // still 200_000
@@ -90,9 +90,9 @@ fn paused_time_excluded_from_streamed_total() {
     let (client, _) = deploy_stream(&env, &sender, &recipient, 1_000, 7_200);
 
     advance(&env, 100); // 100s → 100_000 streamed
-    client.pause();
+    client.pause(&sender);
     advance(&env, 1_000); // 1000s paused (should not count)
-    client.resume();
+    client.resume(&sender);
     advance(&env, 100); // 100s more → +100_000
 
     // Total should be 200s × 1_000 = 200_000
@@ -108,9 +108,9 @@ fn resume_after_pause_continues_stream_correctly() {
     let tok = token::Client::new(&env, &token_addr);
 
     advance(&env, 400); // 400 × 500 = 200_000 streamed
-    client.pause();
+    client.pause(&sender);
     advance(&env, 2_000); // 2000s paused
-    client.resume();
+    client.resume(&sender);
     advance(&env, 200); // 200 × 500 = 100_000 more streamed
 
     assert_eq!(client.withdrawable(), 300_000);
@@ -127,8 +127,8 @@ fn double_pause_is_rejected() {
     let sender = Address::generate(&env);
     let recip = Address::generate(&env);
     let (client, _) = deploy_stream(&env, &sender, &recip, 100, 3_600);
-    client.pause();
-    let result = client.try_pause(); // second pause should error
+    client.pause(&sender);
+    let result = client.try_pause(&sender); // second pause should error
     assert_eq!(result, Err(Ok(Error::AlreadyPaused)));
 }
 
@@ -138,7 +138,7 @@ fn resume_on_running_stream_is_rejected() {
     let sender = Address::generate(&env);
     let recip = Address::generate(&env);
     let (client, _) = deploy_stream(&env, &sender, &recip, 100, 3_600);
-    let result = client.try_resume(); // stream is not paused
+    let result = client.try_resume(&sender); // stream is not paused
     assert_eq!(result, Err(Ok(Error::NotPaused)));
 }
 
@@ -153,7 +153,7 @@ fn recipient_can_withdraw_accumulated_balance_while_paused() {
     let tok = token::Client::new(&env, &token_addr);
 
     advance(&env, 300); // 300_000 streamed
-    client.pause();
+    client.pause(&sender);
     advance(&env, 1_000); // time passes but stream frozen
 
     // Recipient should still be able to withdraw the 300_000 earned before pause
@@ -176,15 +176,15 @@ fn multiple_pause_resume_cycles_accumulate_correctly() {
 
     // Cycle 1: stream 100s, pause 500s, resume
     advance(&env, 100);
-    client.pause();
+    client.pause(&sender);
     advance(&env, 500);
-    client.resume();
+    client.resume(&sender);
 
     // Cycle 2: stream 200s, pause 1000s, resume
     advance(&env, 200);
-    client.pause();
+    client.pause(&sender);
     advance(&env, 1_000);
-    client.resume();
+    client.resume(&sender);
 
     // Cycle 3: stream 50s
     advance(&env, 50);

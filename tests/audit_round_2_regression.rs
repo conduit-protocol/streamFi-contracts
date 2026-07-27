@@ -304,7 +304,7 @@ fn pause_resume_round_trip_preserves_state_with_single_save() {
     let before_pause = client.withdrawable();
     assert_eq!(before_pause, 100_000);
 
-    client.pause();
+    client.pause(&sender);
     let info = client.info();
     assert!(info.is_paused());
     assert_eq!(info.paused_at, env.ledger().timestamp());
@@ -320,7 +320,7 @@ fn pause_resume_round_trip_preserves_state_with_single_save() {
         "accrual must freeze during pause",
     );
 
-    client.resume();
+    client.resume(&sender);
     let info = client.info();
     assert!(!info.is_paused());
     assert_eq!(
@@ -356,7 +356,7 @@ fn extend_duration_persists_new_end_via_single_save() {
     // admin auth, and the inferred 100 × 2_000 = 200_000 deposit matches the
     // rate * extra_seconds the stream expects.
     token::StellarAssetClient::new(&env, &token_addr).mint(&sender, &200_000);
-    client.extend_duration(&2_000); // +2_000s @ 100/s = 200_000 token pull
+    client.extend_duration(&sender, &2_000); // +2_000s @ 100/s = 200_000 token pull
 
     let info = client.info();
     assert_eq!(info.end_time, old_end + 2_000);
