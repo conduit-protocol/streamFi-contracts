@@ -126,10 +126,7 @@ fn bump_state_version(env: &Env) {
 
 /// Load the callback sequence counter.
 fn load_callback_seq(env: &Env) -> u64 {
-    env.storage()
-        .instance()
-        .get(&CALLBACK_SEQ_KEY)
-        .unwrap_or(0)
+    env.storage().instance().get(&CALLBACK_SEQ_KEY).unwrap_or(0)
 }
 
 /// Clean up any stale pending callbacks.
@@ -140,8 +137,6 @@ fn cleanup_stale_callbacks(env: &Env) {
     let seq = load_callback_seq(env);
     if seq > 0 {
         // Invalidate all pending callbacks by advancing the sequence.
-        env.storage()
-            .instance()
-            .set(&CALLBACK_SEQ_KEY, &(seq + 1));
+        env.storage().instance().set(&CALLBACK_SEQ_KEY, &(seq + 1));
     }
 }

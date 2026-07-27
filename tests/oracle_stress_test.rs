@@ -12,10 +12,7 @@ fn test_oracle_concurrency_locking() {
     env.mock_all_auths();
     let admin = Address::generate(&env);
 
-    let contract_id = env.register_contract(
-        None,
-        drip_oracle::TwapOracle,
-    );
+    let contract_id = env.register_contract(None, drip_oracle::TwapOracle);
     let client = TwapOracleClient::new(&env, &contract_id);
 
     client.initialize(&admin);
@@ -61,10 +58,7 @@ fn test_concurrent_stress_simulation() {
     let env = Env::default();
     env.mock_all_auths();
     let admin = Address::generate(&env);
-    let contract_id = env.register_contract(
-        None,
-        drip_oracle::TwapOracle,
-    );
+    let contract_id = env.register_contract(None, drip_oracle::TwapOracle);
     let client = TwapOracleClient::new(&env, &contract_id);
 
     client.initialize(&admin);
@@ -91,10 +85,7 @@ fn test_precision_safe_math() {
     let env = Env::default();
     env.mock_all_auths();
     let admin = Address::generate(&env);
-    let contract_id = env.register_contract(
-        None,
-        drip_oracle::TwapOracle,
-    );
+    let contract_id = env.register_contract(None, drip_oracle::TwapOracle);
     let client = TwapOracleClient::new(&env, &contract_id);
 
     client.initialize(&admin);
@@ -127,10 +118,7 @@ fn test_staleness_check() {
     let env = Env::default();
     env.mock_all_auths();
     let admin = Address::generate(&env);
-    let contract_id = env.register_contract(
-        None,
-        drip_oracle::TwapOracle,
-    );
+    let contract_id = env.register_contract(None, drip_oracle::TwapOracle);
     let client = TwapOracleClient::new(&env, &contract_id);
 
     client.initialize(&admin);
