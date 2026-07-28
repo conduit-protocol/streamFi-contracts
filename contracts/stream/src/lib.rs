@@ -399,7 +399,11 @@ impl DripStream {
 
     /// Read-only: whether clawback is enabled for this stream.
     ///
+    /// Returns the `clawback_enabled` flag that was set at initialization time.
     /// If `false`, calling `clawback()` will be rejected with `ClawbackDisabled`.
+    ///
+    /// Use this before attempting `clawback()` to avoid unnecessarily executing
+    /// a call that will be rejected.
     pub fn clawback_enabled(env: Env) -> bool {
         let info = state::load(&env);
         info.is_clawback_enabled()

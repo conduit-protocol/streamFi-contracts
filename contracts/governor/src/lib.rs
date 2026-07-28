@@ -1,5 +1,19 @@
 #![no_std]
 
+//! DripGovernor is the protocol's immutable parameter store.
+//!
+//! **Storage and TTL:** All state is held in `instance()` storage tied to the
+//! contract's instance TTL. Every state-mutating call (`grant_role`, `revoke_role`,
+//! `transfer_authority`, `set_fee_bps`, `set_fee_recipient`, `set_min_duration`,
+//! `set_max_rate`, `set_max_duration`) extends the instance TTL to prevent
+//! archival. Without TTL extension, idle governors can expire and cause all
+//! downstream `DripFactory::create_stream` calls to fail until restored.
+//!
+//! **Roles:** Three role tiers allow delegation of governance authority:
+//! - `Admin`: grant and revoke any role (super-user).
+//! - `FeeManager`: manage fees via `set_fee_bps` and `set_fee_recipient`.
+//! - `RateManager`: manage rate and duration bounds via `set_max_rate`, `set_min_duration`, `set_max_duration`.
+
 mod config;
 mod errors;
 mod events;
