@@ -73,6 +73,17 @@ impl DripGovernor {
         config::load(&env)
     }
 
+    /// Read-only: current minimum stream duration in seconds.
+    ///
+    /// Focused accessor for callers that only need this one field, avoiding
+    /// a full `config()` round-trip (mirrors `DripFactory::protocol_fee_bps`).
+    pub fn min_duration(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MinDurationSeconds)
+            .unwrap_or(3600)
+    }
+
     /// Whether `account` currently holds `role`.
     pub fn has_role(env: Env, role: Role, account: Address) -> bool {
         role::has_role(&env, role, &account)

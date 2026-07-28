@@ -139,6 +139,19 @@ fn authority_can_set_min_duration() {
 }
 
 #[test]
+fn min_duration_view_matches_config() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _) = deploy_governor(&env);
+    assert_eq!(client.min_duration(), 3_600);
+
+    client.set_min_duration(&authority, &7_200);
+    assert_eq!(client.min_duration(), client.config().min_duration_seconds);
+    assert_eq!(client.min_duration(), 7_200);
+}
+
+#[test]
 fn zero_min_duration_is_rejected() {
     let env = Env::default();
     env.mock_all_auths();

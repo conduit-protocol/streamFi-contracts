@@ -80,6 +80,16 @@ impl TwapOracle {
         Ok(())
     }
 
+    /// Returns the current oracle price, guarded against re-entrancy.
+    ///
+    /// Errors:
+    /// - `OracleNotConfigured` if `configure_oracle` has not been called.
+    /// - `NoPriceAvailable` if no price has been submitted yet.
+    /// - `OracleStalePrice` if the last submitted price is older than the
+    ///   configured `max_staleness`.
+    /// - `InvalidPrice` if the stored price is zero.
+    /// - `OracleLocked` if called while the re-entrancy guard is already held
+    ///   (see the nested-lock warning on `calculate_fiat_stream_payout`).
     pub fn get_twap_price(env: Env) -> Result<u64, Error> {
         with_guard(&env, || {
             let config: OracleConfig = env
