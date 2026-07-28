@@ -395,6 +395,42 @@ fn add_submitter(env: &Env, account: &Address) {
         .set(&DataKey::Submitters, &submitters);
 }
 
+/// Median of `prices` (average of the two middle values for an even-length
+/// input). Sorts a copy in place with insertion sort — the submitter count
+/// is expected to stay small, so O(n^2) is not a concern.
+///
+/// Panics if `prices` is empty; callers must guarantee at least one value.
+fn median(prices: Vec<u64>) -> u64 {
+    let len = prices.len();
+    let mut sorted = prices.clone();
+
+    let mut i: u32 = 1;
+    while i < len {
+        let key = sorted.get(i).unwrap();
+        let mut j = i;
+        while j > 0 {
+            let prev = sorted.get(j - 1).unwrap();
+            if prev > key {
+                sorted.set(j, prev);
+                j -= 1;
+            } else {
+                break;
+            }
+        }
+        sorted.set(j, key);
+        i += 1;
+    }
+
+    let mid = len / 2;
+    if len & 1 == 0 {
+        let a = sorted.get(mid - 1).unwrap() as u128;
+        let b = sorted.get(mid).unwrap() as u128;
+        ((a + b) / 2) as u64
+    } else {
+        sorted.get(mid).unwrap()
+    }
+}
+
 fn is_paused(env: &Env) -> bool {
     env.storage()
         .instance()
