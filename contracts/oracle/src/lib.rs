@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Vec};
 
 /// Protocol administration roles for the oracle.
 ///
@@ -32,6 +32,13 @@ pub enum DataKey {
     Role(RoleKey),
     AdminCount,
     Paused,
+    /// Most recent submission from a single feeder, keyed by feeder address.
+    /// Aggregated (median) across every address in `Submitters` by
+    /// `get_twap_price`, so no single feeder's price is trusted alone.
+    Submission(Address),
+    /// Every address that has ever called `submit_price`, iterated by
+    /// `get_twap_price` to build the aggregation set.
+    Submitters,
 }
 
 #[contracttype]
