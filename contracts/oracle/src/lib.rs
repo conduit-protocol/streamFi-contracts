@@ -407,6 +407,13 @@ mod events {
         env.events()
             .publish((symbol_short!("unpaused"), caller.clone()), resumed_at);
     }
+
+    pub fn admin_transferred(env: &Env, old_admin: &Address, new_admin: &Address) {
+        env.events().publish(
+            (symbol_short!("adm_xfer"), old_admin.clone()),
+            new_admin.clone(),
+        );
+    }
 }
 
 #[cfg(test)]
