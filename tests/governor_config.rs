@@ -353,3 +353,52 @@ fn set_max_duration_extends_instance_ttl() {
     let ttl = env.as_contract(&client.address, || env.storage().instance().get_ttl());
     assert_eq!(ttl, 200_000);
 }
+
+// ── Authorization checks for rate-manager-gated setters ──────────────────────
+
+#[test]
+fn non_rate_manager_cannot_set_min_duration() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _authority, _) = deploy_governor(&env);
+    let non_rate_manager = Address::generate(&env);
+    let result = client.try_set_min_duration(&non_rate_manager, &7_200);
+    assert!(result.is_err());
+}
+
+#[test]
+fn non_rate_manager_cannot_set_max_rate() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _authority, _) = deploy_governor(&env);
+    let non_rate_manager = Address::generate(&env);
+    let result = client.try_set_max_rate(&non_rate_manager, &500_000_000);
+    assert!(result.is_err());
+}
+
+// ── Authorization checks for fee-manager-gated setters ──────────────────────
+
+#[test]
+fn non_fee_manager_cannot_set_fee_bps() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _authority, _) = deploy_governor(&env);
+    let non_fee_manager = Address::generate(&env);
+    let result = client.try_set_fee_bps(&non_fee_manager, &50);
+    assert!(result.is_err());
+}
+
+#[test]
+fn non_fee_manager_cannot_set_fee_recipient() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _authority, _) = deploy_governor(&env);
+    let non_fee_manager = Address::generate(&env);
+    let new_recipient = Address::generate(&env);
+    let result = client.try_set_fee_recipient(&non_fee_manager, &new_recipient);
+    assert!(result.is_err());
+}
