@@ -169,7 +169,10 @@ impl TwapOracle {
 
     /// Submit a price observation. Gated on `PriceFeeder` (or `Admin`).
     ///
-    /// Blocked while the oracle is under an emergency pause.
+    /// Blocked while the oracle is under an emergency pause. Each feeder's
+    /// submission is tracked independently (`DataKey::Submission`) and
+    /// aggregated by `get_twap_price` — no single feeder's price is trusted
+    /// unconditionally.
     pub fn submit_price(env: Env, caller: Address, price: u64) -> Result<(), Error> {
         if is_paused(&env) {
             return Err(Error::ContractPaused);
@@ -185,6 +188,7 @@ impl TwapOracle {
             price,
             updated_at: now,
         };
+
         // Legacy single-value slot — kept so `price_age`/`is_price_stale`
         // and any external readers of the old scalar `Price` key continue
         // to see the most recent submission.
@@ -252,6 +256,50 @@ impl TwapOracle {
 
             Ok(median(fresh_prices))
         })
+    }
+
+    /// Read-only: seconds elapsed since the most recent `submit_price` call
+    /// by any feeder, without triggering `get_twap_price`'s error path.
+    ///
+    /// Errors:
+    /// - `OracleNotConfigured` if `configure_oracle` has not been called.
+    /// - `NoPriceAvailable` if no price has ever been submitted.
+    pub fn price_age(env: Env) -> Result<u64, Error> {
+        if !env.storage().instance().has(&DataKey::Config) {
+            return Err(Error::OracleNotConfigured);
+        }
+
+        let data: PriceData = env
+            .storage()
+            .instance()
+            .get(&DataKey::Price)
+            .ok_or(Error::NoPriceAvailable)?;
+
+        Ok(env.ledger().timestamp().saturating_sub(data.updated_at))
+    }
+
+    /// Read-only: whether the most recent submission is older than
+    /// `configure_oracle`'s `max_staleness`, without triggering
+    /// `get_twap_price`'s error path — see issue #195.
+    ///
+    /// Errors:
+    /// - `OracleNotConfigured` if `configure_oracle` has not been called.
+    /// - `NoPriceAvailable` if no price has ever been submitted.
+    pub fn is_price_stale(env: Env) -> Result<bool, Error> {
+        let config: OracleConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(Error::OracleNotConfigured)?;
+
+        let data: PriceData = env
+            .storage()
+            .instance()
+            .get(&DataKey::Price)
+            .ok_or(Error::NoPriceAvailable)?;
+
+        let age = env.ledger().timestamp().saturating_sub(data.updated_at);
+        Ok(age > config.max_staleness)
     }
 
     /// Converts a nominal token amount into its fiat equivalent.
@@ -1091,5 +1139,97 @@ mod tests {
 
         let result = client.try_get_twap_price();
         assert_eq!(result, Err(Ok(Error::OracleStalePrice)));
+    }
+
+    // ── Staleness introspection tests (#195) ──────────────────────────────
+
+    #[test]
+    fn price_age_reports_seconds_since_last_submission() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let oracle_addr = Address::generate(&env);
+        let config = OracleConfig {
+            oracle_address: oracle_addr,
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 300,
+        };
+        client.configure_oracle(&admin, &config);
+        client.submit_price(&admin, &50_000_000);
+        let submitted_at = env.ledger().timestamp();
+
+        assert_eq!(client.price_age(), 0);
+
+        env.ledger().set(LedgerInfo {
+            timestamp: submitted_at + 42,
+            protocol_version: 21,
+            sequence_number: 1,
+            network_id: Default::default(),
+            base_reserve: 10,
+            min_temp_entry_ttl: 16,
+            min_persistent_entry_ttl: 4096,
+            max_entry_ttl: 6_312_000,
+        });
+
+        assert_eq!(client.price_age(), 42);
+    }
+
+    #[test]
+    fn price_age_requires_config() {
+        let (_env, client, _admin) = setup();
+        let result = client.try_price_age();
+        assert_eq!(result, Err(Ok(Error::OracleNotConfigured)));
+    }
+
+    #[test]
+    fn price_age_requires_price_submission() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let oracle_addr = Address::generate(&env);
+        let config = OracleConfig {
+            oracle_address: oracle_addr,
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 300,
+        };
+        client.configure_oracle(&admin, &config);
+
+        let result = client.try_price_age();
+        assert_eq!(result, Err(Ok(Error::NoPriceAvailable)));
+    }
+
+    #[test]
+    fn is_price_stale_reflects_max_staleness_without_erroring() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let oracle_addr = Address::generate(&env);
+        let config = OracleConfig {
+            oracle_address: oracle_addr,
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 60,
+        };
+        client.configure_oracle(&admin, &config);
+        client.submit_price(&admin, &50_000_000);
+        let submitted_at = env.ledger().timestamp();
+
+        assert!(!client.is_price_stale());
+
+        env.ledger().set(LedgerInfo {
+            timestamp: submitted_at + 61,
+            protocol_version: 21,
+            sequence_number: 1,
+            network_id: Default::default(),
+            base_reserve: 10,
+            min_temp_entry_ttl: 16,
+            min_persistent_entry_ttl: 4096,
+            max_entry_ttl: 6_312_000,
+        });
+
+        // Reports true instead of erroring like get_twap_price would.
+        assert!(client.is_price_stale());
     }
 }
