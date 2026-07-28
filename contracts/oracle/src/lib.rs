@@ -163,6 +163,7 @@ impl TwapOracle {
         }
 
         env.storage().instance().set(&DataKey::Config, &config);
+        events::oracle_configured(&env, &caller, config);
         Ok(())
     }
 
@@ -179,11 +180,13 @@ impl TwapOracle {
             return Err(Error::InvalidPrice);
         }
 
+        let now = env.ledger().timestamp();
         let data = PriceData {
             price,
-            updated_at: env.ledger().timestamp(),
+            updated_at: now,
         };
         env.storage().instance().set(&DataKey::Price, &data);
+        events::price_submitted(&env, &caller, price, now);
         Ok(())
     }
 
@@ -429,6 +432,18 @@ mod events {
             (symbol_short!("adm_xfer"), old_admin.clone()),
             new_admin.clone(),
         );
+    }
+
+    pub fn price_submitted(env: &Env, caller: &Address, price: u64, timestamp: u64) {
+        env.events().publish(
+            (symbol_short!("priced"), caller.clone()),
+            (price, timestamp),
+        );
+    }
+
+    pub fn oracle_configured(env: &Env, caller: &Address, config: super::OracleConfig) {
+        env.events()
+            .publish((symbol_short!("ocfg"), caller.clone()), config);
     }
 }
 
