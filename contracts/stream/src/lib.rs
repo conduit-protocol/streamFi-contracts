@@ -397,6 +397,14 @@ impl DripStream {
         math::withdrawable(&env, &info).unwrap_or(0)
     }
 
+    /// Read-only: whether clawback is enabled for this stream.
+    ///
+    /// If `false`, calling `clawback()` will be rejected with `ClawbackDisabled`.
+    pub fn clawback_enabled(env: Env) -> bool {
+        let info = state::load(&env);
+        info.is_clawback_enabled()
+    }
+
     /// Recipient force-cancels a stream that has been paused beyond a threshold.
     ///
     /// Prevents the sender from indefinitely pausing the stream to hold

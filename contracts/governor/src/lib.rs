@@ -74,6 +74,7 @@ impl DripGovernor {
         account: Address,
     ) -> Result<(), Error> {
         role::require_role(&env, &caller, Role::Admin)?;
+        ttl::bump(&env);
         if role::grant(&env, role, &account) {
             events::grant_role(&env, &caller, role, &account);
         }
@@ -90,6 +91,7 @@ impl DripGovernor {
         account: Address,
     ) -> Result<(), Error> {
         role::require_role(&env, &caller, Role::Admin)?;
+        ttl::bump(&env);
         if role::revoke(&env, role, &account)? {
             events::revoke_role(&env, &caller, role, &account);
         }
@@ -107,6 +109,7 @@ impl DripGovernor {
         new_authority: Address,
     ) -> Result<(), Error> {
         role::require_role(&env, &caller, Role::Admin)?;
+        ttl::bump(&env);
         role::grant(&env, Role::Admin, &new_authority);
         role::revoke(&env, Role::Admin, &caller)?;
         events::transfer_authority(&env, &caller, &new_authority);
@@ -117,6 +120,7 @@ impl DripGovernor {
 
     pub fn set_fee_bps(env: Env, caller: Address, fee_bps: u32) -> Result<(), Error> {
         role::require_role_or_admin(&env, &caller, Role::FeeManager)?;
+        ttl::bump(&env);
         if fee_bps > 10_000 {
             return Err(Error::InvalidParam);
         }
@@ -127,6 +131,7 @@ impl DripGovernor {
 
     pub fn set_fee_recipient(env: Env, caller: Address, recipient: Address) -> Result<(), Error> {
         role::require_role_or_admin(&env, &caller, Role::FeeManager)?;
+        ttl::bump(&env);
         env.storage()
             .instance()
             .set(&DataKey::FeeRecipient, &recipient);
@@ -136,6 +141,7 @@ impl DripGovernor {
 
     pub fn set_min_duration(env: Env, caller: Address, seconds: u64) -> Result<(), Error> {
         role::require_role_or_admin(&env, &caller, Role::RateManager)?;
+        ttl::bump(&env);
         if seconds == 0 {
             return Err(Error::InvalidParam);
         }
@@ -169,6 +175,7 @@ impl DripGovernor {
 
     pub fn set_max_rate(env: Env, caller: Address, max_rate: i128) -> Result<(), Error> {
         role::require_role_or_admin(&env, &caller, Role::RateManager)?;
+        ttl::bump(&env);
         if max_rate <= 0 {
             return Err(Error::InvalidParam);
         }
@@ -191,6 +198,7 @@ impl DripGovernor {
 
     pub fn set_max_duration(env: Env, caller: Address, seconds: u64) -> Result<(), Error> {
         role::require_role_or_admin(&env, &caller, Role::RateManager)?;
+        ttl::bump(&env);
         if seconds == 0 {
             return Err(Error::InvalidParam);
         }
