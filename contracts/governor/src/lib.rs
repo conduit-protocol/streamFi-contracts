@@ -78,6 +78,18 @@ impl DripGovernor {
         role::has_role(&env, role, &account)
     }
 
+    /// Current maximum stream duration in seconds, without fetching the full
+    /// [`GovernorConfig`]. See [`DripGovernor::set_max_duration`].
+    pub fn max_duration(env: Env) -> Result<u64, Error> {
+        Ok(config::load(&env)?.max_duration_seconds)
+    }
+
+    /// Current maximum rate per second a stream may commit to, without
+    /// fetching the full [`GovernorConfig`]. See [`DripGovernor::set_max_rate`].
+    pub fn max_rate(env: Env) -> Result<i128, Error> {
+        Ok(config::load(&env)?.max_rate_per_second)
+    }
+
     // ── Role administration (Admin-gated) ────────────────────────────────
 
     /// Grants `role` to `account`. Only an `Admin` may call this.

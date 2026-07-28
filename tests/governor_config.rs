@@ -202,6 +202,18 @@ fn negative_max_rate_is_rejected() {
     assert_eq!(result, Err(Ok(Error::InvalidParam)));
 }
 
+#[test]
+fn max_rate_matches_config() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _) = deploy_governor(&env);
+    assert_eq!(client.max_rate(), client.config().max_rate_per_second);
+
+    client.set_max_rate(&authority, &500_000_000);
+    assert_eq!(client.max_rate(), 500_000_000);
+}
+
 // ── Fee recipient ────────────────────────────────────────────────────────────
 
 #[test]
@@ -246,6 +258,18 @@ fn non_rate_manager_cannot_set_max_duration() {
     let non_rate_manager = Address::generate(&env);
     let result = client.try_set_max_duration(&non_rate_manager, &7_200);
     assert!(result.is_err());
+}
+
+#[test]
+fn max_duration_matches_config() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _) = deploy_governor(&env);
+    assert_eq!(client.max_duration(), client.config().max_duration_seconds);
+
+    client.set_max_duration(&authority, &7_200);
+    assert_eq!(client.max_duration(), 7_200);
 }
 
 // ── Transfer authority ───────────────────────────────────────────────────────
