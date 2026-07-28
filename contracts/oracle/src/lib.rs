@@ -137,6 +137,22 @@ impl TwapOracle {
         Ok(())
     }
 
+    /// Moves the `Admin` role from `caller` to `new_admin` atomically, so
+    /// oracle governance is never permanently stuck on a single key — see
+    /// issue #192. Equivalent to `grant_role(Admin, new_admin)` followed by
+    /// `revoke_role(Admin, caller)`, but as one call so the contract never
+    /// passes through a state where `caller` has been revoked without
+    /// `new_admin` already holding the role.
+    pub fn transfer_admin(env: Env, caller: Address, new_admin: Address) -> Result<(), Error> {
+        require_role_or_admin(&env, &caller, Role::Admin)?;
+
+        grant_role_inner(&env, Role::Admin, &new_admin);
+        revoke_role_inner(&env, Role::Admin, &caller)?;
+
+        events::admin_transferred(&env, &caller, &new_admin);
+        Ok(())
+    }
+
     // ── Reads ────────────────────────────────────────────────────────────
 
     pub fn configure_oracle(env: Env, caller: Address, config: OracleConfig) -> Result<(), Error> {
