@@ -118,6 +118,24 @@ fn redundant_grant_or_revoke_does_not_emit_duplicate_events() {
     assert_eq!(env.events().all().len(), base_events + 2);
 }
 
+#[test]
+fn revoking_a_role_never_granted_is_a_silent_no_op() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority) = deploy_governor(&env);
+    let never_granted = Address::generate(&env);
+
+    // Confirm the account never held FeeManager.
+    assert!(!client.has_role(&Role::FeeManager, &never_granted));
+
+    // Revoking a role never granted succeeds without error (idempotent behavior).
+    client.revoke_role(&authority, &Role::FeeManager, &never_granted);
+
+    // Account still doesn't hold the role.
+    assert!(!client.has_role(&Role::FeeManager, &never_granted));
+}
+
 // ── Authorization ──────────────────────────────────────────────────────────────
 
 #[test]

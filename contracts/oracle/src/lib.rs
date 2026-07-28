@@ -655,6 +655,24 @@ mod tests {
     }
 
     #[test]
+    fn submit_price_rejects_non_admin_non_feeder() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        // Create a caller with no roles (neither Admin nor PriceFeeder).
+        let impostor = Address::generate(&env);
+
+        // Caller with no authorization should be rejected explicitly.
+        let result = client.try_submit_price(&impostor, &100);
+        assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+
+        // Verify that granting PriceFeeder role permits submission.
+        client.grant_role(&admin, &Role::PriceFeeder, &impostor);
+        let result = client.try_submit_price(&impostor, &100);
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn admin_can_submit_price() {
         let (_env, client, admin) = setup();
         client.initialize(&admin);

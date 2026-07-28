@@ -263,6 +263,9 @@ impl DripGovernor {
 
     /// Revokes `role` from `account`. Only an `Admin` may call this.
     ///
+    /// Idempotent: revoking a role from an account that never held it (or has
+    /// already been revoked) is a silent no-op. No error is raised.
+    ///
     /// Rejected with `LastAdmin` if it would remove the final `Admin`.
     pub fn revoke_role(
         env: Env,

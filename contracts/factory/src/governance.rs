@@ -22,6 +22,13 @@ pub fn config(env: &Env, governor: &Address) -> Result<GovernorConfig, Error> {
 ///
 /// `rate_per_sec` and, for fixed-duration streams, the declared length must
 /// respect the protocol parameters DripGovernor holds.
+///
+/// # Panics
+///
+/// This function uses `checked_sub` to safely compute stream duration, ensuring
+/// it is robust against any call site — including future code paths that may
+/// not pre-validate `end_time > start_time`. Returns `Err(ArithmeticOverflow)`
+/// if `end_time < start_time` (underflow).
 pub fn enforce_bounds(
     config: &GovernorConfig,
     rate_per_sec: i128,
@@ -32,7 +39,9 @@ pub fn enforce_bounds(
         return Err(Error::RateExceedsMax);
     }
     if end_time > 0 {
-        let duration = end_time - start_time;
+        let duration = end_time
+            .checked_sub(start_time)
+            .ok_or(Error::ArithmeticOverflow)?;
         if duration < config.min_duration_seconds {
             return Err(Error::DurationTooShort);
         }
