@@ -278,8 +278,14 @@ fn top_up_on_cancelled_stream_is_rejected() {
 #[test]
 fn top_up_rejects_zero_and_negative_amount() {
     let s = Setup::new(100, 3600, false);
-    assert_eq!(s.client.try_top_up(&s.sender, &0), Err(Ok(Error::InvalidAmount)));
-    assert_eq!(s.client.try_top_up(&s.sender, &-1), Err(Ok(Error::InvalidAmount)));
+    assert_eq!(
+        s.client.try_top_up(&s.sender, &0),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert_eq!(
+        s.client.try_top_up(&s.sender, &-1),
+        Err(Ok(Error::InvalidAmount))
+    );
 }
 
 #[test]
@@ -900,9 +906,15 @@ fn all_settlement_paths_rejected_after_cancel() {
     s.advance_secs(900);
     s.client.cancel(&s.sender);
 
-    assert_eq!(s.client.try_cancel(&s.sender), Err(Ok(Error::StreamCancelled)));
+    assert_eq!(
+        s.client.try_cancel(&s.sender),
+        Err(Ok(Error::StreamCancelled))
+    );
     assert_eq!(s.client.try_force_cancel(), Err(Ok(Error::StreamCancelled)));
-    assert_eq!(s.client.try_clawback(&s.sender), Err(Ok(Error::StreamCancelled)));
+    assert_eq!(
+        s.client.try_clawback(&s.sender),
+        Err(Ok(Error::StreamCancelled))
+    );
     assert_eq!(s.client.try_withdraw(&1), Err(Ok(Error::StreamCancelled)));
     assert_eq!(s.token.balance(&s.client.address), 0);
 }
@@ -916,9 +928,15 @@ fn all_settlement_paths_rejected_after_force_cancel() {
     s.advance_secs(2_592_001);
     s.client.force_cancel();
 
-    assert_eq!(s.client.try_cancel(&s.sender), Err(Ok(Error::StreamCancelled)));
+    assert_eq!(
+        s.client.try_cancel(&s.sender),
+        Err(Ok(Error::StreamCancelled))
+    );
     assert_eq!(s.client.try_force_cancel(), Err(Ok(Error::StreamCancelled)));
-    assert_eq!(s.client.try_clawback(&s.sender), Err(Ok(Error::StreamCancelled)));
+    assert_eq!(
+        s.client.try_clawback(&s.sender),
+        Err(Ok(Error::StreamCancelled))
+    );
     assert_eq!(s.client.try_withdraw(&1), Err(Ok(Error::StreamCancelled)));
     assert_eq!(s.token.balance(&s.client.address), 0);
 }

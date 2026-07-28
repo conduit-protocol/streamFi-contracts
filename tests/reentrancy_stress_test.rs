@@ -262,13 +262,22 @@ fn test_reentrancy_guard_blocks_all_mutating_operations_when_locked() {
         client.try_withdraw(&50),
         Err(Ok(Error::ReentrancyForbidden))
     );
-    assert_eq!(client.try_cancel(&sender), Err(Ok(Error::ReentrancyForbidden)));
-    assert_eq!(client.try_pause(&sender), Err(Ok(Error::ReentrancyForbidden)));
+    assert_eq!(
+        client.try_cancel(&sender),
+        Err(Ok(Error::ReentrancyForbidden))
+    );
+    assert_eq!(
+        client.try_pause(&sender),
+        Err(Ok(Error::ReentrancyForbidden))
+    );
     assert_eq!(
         client.try_top_up(&sender, &50_000),
         Err(Ok(Error::ReentrancyForbidden))
     );
-    assert_eq!(client.try_clawback(&sender), Err(Ok(Error::ReentrancyForbidden)));
+    assert_eq!(
+        client.try_clawback(&sender),
+        Err(Ok(Error::ReentrancyForbidden))
+    );
     assert_eq!(
         client.try_transfer_recipient(&new_recipient),
         Err(Ok(Error::ReentrancyForbidden))

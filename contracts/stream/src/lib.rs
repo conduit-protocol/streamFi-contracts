@@ -20,11 +20,7 @@ pub struct DripStream;
 /// Check that `caller` is either the stream's `sender` or a delegated
 /// `operator`, then consume the caller's auth. Returns `NotAuthorized`
 /// when `caller` matches neither role or fails the auth check.
-fn require_sender_or_operator(
-    env: &Env,
-    caller: &Address,
-    sender: &Address,
-) -> Result<(), Error> {
+fn require_sender_or_operator(env: &Env, caller: &Address, sender: &Address) -> Result<(), Error> {
     let operator: Option<Address> = env.storage().instance().get(&DataKey::Operator);
     match operator {
         Some(op) => {
@@ -337,8 +333,14 @@ impl DripStream {
     ///
     /// Transfers the exact required deposit (rate_per_second × extra_time_seconds)
     /// from the sender into the contract and updates `end_time`.
-    pub fn extend_duration(env: Env, caller: Address, extra_time_seconds: u64) -> Result<(), Error> {
-        state::with_guard(&env, |env| Self::_extend_duration(env, &caller, extra_time_seconds))
+    pub fn extend_duration(
+        env: Env,
+        caller: Address,
+        extra_time_seconds: u64,
+    ) -> Result<(), Error> {
+        state::with_guard(&env, |env| {
+            Self::_extend_duration(env, &caller, extra_time_seconds)
+        })
     }
 
     fn _extend_duration(env: &Env, caller: &Address, extra_time_seconds: u64) -> Result<(), Error> {
@@ -516,9 +518,7 @@ impl DripStream {
         caller.require_auth();
         ttl::bump(&env);
 
-        env.storage()
-            .instance()
-            .set(&DataKey::Operator, &operator);
+        env.storage().instance().set(&DataKey::Operator, &operator);
         events::operator_set(&env, &caller, &operator);
         Ok(())
     }

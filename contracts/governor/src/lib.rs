@@ -86,7 +86,14 @@ impl DripGovernor {
     }
 
     /// Read-only: whether the governor is currently under an emergency pause.
-    pub fn is_paused(env: Env) -> bool {
+    ///
+    /// Named `governor_is_paused` (not `is_paused`) because `drip-factory`
+    /// depends on this crate directly (for `DripGovernorClient` /
+    /// `GovernorConfig`), which pulls this contract's compiled code into
+    /// factory's own WASM link step. `DripFactory` already has its own
+    /// `is_paused`/`pause`/`unpause` methods; using the same names here
+    /// causes a hard `duplicate symbol` link error in `drip_factory.wasm`.
+    pub fn governor_is_paused(env: Env) -> bool {
         is_paused(&env)
     }
 
@@ -98,7 +105,9 @@ impl DripGovernor {
     /// before any state is touched. Role administration (`grant_role`,
     /// `revoke_role`, `transfer_authority`) remains operational so the
     /// admin can still manage access during an emergency.
-    pub fn pause(env: Env, caller: Address) -> Result<(), Error> {
+    ///
+    /// Named `governor_pause` — see `governor_is_paused` for why.
+    pub fn governor_pause(env: Env, caller: Address) -> Result<(), Error> {
         role::require_role(&env, &caller, Role::Admin)?;
         if is_paused(&env) {
             return Err(Error::AlreadyPaused);
@@ -110,7 +119,9 @@ impl DripGovernor {
     }
 
     /// Lift the emergency pause, allowing parameter writes again.
-    pub fn unpause(env: Env, caller: Address) -> Result<(), Error> {
+    ///
+    /// Named `governor_unpause` — see `governor_is_paused` for why.
+    pub fn governor_unpause(env: Env, caller: Address) -> Result<(), Error> {
         role::require_role(&env, &caller, Role::Admin)?;
         if !is_paused(&env) {
             return Err(Error::NotPaused);

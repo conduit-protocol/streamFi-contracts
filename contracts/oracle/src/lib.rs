@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn admin_can_submit_price() {
-        let (env, client, admin) = setup();
+        let (_env, client, admin) = setup();
         client.initialize(&admin);
 
         let result = client.try_submit_price(&admin, &100);
@@ -673,7 +673,7 @@ mod tests {
 
     #[test]
     fn revoking_last_admin_is_rejected() {
-        let (env, client, admin) = setup();
+        let (_env, client, admin) = setup();
         client.initialize(&admin);
 
         let result = client.try_revoke_role(&admin, &Role::Admin, &admin);
@@ -697,7 +697,7 @@ mod tests {
 
     #[test]
     fn admin_can_pause_and_unpause() {
-        let (env, client, admin) = setup();
+        let (_env, client, admin) = setup();
         client.initialize(&admin);
 
         assert!(!client.is_paused());
@@ -729,7 +729,7 @@ mod tests {
 
     #[test]
     fn submit_price_works_after_unpause() {
-        let (env, client, admin) = setup();
+        let (_env, client, admin) = setup();
         client.initialize(&admin);
 
         client.pause(&admin);
@@ -741,7 +741,7 @@ mod tests {
 
     #[test]
     fn double_pause_is_rejected() {
-        let (env, client, admin) = setup();
+        let (_env, client, admin) = setup();
         client.initialize(&admin);
 
         client.pause(&admin);
@@ -751,7 +751,7 @@ mod tests {
 
     #[test]
     fn unpause_when_not_paused_is_rejected() {
-        let (env, client, admin) = setup();
+        let (_env, client, admin) = setup();
         client.initialize(&admin);
 
         let result = client.try_unpause(&admin);
