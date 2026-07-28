@@ -201,12 +201,16 @@ impl TwapOracle {
 
     /// Returns the current oracle price, guarded against re-entrancy.
     ///
+    /// Aggregates every non-stale submission across all addresses that have
+    /// ever called `submit_price` (median, or the average of the two
+    /// middle values when there is an even count) rather than trusting the
+    /// single most recent submitter unconditionally — see issue #194.
+    ///
     /// Errors:
     /// - `OracleNotConfigured` if `configure_oracle` has not been called.
     /// - `NoPriceAvailable` if no price has been submitted yet.
-    /// - `OracleStalePrice` if the last submitted price is older than the
+    /// - `OracleStalePrice` if every submission on record is older than the
     ///   configured `max_staleness`.
-    /// - `InvalidPrice` if the stored price is zero.
     /// - `OracleLocked` if called while the re-entrancy guard is already held
     ///   (see the nested-lock warning on `calculate_fiat_stream_payout`).
     pub fn get_twap_price(env: Env) -> Result<u64, Error> {
@@ -217,22 +221,36 @@ impl TwapOracle {
                 .get(&DataKey::Config)
                 .ok_or(Error::OracleNotConfigured)?;
 
-            let data: PriceData = env
+            let submitters: Vec<Address> = env
                 .storage()
                 .instance()
-                .get(&DataKey::Price)
-                .ok_or(Error::NoPriceAvailable)?;
+                .get(&DataKey::Submitters)
+                .unwrap_or(Vec::new(&env));
 
-            let age = env.ledger().timestamp().saturating_sub(data.updated_at);
-            if age > config.max_staleness {
-                return Err(Error::OracleStalePrice);
+            let now = env.ledger().timestamp();
+            let mut fresh_prices: Vec<u64> = Vec::new(&env);
+            let mut saw_any_submission = false;
+
+            for feeder in submitters.iter() {
+                let submission: Option<PriceData> =
+                    env.storage().instance().get(&DataKey::Submission(feeder));
+                if let Some(data) = submission {
+                    saw_any_submission = true;
+                    let age = now.saturating_sub(data.updated_at);
+                    if age <= config.max_staleness && data.price != 0 {
+                        fresh_prices.push_back(data.price);
+                    }
+                }
             }
 
-            if data.price == 0 {
-                return Err(Error::InvalidPrice);
+            if fresh_prices.is_empty() {
+                if saw_any_submission {
+                    return Err(Error::OracleStalePrice);
+                }
+                return Err(Error::NoPriceAvailable);
             }
 
-            Ok(data.price)
+            Ok(median(fresh_prices))
         })
     }
 
