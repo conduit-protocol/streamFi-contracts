@@ -6,6 +6,13 @@ use soroban_sdk::{Address, BytesN, Env, Symbol, Val, Vec};
 /// `__constructor` built-in. Since DripStream uses a named `initialize`
 /// function, we use the two-step pattern: deploy the WASM first, then
 /// invoke `initialize` via `env.invoke_contract`.
+///
+/// The `wasm_hash` must be valid and represent the currently-deployed DripStream
+/// WASM code. If `wasm_hash` is invalid, stale, or has been replaced by
+/// `upgrade_stream_wasm()` between the time a client read it and the time this
+/// deployment executes, the `deploy()` call will fail. Off-chain clients should
+/// read `stream_wasm_hash()` immediately before submitting the `create_stream`
+/// transaction to minimize the window for concurrent upgrades.
 pub fn deploy_stream(
     env: &Env,
     wasm_hash: &BytesN<32>,

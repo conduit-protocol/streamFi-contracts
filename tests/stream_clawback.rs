@@ -188,3 +188,25 @@ fn clawback_while_paused_uses_paused_timestamp() {
     assert_eq!(reclaimed, 3_300_000);
     assert_eq!(tok.balance(&sender) - sender_before, 3_300_000);
 }
+
+// ── Clawback enabled view function ───────────────────────────────────────────
+
+#[test]
+fn clawback_enabled_returns_true_when_enabled() {
+    let env = base_env();
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let (client, _) = deploy_stream_with_clawback(&env, &sender, &recipient, 1_000, 3_600, true);
+    assert!(client.clawback_enabled());
+}
+
+#[test]
+fn clawback_enabled_returns_false_when_disabled() {
+    let env = base_env();
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let (client, _) = deploy_stream_with_clawback(&env, &sender, &recipient, 1_000, 3_600, false);
+    assert!(!client.clawback_enabled());
+}

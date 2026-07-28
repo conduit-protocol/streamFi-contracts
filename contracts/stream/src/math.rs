@@ -5,6 +5,17 @@ use crate::storage::StreamInfo;
 
 /// Returns the total tokens that have streamed up to `now`,
 /// excluding any paused time. Does not account for withdrawals.
+///
+/// The amount is `rate_per_second * elapsed`, where `elapsed` is the time
+/// between `start_time` and an "effective now" that is clamped so pausing and
+/// stream completion never inflate the result:
+/// - If `now` is before `start_time`, nothing has streamed yet (`0`).
+/// - If `end_time` is set and has passed, `effective now` is `end_time` —
+///   streaming stops accruing once the stream is over.
+/// - If the stream is currently paused, `effective now` is `paused_at`, the
+///   timestamp the pause began — time spent paused never counts as elapsed,
+///   so accrual freezes until `resume()` shifts `start_time` forward.
+/// - Otherwise `effective now` is the current ledger time.
 pub fn streamed_amount(env: &Env, info: &StreamInfo) -> Result<i128, Error> {
     let now = env.ledger().timestamp();
 
@@ -32,6 +43,11 @@ pub fn streamed_amount(env: &Env, info: &StreamInfo) -> Result<i128, Error> {
 }
 
 /// Returns tokens available for the recipient to withdraw right now.
+///
+/// Computed as `streamed_amount(env, info) - info.withdrawn`, so it inherits
+/// the same pausing/completion clamping as [`streamed_amount`]: while a
+/// stream is paused, `streamed_amount` stops growing and `withdrawable`
+/// stays flat until the stream is resumed.
 ///
 /// Guards against the case where `info.withdrawn` could theoretically
 /// exceed `streamed` (e.g. if ledger time skews or a top-up changes
