@@ -215,6 +215,39 @@ fn authority_can_change_fee_recipient() {
     assert_eq!(client.config().fee_recipient, new_recipient);
 }
 
+// ── Max duration ────────────────────────────────────────────────────────────
+
+#[test]
+fn authority_can_set_max_duration() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _) = deploy_governor(&env);
+    client.set_max_duration(&authority, &7_200);
+    assert_eq!(client.config().max_duration_seconds, 7_200);
+}
+
+#[test]
+fn zero_max_duration_is_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _) = deploy_governor(&env);
+    let result = client.try_set_max_duration(&authority, &0);
+    assert_eq!(result, Err(Ok(Error::InvalidParam)));
+}
+
+#[test]
+fn non_rate_manager_cannot_set_max_duration() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _authority, _) = deploy_governor(&env);
+    let non_rate_manager = Address::generate(&env);
+    let result = client.try_set_max_duration(&non_rate_manager, &7_200);
+    assert!(result.is_err());
+}
+
 // ── Transfer authority ───────────────────────────────────────────────────────
 
 #[test]
@@ -230,4 +263,93 @@ fn authority_transfers_correctly() {
     // on read).
     let config = client.config();
     assert_eq!(config.fee_bps, 30); // defaults unchanged
+}
+
+// ── TTL extension on all state-mutating functions ───────────────────────────
+
+#[test]
+fn grant_role_extends_instance_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _) = deploy_governor(&env);
+    let new_admin = Address::generate(&env);
+    client.grant_role(&authority, &drip_governor::Role::Admin, &new_admin);
+    let ttl = env.as_contract(&client.address, || env.storage().instance().get_ttl());
+    assert_eq!(ttl, 200_000);
+}
+
+#[test]
+fn revoke_role_extends_instance_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _) = deploy_governor(&env);
+    let new_admin = Address::generate(&env);
+    client.grant_role(&authority, &drip_governor::Role::Admin, &new_admin);
+    // Reset to baseline after grant
+    env.as_contract(&client.address, || {
+        env.storage().instance().extend_ttl(100_000, 200_000);
+    });
+
+    client.revoke_role(&authority, &drip_governor::Role::Admin, &new_admin);
+    let ttl = env.as_contract(&client.address, || env.storage().instance().get_ttl());
+    assert_eq!(ttl, 200_000);
+}
+
+#[test]
+fn transfer_authority_extends_instance_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _) = deploy_governor(&env);
+    let new_authority = Address::generate(&env);
+    client.transfer_authority(&authority, &new_authority);
+    let ttl = env.as_contract(&client.address, || env.storage().instance().get_ttl());
+    assert_eq!(ttl, 200_000);
+}
+
+#[test]
+fn set_fee_recipient_extends_instance_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _) = deploy_governor(&env);
+    let new_recipient = Address::generate(&env);
+    client.set_fee_recipient(&authority, &new_recipient);
+    let ttl = env.as_contract(&client.address, || env.storage().instance().get_ttl());
+    assert_eq!(ttl, 200_000);
+}
+
+#[test]
+fn set_min_duration_extends_instance_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _) = deploy_governor(&env);
+    client.set_min_duration(&authority, &7_200);
+    let ttl = env.as_contract(&client.address, || env.storage().instance().get_ttl());
+    assert_eq!(ttl, 200_000);
+}
+
+#[test]
+fn set_max_rate_extends_instance_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _) = deploy_governor(&env);
+    client.set_max_rate(&authority, &500_000_000);
+    let ttl = env.as_contract(&client.address, || env.storage().instance().get_ttl());
+    assert_eq!(ttl, 200_000);
+}
+
+#[test]
+fn set_max_duration_extends_instance_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _) = deploy_governor(&env);
+    client.set_max_duration(&authority, &7_200);
+    let ttl = env.as_contract(&client.address, || env.storage().instance().get_ttl());
+    assert_eq!(ttl, 200_000);
 }
