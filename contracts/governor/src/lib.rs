@@ -21,7 +21,7 @@ mod role;
 mod storage;
 mod ttl;
 
-use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env};
+use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Symbol, Vec};
 
 pub use config::GovernorConfig;
 pub use errors::Error;
@@ -167,6 +167,72 @@ impl DripGovernor {
         env.storage().instance().set(&DataKey::Paused, &false);
         events::unpaused(&env, &caller, env.ledger().timestamp());
         Ok(())
+    }
+
+    // ── Factory pause passthrough (Admin-gated) ──────────────────────────
+    //
+    // `DripFactory::pause`/`unpause` are gated on `governor.require_auth()`,
+    // where `governor` is the address the factory was initialized with. When
+    // that address is this `DripGovernor` contract — the wiring the rest of
+    // the codebase (`governance::config`/`enforce_bounds` in `drip-factory`)
+    // already assumes — the factory has no entry point reachable through the
+    // role system without a passthrough like this: a direct EOA call to
+    // `factory.pause()` can never satisfy `governor.require_auth()` unless
+    // the EOA *is* `governor`. A contract, on the other hand, implicitly
+    // satisfies `require_auth()` for its own address when it is the direct
+    // invoker of the call, so this cross-contract call succeeds where a
+    // plain account call could not.
+    //
+    // `drip-governor` cannot depend on the `drip-factory` crate (factory
+    // already depends on governor — a reverse dependency would be
+    // circular), so the call goes through `env.try_invoke_contract` by
+    // function name instead of a generated client.
+
+    /// Role-gated passthrough: pauses the `DripFactory` this governor
+    /// controls, so a `Role::Admin` holder has an actual entry point to
+    /// trigger the factory's emergency halt.
+    pub fn pause_factory(env: Env, caller: Address) -> Result<(), Error> {
+        role::require_role(&env, &caller, Role::Admin)?;
+        let factory: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::FactoryAddress)
+            .ok_or(Error::NotInitialized)?;
+
+        let result: Result<
+            Result<(), soroban_sdk::ConversionError>,
+            Result<soroban_sdk::Error, soroban_sdk::InvokeError>,
+        > = env.try_invoke_contract(&factory, &Symbol::new(&env, "pause"), Vec::new(&env));
+        match result {
+            Ok(Ok(())) => {
+                events::factory_paused(&env, &caller, env.ledger().timestamp());
+                Ok(())
+            }
+            _ => Err(Error::FactoryCallFailed),
+        }
+    }
+
+    /// Role-gated passthrough: lifts the `DripFactory` emergency pause. See
+    /// `pause_factory`.
+    pub fn unpause_factory(env: Env, caller: Address) -> Result<(), Error> {
+        role::require_role(&env, &caller, Role::Admin)?;
+        let factory: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::FactoryAddress)
+            .ok_or(Error::NotInitialized)?;
+
+        let result: Result<
+            Result<(), soroban_sdk::ConversionError>,
+            Result<soroban_sdk::Error, soroban_sdk::InvokeError>,
+        > = env.try_invoke_contract(&factory, &Symbol::new(&env, "unpause"), Vec::new(&env));
+        match result {
+            Ok(Ok(())) => {
+                events::factory_unpaused(&env, &caller, env.ledger().timestamp());
+                Ok(())
+            }
+            _ => Err(Error::FactoryCallFailed),
+        }
     }
 
     // ── Role administration (Admin-gated) ────────────────────────────────

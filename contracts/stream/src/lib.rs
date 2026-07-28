@@ -110,6 +110,17 @@ impl DripStream {
         s.set(&DataKey::Flags, &flags);
         s.set(&DataKey::EventSequence, &0_u64);
         s.set(&DataKey::StorageVersion, &storage::CURRENT_STORAGE_VERSION);
+
+        events::created(
+            &env,
+            &sender,
+            &recipient,
+            &token,
+            rate_per_second,
+            start_time,
+            end_time,
+        );
+
         // Write the entire stream state as a single struct — one storage
         // write instead of eleven. All subsequent reads go through
         // state::load(), which fetches the whole struct in one call.
@@ -489,7 +500,7 @@ impl DripStream {
             tk.transfer(&contract_addr, &info.sender, &refund_to_sender);
         }
 
-        events::cancelled(env, &info.sender, refund_to_sender, info.withdrawn);
+        events::force_cancelled(env, &info.sender, refund_to_sender, info.withdrawn);
         Ok(())
     }
 

@@ -18,4 +18,7 @@ pub enum Error {
     AlreadyPaused = 7,
     /// `unpause` was called while the governor was not paused.
     NotPaused = 8,
+    /// A cross-contract call into `DripFactory` (`pause_factory`/
+    /// `unpause_factory`) failed or was rejected by the factory.
+    FactoryCallFailed = 9,
 }

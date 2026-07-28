@@ -95,3 +95,17 @@ pub fn unpaused(env: &Env, caller: &Address, resumed_at: u64) {
     env.events()
         .publish((symbol_short!("unpaused"), caller.clone()), resumed_at);
 }
+
+/// Emitted after a successful `pause_factory` cross-contract call, so
+/// off-chain infra can confirm the *factory's* pause committed, distinct
+/// from `paused` (which marks the governor's own pause).
+pub fn factory_paused(env: &Env, caller: &Address, paused_at: u64) {
+    env.events()
+        .publish((symbol_short!("fpaused"), caller.clone()), paused_at);
+}
+
+/// Emitted after a successful `unpause_factory` cross-contract call.
+pub fn factory_unpaused(env: &Env, caller: &Address, resumed_at: u64) {
+    env.events()
+        .publish((symbol_short!("funpaused"), caller.clone()), resumed_at);
+}

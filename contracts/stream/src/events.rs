@@ -30,6 +30,30 @@ fn assert_non_negative_amount(env: &Env, value: i128) {
     }
 }
 
+pub fn created(
+    env: &Env,
+    sender: &Address,
+    recipient: &Address,
+    token: &Address,
+    rate_per_second: i128,
+    start_time: u64,
+    end_time: u64,
+) {
+    assert_non_negative_amount(env, rate_per_second);
+
+    let sequence = next_sequence(env);
+    env.events().publish(
+        (symbol_short!("created"), sender.clone(), sequence),
+        (
+            recipient.clone(),
+            token.clone(),
+            rate_per_second,
+            start_time,
+            end_time,
+        ),
+    );
+}
+
 pub fn withdrawn(
     env: &Env,
     recipient: &Address,
@@ -55,6 +79,21 @@ pub fn cancelled(env: &Env, sender: &Address, refund_amount: i128, withdrawn_so_
     let sequence = next_sequence(env);
     env.events().publish(
         (symbol_short!("cancelled"), sender.clone(), sequence),
+        (refund_amount, withdrawn_so_far),
+    );
+}
+
+/// Recipient-initiated cancellation via `force_cancel`, after the sender left
+/// the stream paused past the threshold. Distinct from `cancelled` (the
+/// sender/operator-initiated path via `cancel`) so consumers of the event log
+/// can tell the two apart without correlating who signed the transaction.
+pub fn force_cancelled(env: &Env, sender: &Address, refund_amount: i128, withdrawn_so_far: i128) {
+    assert_non_negative_amount(env, refund_amount);
+    assert_non_negative_amount(env, withdrawn_so_far);
+
+    let sequence = next_sequence(env);
+    env.events().publish(
+        (symbol_short!("force_cxl"), sender.clone(), sequence),
         (refund_amount, withdrawn_so_far),
     );
 }

@@ -332,6 +332,25 @@ impl DripFactory {
             .get(&DataKey::StreamAddr(stream_id))
     }
 
+    /// Batch-resolve stream IDs to their deployed contract addresses.
+    ///
+    /// Pairs with `streams_by_sender`/`streams_by_recipient`: a page of IDs
+    /// from either can be resolved to addresses in one call instead of one
+    /// `stream_address` round-trip per ID. Unknown IDs resolve to `None` in
+    /// their slot, matching `stream_address`'s per-ID behavior, rather than
+    /// failing the whole batch. Capped at `MAX_BATCH_SIZE`, mirroring
+    /// `create_batch_streams`.
+    pub fn stream_addresses(env: Env, ids: Vec<u64>) -> Result<Vec<Option<Address>>, Error> {
+        if ids.len() > MAX_BATCH_SIZE {
+            return Err(Error::BatchTooLarge);
+        }
+        let mut out = Vec::new(&env);
+        for id in ids.iter() {
+            out.push_back(Self::stream_address(env.clone(), id));
+        }
+        Ok(out)
+    }
+
     pub fn streams_by_sender(env: Env, sender: Address, offset: u32, limit: u32) -> Vec<u64> {
         let all: Vec<u64> = env
             .storage()
