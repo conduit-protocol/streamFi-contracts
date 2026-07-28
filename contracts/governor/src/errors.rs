@@ -21,4 +21,8 @@ pub enum Error {
     /// A cross-contract call into `DripFactory` (`pause_factory`/
     /// `unpause_factory`) failed or was rejected by the factory.
     FactoryCallFailed = 9,
+    /// No pending authority transfer to accept.
+    NoPendingAuthority = 10,
+    /// Caller is not the pending authority.
+    NotPendingAuthority = 11,
 }

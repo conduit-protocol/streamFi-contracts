@@ -9,10 +9,11 @@
 //! archival. Without TTL extension, idle governors can expire and cause all
 //! downstream `DripFactory::create_stream` calls to fail until restored.
 //!
-//! **Roles:** Three role tiers allow delegation of governance authority:
+//! **Roles:** Four role tiers allow delegation of governance authority:
 //! - `Admin`: grant and revoke any role (super-user).
 //! - `FeeManager`: manage fees via `set_fee_bps` and `set_fee_recipient`.
 //! - `RateManager`: manage rate and duration bounds via `set_max_rate`, `set_min_duration`, `set_max_duration`.
+//! - `Pauser`: emergency pause/unpause via `governor_pause`, `governor_unpause`, `pause_factory`, `unpause_factory`.
 
 mod config;
 mod errors;
@@ -154,7 +155,7 @@ impl DripGovernor {
     ///
     /// Named `governor_pause` — see `governor_is_paused` for why.
     pub fn governor_pause(env: Env, caller: Address) -> Result<(), Error> {
-        role::require_role(&env, &caller, Role::Admin)?;
+        role::require_role_or_admin(&env, &caller, Role::Pauser)?;
         if is_paused(&env) {
             return Err(Error::AlreadyPaused);
         }
@@ -168,7 +169,7 @@ impl DripGovernor {
     ///
     /// Named `governor_unpause` — see `governor_is_paused` for why.
     pub fn governor_unpause(env: Env, caller: Address) -> Result<(), Error> {
-        role::require_role(&env, &caller, Role::Admin)?;
+        role::require_role_or_admin(&env, &caller, Role::Pauser)?;
         if !is_paused(&env) {
             return Err(Error::NotPaused);
         }
@@ -198,10 +199,10 @@ impl DripGovernor {
     // function name instead of a generated client.
 
     /// Role-gated passthrough: pauses the `DripFactory` this governor
-    /// controls, so a `Role::Admin` holder has an actual entry point to
-    /// trigger the factory's emergency halt.
+    /// controls, so a `Role::Admin` or `Role::Pauser` holder has an actual
+    /// entry point to trigger the factory's emergency halt.
     pub fn pause_factory(env: Env, caller: Address) -> Result<(), Error> {
-        role::require_role(&env, &caller, Role::Admin)?;
+        role::require_role_or_admin(&env, &caller, Role::Pauser)?;
         let factory: Address = env
             .storage()
             .instance()
@@ -224,7 +225,7 @@ impl DripGovernor {
     /// Role-gated passthrough: lifts the `DripFactory` emergency pause. See
     /// `pause_factory`.
     pub fn unpause_factory(env: Env, caller: Address) -> Result<(), Error> {
-        role::require_role(&env, &caller, Role::Admin)?;
+        role::require_role_or_admin(&env, &caller, Role::Pauser)?;
         let factory: Address = env
             .storage()
             .instance()
@@ -286,6 +287,9 @@ impl DripGovernor {
     /// Grants first so the subsequent revoke can never trip the `LastAdmin`
     /// guard, then revokes `caller`. Kept for API familiarity — equivalent to
     /// a `grant_role(Admin, new)` followed by `revoke_role(Admin, caller)`.
+    ///
+    /// **Deprecated**: Use `propose_authority` + `accept_authority` instead for
+    /// the safer 2-step transfer pattern (Ownable2Step).
     pub fn transfer_authority(
         env: Env,
         caller: Address,
@@ -299,6 +303,67 @@ impl DripGovernor {
         Ok(())
     }
 
+    /// Propose a new authority address (step 1 of 2).
+    ///
+    /// Stores the pending authority address and the proposer. The transfer is
+    /// not complete until the pending authority calls `accept_authority`. This
+    /// ensures the new address is live and can actually sign transactions
+    /// before the handoff.
+    pub fn propose_authority(
+        env: Env,
+        caller: Address,
+        new_authority: Address,
+    ) -> Result<(), Error> {
+        role::require_role(&env, &caller, Role::Admin)?;
+        ttl::bump(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAuthority, &new_authority);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAuthorityProposer, &caller);
+        events::propose_authority(&env, &caller, &new_authority);
+        Ok(())
+    }
+
+    /// Accept the pending authority transfer (step 2 of 2).
+    ///
+    /// Must be called by the pending authority address itself. This completes
+    /// the transfer: the pending authority gains `Admin` and the proposer
+    /// loses it.
+    pub fn accept_authority(env: Env, caller: Address) -> Result<(), Error> {
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAuthority)
+            .ok_or(Error::NoPendingAuthority)?;
+        if caller != pending {
+            return Err(Error::NotPendingAuthority);
+        }
+        caller.require_auth();
+        ttl::bump(&env);
+
+        // Revoke Admin from the original proposer.
+        let proposer: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAuthorityProposer)
+            .ok_or(Error::NoPendingAuthority)?;
+        let _ = role::revoke(&env, Role::Admin, &proposer)?;
+
+        // Grant Admin to the new authority (the caller).
+        role::grant(&env, Role::Admin, &caller);
+
+        // Clean up pending state.
+        env.storage().instance().remove(&DataKey::PendingAuthority);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingAuthorityProposer);
+
+        events::accept_authority(&env, &caller, &proposer);
+        Ok(())
+    }
+
     // ── Parameter writes (role-gated + pause guard) ──────────────────────
 
     pub fn set_fee_bps(env: Env, caller: Address, fee_bps: u32) -> Result<(), Error> {
@@ -308,8 +373,13 @@ impl DripGovernor {
         if fee_bps > 10_000 {
             return Err(Error::InvalidParam);
         }
+        let old_fee_bps: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeBps)
+            .unwrap_or(30);
         env.storage().instance().set(&DataKey::FeeBps, &fee_bps);
-        events::set_fee_bps(&env, &caller, fee_bps);
+        events::set_fee_bps(&env, &caller, old_fee_bps, fee_bps);
         Ok(())
     }
 
@@ -317,10 +387,15 @@ impl DripGovernor {
         assert_not_paused(&env)?;
         role::require_role_or_admin(&env, &caller, Role::FeeManager)?;
         ttl::bump(&env);
+        let old_recipient: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeRecipient)
+            .ok_or(Error::NotInitialized)?;
         env.storage()
             .instance()
             .set(&DataKey::FeeRecipient, &recipient);
-        events::set_fee_recipient(&env, &caller, &recipient);
+        events::set_fee_recipient(&env, &caller, &old_recipient, &recipient);
         Ok(())
     }
 

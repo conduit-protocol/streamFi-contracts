@@ -40,4 +40,10 @@ pub enum DataKey {
     /// Maintained alongside `grant`/`revoke` so role membership can be
     /// enumerated on-chain without replaying every event from genesis.
     RoleMembers(Role),
+    /// Pending authority address for 2-step transfer.
+    /// Set by `propose_authority`, consumed by `accept_authority`.
+    PendingAuthority,
+    /// The admin who proposed the authority transfer.
+    /// Used to revoke their Admin role when the transfer is accepted.
+    PendingAuthorityProposer,
 }

@@ -59,15 +59,42 @@ pub fn transfer_authority(env: &Env, caller: &Address, new_authority: &Address) 
     );
 }
 
-pub fn set_fee_bps(env: &Env, caller: &Address, fee_bps: u32) {
-    env.events()
-        .publish((symbol_short!("fee_bps"), caller.clone()), fee_bps);
+/// Emitted when an `Admin` proposes a new authority address.
+///
+/// # Indexer & Context Note
+/// This is the first step of a 2-step authority transfer (Ownable2Step pattern).
+/// The transfer is not complete until `accept_authority` is called by the
+/// proposed address.
+pub fn propose_authority(env: &Env, caller: &Address, new_authority: &Address) {
+    env.events().publish(
+        (symbol_short!("propose"), caller.clone()),
+        new_authority.clone(),
+    );
 }
 
-pub fn set_fee_recipient(env: &Env, caller: &Address, recipient: &Address) {
+/// Emitted when the pending authority accepts the transfer.
+///
+/// # Indexer & Context Note
+/// This completes the 2-step authority transfer. The new authority now holds
+/// the Admin role, and the old authority's Admin role is revoked.
+pub fn accept_authority(env: &Env, caller: &Address, old_authority: &Address) {
+    env.events().publish(
+        (symbol_short!("accept"), caller.clone()),
+        old_authority.clone(),
+    );
+}
+
+pub fn set_fee_bps(env: &Env, caller: &Address, old_fee_bps: u32, new_fee_bps: u32) {
+    env.events().publish(
+        (symbol_short!("fee_bps"), caller.clone()),
+        (old_fee_bps, new_fee_bps),
+    );
+}
+
+pub fn set_fee_recipient(env: &Env, caller: &Address, old_recipient: &Address, new_recipient: &Address) {
     env.events().publish(
         (symbol_short!("fee_rec"), caller.clone()),
-        recipient.clone(),
+        (old_recipient.clone(), new_recipient.clone()),
     );
 }
 
