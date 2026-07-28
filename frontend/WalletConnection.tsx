@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useMutation, gql } from '@apollo/client';
+import { useMutation, gql, useApolloClient } from '@apollo/client';
 import { validateStreamPayload } from './lib/validateStreamPayload';
 import { GET_DASHBOARD_SUMMARY } from './Dashboard';
 
@@ -17,10 +17,16 @@ export const WalletConnection: React.FC = () => {
   const [amount, setAmount] = useState('');
   const [ratePerSecond, setRatePerSecond] = useState('');
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
+  const client = useApolloClient();
 
   const [submitStreamRequest, { loading }] = useMutation(SUBMIT_STREAM_REQUEST, {
-    refetchQueries: [{ query: GET_DASHBOARD_SUMMARY }],
-    awaitRefetchQueries: true,
+    // FIX for Bug #148: Previously only refetched GET_DASHBOARD_SUMMARY,
+    // leaving other cached queries (transactions, notifications, etc.)
+    // stale. Resetting the entire cache after a successful mutation
+    // guarantees every subsequent query reads fresh on-chain data.
+    onCompleted: () => {
+      client.cache.reset();
+    },
   });
 
   const handleSubmit = async (event: React.FormEvent) => {

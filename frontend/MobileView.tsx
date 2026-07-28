@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useMutation, gql } from '@apollo/client';
+import { useMutation, gql, useApolloClient } from '@apollo/client';
 import { validateStreamPayload } from './lib/validateStreamPayload';
 
 const SUBMIT_STREAM_REQUEST_MOBILE = gql`
@@ -16,8 +16,16 @@ export const MobileView: React.FC = () => {
   const [amount, setAmount] = useState('');
   const [ratePerSecond, setRatePerSecond] = useState('');
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
+  const client = useApolloClient();
 
-  const [submitStreamRequest, { loading }] = useMutation(SUBMIT_STREAM_REQUEST_MOBILE);
+  const [submitStreamRequest, { loading }] = useMutation(SUBMIT_STREAM_REQUEST_MOBILE, {
+    // FIX for Bug #148: Reset Apollo cache after successful mutation so
+    // subsequent queries reflect the latest on-chain state instead of
+    // serving stale cached data.
+    onCompleted: () => {
+      client.cache.reset();
+    },
+  });
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
