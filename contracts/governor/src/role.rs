@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Env};
+use soroban_sdk::{contracttype, Address, Env, Vec as SorobanVec};
 
 use crate::storage::{DataKey, RoleKey};
 use crate::ttl;
@@ -58,6 +58,16 @@ pub fn grant(env: &Env, role: Role, account: &Address) -> bool {
         let next = admin_count(env) + 1;
         env.storage().instance().set(&DataKey::AdminCount, &next);
     }
+    // Maintain the role-members index.
+    let mut members: SorobanVec<Address> = env
+        .storage()
+        .instance()
+        .get(&DataKey::RoleMembers(role))
+        .unwrap_or(SorobanVec::new(env));
+    members.push_back(account.clone());
+    env.storage()
+        .instance()
+        .set(&DataKey::RoleMembers(role), &members);
     true
 }
 
@@ -81,6 +91,22 @@ pub fn revoke(env: &Env, role: Role, account: &Address) -> Result<bool, Error> {
             .set(&DataKey::AdminCount, &(count - 1));
     }
     env.storage().instance().remove(&key(role, account));
+    // Remove from the role-members index.
+    let members: SorobanVec<Address> = env
+        .storage()
+        .instance()
+        .get(&DataKey::RoleMembers(role))
+        .unwrap_or(SorobanVec::new(env));
+    let mut updated = SorobanVec::new(env);
+    for i in 0..members.len() {
+        let m = members.get(i).unwrap();
+        if m != *account {
+            updated.push_back(m);
+        }
+    }
+    env.storage()
+        .instance()
+        .set(&DataKey::RoleMembers(role), &updated);
     Ok(true)
 }
 
@@ -93,6 +119,17 @@ pub fn require_role(env: &Env, caller: &Address, role: Role) -> Result<(), Error
     }
     ttl::bump(env);
     Ok(())
+}
+
+/// Returns every account currently holding `role`.
+///
+/// Reads from the persistent `RoleMembers` index maintained by `grant`/`revoke`.
+/// Returns an empty vector if no accounts hold the role.
+pub fn role_members(env: &Env, role: Role) -> SorobanVec<Address> {
+    env.storage()
+        .instance()
+        .get(&DataKey::RoleMembers(role))
+        .unwrap_or(SorobanVec::new(env))
 }
 
 /// Requires that `caller` authorized the transaction and holds `role` **or**

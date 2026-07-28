@@ -110,6 +110,15 @@ impl DripGovernor {
         role::has_role(&env, role, &account)
     }
 
+    /// Returns every account currently holding `role`.
+    ///
+    /// Enables on-chain role-membership auditing without replaying every
+    /// `grant_role`/`revoke_role` event from genesis. The index is maintained
+    /// automatically by `grant_role` and `revoke_role`.
+    pub fn role_members(env: Env, role: Role) -> Vec<Address> {
+        role::role_members(&env, role)
+    }
+
     /// Current maximum stream duration in seconds, without fetching the full
     /// [`GovernorConfig`]. See [`DripGovernor::set_max_duration`].
     pub fn max_duration(env: Env) -> Result<u64, Error> {

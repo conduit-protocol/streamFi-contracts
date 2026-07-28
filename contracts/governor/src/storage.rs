@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address};
+use soroban_sdk::{contracttype, Address, Vec as SorobanVec};
 
 use crate::role::Role;
 
@@ -36,4 +36,8 @@ pub enum DataKey {
     AdminCount,
     /// Emergency-pause flag. When `true`, parameter writes are blocked.
     Paused,
+    /// Index of all accounts currently holding a given role.
+    /// Maintained alongside `grant`/`revoke` so role membership can be
+    /// enumerated on-chain without replaying every event from genesis.
+    RoleMembers(Role),
 }

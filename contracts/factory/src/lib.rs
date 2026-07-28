@@ -326,6 +326,8 @@ impl DripFactory {
         Ok(stream_ids)
     }
 
+    /// Returns the deployed contract address for `stream_id`, or `None` if the
+    /// ID was never created (or the stream has been archived from storage).
     pub fn stream_address(env: Env, stream_id: u64) -> Option<Address> {
         env.storage()
             .persistent()
@@ -351,6 +353,12 @@ impl DripFactory {
         Ok(out)
     }
 
+    /// Paginated list of stream IDs created by `sender`.
+    ///
+    /// Returns at most `limit` IDs starting at `offset`. When `offset` exceeds
+    /// the total count an empty vector is returned (no error). `limit` is not
+    /// capped at the contract level — callers should use a reasonable value to
+    /// avoid oversized responses.
     pub fn streams_by_sender(env: Env, sender: Address, offset: u32, limit: u32) -> Vec<u64> {
         let all: Vec<u64> = env
             .storage()
@@ -369,6 +377,30 @@ impl DripFactory {
         query::paginate(&env, all, offset, limit)
     }
 
+    /// Total number of streams created by `sender`.
+    ///
+    /// Mirrors the global `stream_count` but scoped to one sender, so clients
+    /// can size pagination UI without walking pages to discover the total.
+    pub fn stream_count_by_sender(env: Env, sender: Address) -> u32 {
+        let all: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::BySender(sender))
+            .unwrap_or(Vec::new(&env));
+        all.len()
+    }
+
+    /// Total number of streams where `recipient` is the beneficiary.
+    pub fn stream_count_by_recipient(env: Env, recipient: Address) -> u32 {
+        let all: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ByRecipient(recipient))
+            .unwrap_or(Vec::new(&env));
+        all.len()
+    }
+
+    /// Total number of streams ever created by this factory.
     pub fn stream_count(env: Env) -> u64 {
         env.storage()
             .instance()
