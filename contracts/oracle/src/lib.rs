@@ -818,4 +818,51 @@ mod tests {
         let price = client.get_twap_price();
         assert_eq!(price, 50_000_000);
     }
+
+    // ── Admin rotation tests (#192) ───────────────────────────────────────
+
+    #[test]
+    fn transfer_admin_moves_role_and_revokes_old() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&admin, &new_admin);
+
+        assert!(client.has_role(&Role::Admin, &new_admin));
+        assert!(!client.has_role(&Role::Admin, &admin));
+    }
+
+    #[test]
+    fn transfer_admin_requires_admin_role() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let stranger = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        let result = client.try_transfer_admin(&stranger, &new_admin);
+        assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+    }
+
+    #[test]
+    fn new_admin_can_act_immediately_after_transfer() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&admin, &new_admin);
+
+        let oracle_addr = Address::generate(&env);
+        let config = OracleConfig {
+            oracle_address: oracle_addr,
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 300,
+        };
+        // Old admin is no longer authorized...
+        let result = client.try_configure_oracle(&admin, &config);
+        assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+        // ...new admin is.
+        client.configure_oracle(&new_admin, &config);
+    }
 }
