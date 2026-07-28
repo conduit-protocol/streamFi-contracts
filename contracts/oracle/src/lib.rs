@@ -185,7 +185,16 @@ impl TwapOracle {
             price,
             updated_at: now,
         };
+        // Legacy single-value slot — kept so `price_age`/`is_price_stale`
+        // and any external readers of the old scalar `Price` key continue
+        // to see the most recent submission.
         env.storage().instance().set(&DataKey::Price, &data);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Submission(caller.clone()), &data);
+        add_submitter(&env, &caller);
+
         events::price_submitted(&env, &caller, price, now);
         Ok(())
     }
@@ -362,6 +371,28 @@ fn require_role_or_admin(env: &Env, caller: &Address, role: Role) -> Result<(), 
     } else {
         Err(Error::NotAuthorized)
     }
+}
+
+/// Records `account` in the `Submitters` set the first time it submits a
+/// price, so `get_twap_price` knows which `DataKey::Submission` entries to
+/// aggregate. No-op if already recorded.
+fn add_submitter(env: &Env, account: &Address) {
+    let mut submitters: Vec<Address> = env
+        .storage()
+        .instance()
+        .get(&DataKey::Submitters)
+        .unwrap_or(Vec::new(env));
+
+    for existing in submitters.iter() {
+        if existing == *account {
+            return;
+        }
+    }
+
+    submitters.push_back(account.clone());
+    env.storage()
+        .instance()
+        .set(&DataKey::Submitters, &submitters);
 }
 
 fn is_paused(env: &Env) -> bool {
