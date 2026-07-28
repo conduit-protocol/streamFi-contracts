@@ -12,4 +12,10 @@ pub enum Error {
     /// The governor has not been initialised yet (required storage keys
     /// are missing).
     NotInitialized = 5,
+    /// The governor is under an emergency pause; parameter changes are halted.
+    ContractPaused = 6,
+    /// `pause` was called while the governor was already paused.
+    AlreadyPaused = 7,
+    /// `unpause` was called while the governor was not paused.
+    NotPaused = 8,
 }

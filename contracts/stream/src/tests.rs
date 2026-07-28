@@ -154,7 +154,7 @@ fn pause_freezes_withdrawable() {
     let s = Setup::new(100, 3600, false);
     s.advance_secs(100);
     let before_pause = s.client.withdrawable();
-    s.client.pause();
+    s.client.pause(&s.sender);
     s.advance_secs(500); // time passes but stream is paused
     assert_eq!(s.client.withdrawable(), before_pause); // unchanged
 }
@@ -163,9 +163,9 @@ fn pause_freezes_withdrawable() {
 fn resume_continues_streaming() {
     let s = Setup::new(100, 3600, false);
     s.advance_secs(100); // 100s elapsed → 10_000 owed
-    s.client.pause();
+    s.client.pause(&s.sender);
     s.advance_secs(200); // 200s paused (should not count)
-    s.client.resume();
+    s.client.resume(&s.sender);
     s.advance_secs(50); // 50s more elapsed → +5_000
                         // Total should be 150s of streaming = 15_000
     assert_eq!(s.client.withdrawable(), 15_000);
@@ -174,15 +174,15 @@ fn resume_continues_streaming() {
 #[test]
 fn double_pause_panics() {
     let s = Setup::new(100, 3600, false);
-    s.client.pause();
-    let result = s.client.try_pause();
+    s.client.pause(&s.sender);
+    let result = s.client.try_pause(&s.sender);
     assert_eq!(result, Err(Ok(Error::AlreadyPaused)));
 }
 
 #[test]
 fn resume_unpaused_panics() {
     let s = Setup::new(100, 3600, false);
-    let result = s.client.try_resume(); // not paused
+    let result = s.client.try_resume(&s.sender); // not paused
     assert_eq!(result, Err(Ok(Error::NotPaused)));
 }
 
@@ -193,7 +193,7 @@ fn cancel_before_start_refunds_full_deposit() {
     let s = Setup::new(100, 3600, false);
     let deposit = 100 * 3600;
     let sender_before = s.token.balance(&s.sender);
-    s.client.cancel();
+    s.client.cancel(&s.sender);
     let sender_after = s.token.balance(&s.sender);
     assert_eq!(sender_after - sender_before, deposit);
     assert_eq!(s.token.balance(&s.recipient), 0);
@@ -205,7 +205,7 @@ fn cancel_halfway_splits_correctly() {
     s.advance_secs(1800); // halfway
     let sender_before = s.token.balance(&s.sender);
     let recipient_before = s.token.balance(&s.recipient);
-    s.client.cancel();
+    s.client.cancel(&s.sender);
     // Recipient gets 1800 × 100 = 180_000 (earned but not withdrawn)
     // Sender gets 180_000 refund
     assert_eq!(s.token.balance(&s.recipient) - recipient_before, 180_000);
@@ -215,8 +215,8 @@ fn cancel_halfway_splits_correctly() {
 #[test]
 fn cancel_then_cancel_panics() {
     let s = Setup::new(100, 3600, false);
-    s.client.cancel();
-    let result = s.client.try_cancel();
+    s.client.cancel(&s.sender);
+    let result = s.client.try_cancel(&s.sender);
     assert_eq!(result, Err(Ok(Error::StreamCancelled)));
 }
 
@@ -224,7 +224,7 @@ fn cancel_then_cancel_panics() {
 fn withdraw_after_cancel_panics() {
     let s = Setup::new(100, 3600, false);
     s.advance_secs(100);
-    s.client.cancel();
+    s.client.cancel(&s.sender);
     // stream is fully settled; withdraw blocked
     let result = s.client.try_withdraw(&1);
     assert_eq!(result, Err(Ok(Error::StreamCancelled)));
@@ -237,7 +237,7 @@ fn clawback_reclaims_unstreamed() {
     let s = Setup::new(100, 3600, true); // clawback enabled
     s.advance_secs(600); // 600s streamed → 60_000 owed to recipient
     let sender_before = s.token.balance(&s.sender);
-    let reclaimed = s.client.clawback();
+    let reclaimed = s.client.clawback(&s.sender);
     // reclaimed = total_balance − owed = (100×3600) − 60_000 = 300_000
     assert_eq!(reclaimed, 300_000);
     assert_eq!(s.token.balance(&s.sender) - sender_before, 300_000);
@@ -246,7 +246,7 @@ fn clawback_reclaims_unstreamed() {
 #[test]
 fn clawback_disabled_panics() {
     let s = Setup::new(100, 3600, false);
-    let result = s.client.try_clawback();
+    let result = s.client.try_clawback(&s.sender);
     assert_eq!(result, Err(Ok(Error::ClawbackDisabled)));
 }
 
@@ -259,27 +259,33 @@ fn top_up_increases_contract_balance() {
     token_admin.mint(&s.sender, &50_000);
 
     let stream_before = s.token.balance(&s.client.address);
-    s.client.top_up(&50_000);
+    s.client.top_up(&s.sender, &50_000);
     assert_eq!(s.token.balance(&s.client.address), stream_before + 50_000);
 }
 
 #[test]
 fn top_up_on_cancelled_stream_is_rejected() {
     let s = Setup::new(100, 3600, false);
-    s.client.cancel();
+    s.client.cancel(&s.sender);
 
     let token_admin = token::StellarAssetClient::new(&s.env, &s.token.address);
     token_admin.mint(&s.sender, &10_000);
 
-    let result = s.client.try_top_up(&10_000);
+    let result = s.client.try_top_up(&s.sender, &10_000);
     assert!(result.is_err());
 }
 
 #[test]
 fn top_up_rejects_zero_and_negative_amount() {
     let s = Setup::new(100, 3600, false);
-    assert_eq!(s.client.try_top_up(&0), Err(Ok(Error::InvalidAmount)));
-    assert_eq!(s.client.try_top_up(&-1), Err(Ok(Error::InvalidAmount)));
+    assert_eq!(
+        s.client.try_top_up(&s.sender, &0),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert_eq!(
+        s.client.try_top_up(&s.sender, &-1),
+        Err(Ok(Error::InvalidAmount))
+    );
 }
 
 #[test]
@@ -562,7 +568,7 @@ fn withdrawable_returns_zero_after_cancel() {
     s.advance_secs(500);
     assert!(s.client.withdrawable() > 0);
 
-    s.client.cancel();
+    s.client.cancel(&s.sender);
     assert_eq!(s.client.withdrawable(), 0);
 }
 
@@ -572,12 +578,12 @@ fn pause_then_cancel_refunds_correctly() {
     let deposit = 100 * 3600; // 360_000
 
     s.advance_secs(600); // 60_000 streamed
-    s.client.pause();
+    s.client.pause(&s.sender);
     s.advance_secs(1_000); // time passes; not counted
 
     let sender_before = s.token.balance(&s.sender);
     let recipient_before = s.token.balance(&s.recipient);
-    s.client.cancel();
+    s.client.cancel(&s.sender);
 
     // Recipient should get 60_000 (earned before pause)
     // Sender should get 360_000 − 60_000 = 300_000
@@ -604,7 +610,7 @@ fn info_returns_correct_initial_state() {
 fn info_reflects_pause_state() {
     let s = Setup::new(100, 3600, false);
     s.advance_secs(100);
-    s.client.pause();
+    s.client.pause(&s.sender);
 
     let inf = s.client.info();
     assert!(inf.is_paused());
@@ -647,15 +653,15 @@ fn delayed_consumer_retains_payloads_and_can_detect_sequence_gaps() {
     // consumer reads the committed events only after all mutations complete.
     s.advance_secs(10);
     let paused_at = s.env.ledger().timestamp();
-    s.client.pause();
+    s.client.pause(&s.sender);
 
     s.advance_secs(5);
     let resumed_at = s.env.ledger().timestamp();
-    s.client.resume();
+    s.client.resume(&s.sender);
 
     let token_admin = token::StellarAssetClient::new(&s.env, &s.token.address);
     token_admin.mint(&s.sender, &500);
-    s.client.top_up(&500);
+    s.client.top_up(&s.sender, &500);
     let balance_after_top_up = s.token.balance(&s.client.address);
 
     assert_eq!(s.client.event_sequence(), 3);
@@ -707,7 +713,7 @@ fn extend_duration_success() {
     token_admin.mint(&s.sender, &10_000);
 
     let contract_before = s.token.balance(&s.client.address);
-    s.client.extend_duration(&100);
+    s.client.extend_duration(&s.sender, &100);
 
     assert_eq!(s.client.info().end_time, before_end + 100);
     assert_eq!(s.token.balance(&s.client.address), contract_before + 10_000);
@@ -732,7 +738,7 @@ fn extend_duration_rejected_for_open_ended() {
 
     client.initialize(&sender, &recipient, &token_addr, &100, &now, &0, &false);
 
-    let result = client.try_extend_duration(&100);
+    let result = client.try_extend_duration(&sender, &100);
     assert_eq!(result, Err(Ok(Error::InvalidTimeRange)));
 }
 
@@ -765,7 +771,7 @@ fn extend_duration_rejects_on_arithmetic_overflow() {
         &false,
     );
 
-    let result = client.try_extend_duration(&2);
+    let result = client.try_extend_duration(&sender, &2);
     assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
 }
 
@@ -838,7 +844,7 @@ fn cancel_commits_state_and_drains_balance() {
     assert!(!s.client.info().is_cancelled());
     assert!(s.token.balance(&s.client.address) > 0);
 
-    s.client.cancel();
+    s.client.cancel(&s.sender);
 
     assert!(s.client.info().is_cancelled());
     assert_eq!(s.token.balance(&s.client.address), 0);
@@ -855,7 +861,7 @@ fn cancel_conserves_value_and_leaves_nothing_to_redrain() {
     let sender_before = s.token.balance(&s.sender);
     let recipient_before = s.token.balance(&s.recipient);
 
-    s.client.cancel();
+    s.client.cancel(&s.sender);
 
     let paid_to_sender = s.token.balance(&s.sender) - sender_before;
     let paid_to_recipient = s.token.balance(&s.recipient) - recipient_before;
@@ -872,7 +878,7 @@ fn force_cancel_commits_state_and_drains_balance() {
     // pause branch never applies.
     let s = Setup::new(100, 5_184_000, false);
     s.advance_secs(1_000);
-    s.client.pause();
+    s.client.pause(&s.sender);
     s.advance_secs(2_592_001); // 30 days + 1s
 
     let escrowed = s.token.balance(&s.client.address);
@@ -898,11 +904,17 @@ fn force_cancel_commits_state_and_drains_balance() {
 fn all_settlement_paths_rejected_after_cancel() {
     let s = Setup::new(100, 3600, true); // clawback enabled
     s.advance_secs(900);
-    s.client.cancel();
+    s.client.cancel(&s.sender);
 
-    assert_eq!(s.client.try_cancel(), Err(Ok(Error::StreamCancelled)));
+    assert_eq!(
+        s.client.try_cancel(&s.sender),
+        Err(Ok(Error::StreamCancelled))
+    );
     assert_eq!(s.client.try_force_cancel(), Err(Ok(Error::StreamCancelled)));
-    assert_eq!(s.client.try_clawback(), Err(Ok(Error::StreamCancelled)));
+    assert_eq!(
+        s.client.try_clawback(&s.sender),
+        Err(Ok(Error::StreamCancelled))
+    );
     assert_eq!(s.client.try_withdraw(&1), Err(Ok(Error::StreamCancelled)));
     assert_eq!(s.token.balance(&s.client.address), 0);
 }
@@ -912,13 +924,19 @@ fn all_settlement_paths_rejected_after_cancel() {
 fn all_settlement_paths_rejected_after_force_cancel() {
     let s = Setup::new(100, 5_184_000, true); // clawback enabled
     s.advance_secs(1_000);
-    s.client.pause();
+    s.client.pause(&s.sender);
     s.advance_secs(2_592_001);
     s.client.force_cancel();
 
-    assert_eq!(s.client.try_cancel(), Err(Ok(Error::StreamCancelled)));
+    assert_eq!(
+        s.client.try_cancel(&s.sender),
+        Err(Ok(Error::StreamCancelled))
+    );
     assert_eq!(s.client.try_force_cancel(), Err(Ok(Error::StreamCancelled)));
-    assert_eq!(s.client.try_clawback(), Err(Ok(Error::StreamCancelled)));
+    assert_eq!(
+        s.client.try_clawback(&s.sender),
+        Err(Ok(Error::StreamCancelled))
+    );
     assert_eq!(s.client.try_withdraw(&1), Err(Ok(Error::StreamCancelled)));
     assert_eq!(s.token.balance(&s.client.address), 0);
 }
@@ -936,7 +954,7 @@ fn cancel_after_partial_withdrawal_does_not_double_pay() {
     let sender_before = s.token.balance(&s.sender);
     let recipient_before = s.token.balance(&s.recipient);
 
-    s.client.cancel();
+    s.client.cancel(&s.sender);
 
     let paid_to_recipient = s.token.balance(&s.recipient) - recipient_before;
     let paid_to_sender = s.token.balance(&s.sender) - sender_before;
@@ -954,7 +972,7 @@ fn cancel_after_partial_withdrawal_does_not_double_pay() {
 #[test]
 fn cancelled_flag_is_durable_across_invocations() {
     let s = Setup::new(100, 3600, false);
-    s.client.cancel();
+    s.client.cancel(&s.sender);
 
     let persisted = s
         .env

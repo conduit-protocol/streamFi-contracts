@@ -47,26 +47,29 @@ pub fn admin_count(env: &Env) -> u32 {
 /// Grants `role` to `account`.
 ///
 /// Idempotent: re-granting a role the account already holds is a no-op, so the
-/// admin count can never be inflated by repeated grants.
-pub fn grant(env: &Env, role: Role, account: &Address) {
+/// admin count can never be inflated by repeated grants. Returns `true` if the
+/// role was newly granted, or `false` if the account already held it.
+pub fn grant(env: &Env, role: Role, account: &Address) -> bool {
     if has_role(env, role, account) {
-        return;
+        return false;
     }
     env.storage().instance().set(&key(role, account), &true);
     if role == Role::Admin {
         let next = admin_count(env) + 1;
         env.storage().instance().set(&DataKey::AdminCount, &next);
     }
+    true
 }
 
 /// Revokes `role` from `account`.
 ///
 /// Idempotent when the account doesn't hold the role. Refuses to remove the
 /// final `Admin` (`LastAdmin`): a governor with zero admins could never grant
-/// a new one, permanently freezing every protocol parameter.
-pub fn revoke(env: &Env, role: Role, account: &Address) -> Result<(), Error> {
+/// a new one, permanently freezing every protocol parameter. Returns `true` if
+/// the role was newly revoked, or `false` if the account did not hold it.
+pub fn revoke(env: &Env, role: Role, account: &Address) -> Result<bool, Error> {
     if !has_role(env, role, account) {
-        return Ok(());
+        return Ok(false);
     }
     if role == Role::Admin {
         let count = admin_count(env);
@@ -78,7 +81,7 @@ pub fn revoke(env: &Env, role: Role, account: &Address) -> Result<(), Error> {
             .set(&DataKey::AdminCount, &(count - 1));
     }
     env.storage().instance().remove(&key(role, account));
-    Ok(())
+    Ok(true)
 }
 
 /// Requires that `caller` both authorized the transaction and holds `role`,

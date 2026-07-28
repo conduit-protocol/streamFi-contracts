@@ -17,6 +17,31 @@ use storage::{DataKey, StreamInfo, FLAG_CANCELLED, FLAG_CLAWBACK_ENABLED, FLAG_P
 #[contract]
 pub struct DripStream;
 
+/// Check that `caller` is either the stream's `sender` or a delegated
+/// `operator`, then consume the caller's auth. Returns `NotAuthorized`
+/// when `caller` matches neither role or fails the auth check.
+fn require_sender_or_operator(env: &Env, caller: &Address, sender: &Address) -> Result<(), Error> {
+    let operator: Option<Address> = env.storage().instance().get(&DataKey::Operator);
+    match operator {
+        Some(op) => {
+            if caller == sender || caller == &op {
+                caller.require_auth();
+                Ok(())
+            } else {
+                Err(Error::NotAuthorized)
+            }
+        }
+        None => {
+            if caller != sender {
+                Err(Error::NotAuthorized)
+            } else {
+                caller.require_auth();
+                Ok(())
+            }
+        }
+    }
+}
+
 #[contractimpl]
 impl DripStream {
     /// Called once by the factory after deployment.
@@ -144,7 +169,7 @@ impl DripStream {
         Ok(to_send)
     }
 
-    /// Sender cancels the stream.
+    /// Sender (or operator) cancels the stream.
     ///
     /// Settles everything atomically:
     ///   - Tokens the recipient has earned (but not yet withdrawn) are sent
@@ -154,16 +179,16 @@ impl DripStream {
     /// After cancellation, `withdraw()` is blocked (`StreamCancelled`), so
     /// the recipient's share MUST be transferred here rather than left for
     /// a later `withdraw()` call.
-    pub fn cancel(env: Env) -> Result<(), Error> {
-        state::with_guard(&env, Self::_cancel)
+    pub fn cancel(env: Env, caller: Address) -> Result<(), Error> {
+        state::with_guard(&env, |env| Self::_cancel(env, &caller))
     }
 
-    fn _cancel(env: &Env) -> Result<(), Error> {
+    fn _cancel(env: &Env, caller: &Address) -> Result<(), Error> {
         ttl::bump(env);
 
         let info = state::load(env);
         state::assert_not_cancelled(&info)?;
-        info.sender.require_auth();
+        require_sender_or_operator(env, caller, &info.sender)?;
 
         let tk = token::Client::new(env, &info.token);
         let contract_addr = env.current_contract_address();
@@ -195,12 +220,12 @@ impl DripStream {
         Ok(())
     }
 
-    /// Sender pauses the stream.
-    pub fn pause(env: Env) -> Result<(), Error> {
-        state::with_guard(&env, Self::_pause)
+    /// Sender (or operator) pauses the stream.
+    pub fn pause(env: Env, caller: Address) -> Result<(), Error> {
+        state::with_guard(&env, |env| Self::_pause(env, &caller))
     }
 
-    fn _pause(env: &Env) -> Result<(), Error> {
+    fn _pause(env: &Env, caller: &Address) -> Result<(), Error> {
         ttl::bump(env);
 
         let info = state::load(env);
@@ -208,7 +233,7 @@ impl DripStream {
         if info.is_paused() {
             return Err(Error::AlreadyPaused);
         }
-        info.sender.require_auth();
+        require_sender_or_operator(env, caller, &info.sender)?;
 
         let now = env.ledger().timestamp();
         let w = math::withdrawable(env, &info)?;
@@ -222,16 +247,16 @@ impl DripStream {
         updated.paused_at = now;
         state::save(env, &updated);
 
-        events::paused(env, &info.sender, now, w);
+        events::paused(env, caller, now, w);
         Ok(())
     }
 
-    /// Sender resumes a paused stream.
-    pub fn resume(env: Env) -> Result<(), Error> {
-        state::with_guard(&env, Self::_resume)
+    /// Sender (or operator) resumes a paused stream.
+    pub fn resume(env: Env, caller: Address) -> Result<(), Error> {
+        state::with_guard(&env, |env| Self::_resume(env, &caller))
     }
 
-    fn _resume(env: &Env) -> Result<(), Error> {
+    fn _resume(env: &Env, caller: &Address) -> Result<(), Error> {
         ttl::bump(env);
 
         let info = state::load(env);
@@ -239,7 +264,7 @@ impl DripStream {
         if !info.is_paused() {
             return Err(Error::NotPaused);
         }
-        info.sender.require_auth();
+        require_sender_or_operator(env, caller, &info.sender)?;
 
         let now = env.ledger().timestamp();
         let paused_duration = now
@@ -268,28 +293,28 @@ impl DripStream {
         }
         state::save(env, &updated);
 
-        events::resumed(env, &info.sender, now);
+        events::resumed(env, caller, now);
         Ok(())
     }
 
-    /// Sender deposits additional tokens into the stream.
+    /// Sender (or operator) deposits additional tokens into the stream.
     ///
     /// Auth is checked immediately after the minimal state load needed to
     /// know `sender` -- before `ttl::bump` (a storage write) or the
     /// cancellation check -- so an unauthenticated call fails as cheaply
     /// as possible instead of paying for storage-extension instructions
     /// it never needed.
-    pub fn top_up(env: Env, amount: i128) -> Result<(), Error> {
-        state::with_guard(&env, |env| Self::_top_up(env, amount))
+    pub fn top_up(env: Env, caller: Address, amount: i128) -> Result<(), Error> {
+        state::with_guard(&env, |env| Self::_top_up(env, &caller, amount))
     }
 
-    fn _top_up(env: &Env, amount: i128) -> Result<(), Error> {
+    fn _top_up(env: &Env, caller: &Address, amount: i128) -> Result<(), Error> {
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
 
         let info = state::load(env);
-        info.sender.require_auth();
+        require_sender_or_operator(env, caller, &info.sender)?;
 
         ttl::bump(env);
         state::assert_not_cancelled(&info)?;
@@ -300,19 +325,25 @@ impl DripStream {
         tk.transfer(&info.sender, &contract_addr, &amount);
 
         let new_balance = tk.balance(&contract_addr);
-        events::topped_up(env, &info.sender, amount, new_balance);
+        events::topped_up(env, caller, amount, new_balance);
         Ok(())
     }
 
-    /// Sender extends the stream duration by `extra_time_seconds`.
+    /// Sender (or operator) extends the stream duration by `extra_time_seconds`.
     ///
     /// Transfers the exact required deposit (rate_per_second × extra_time_seconds)
     /// from the sender into the contract and updates `end_time`.
-    pub fn extend_duration(env: Env, extra_time_seconds: u64) -> Result<(), Error> {
-        state::with_guard(&env, |env| Self::_extend_duration(env, extra_time_seconds))
+    pub fn extend_duration(
+        env: Env,
+        caller: Address,
+        extra_time_seconds: u64,
+    ) -> Result<(), Error> {
+        state::with_guard(&env, |env| {
+            Self::_extend_duration(env, &caller, extra_time_seconds)
+        })
     }
 
-    fn _extend_duration(env: &Env, extra_time_seconds: u64) -> Result<(), Error> {
+    fn _extend_duration(env: &Env, caller: &Address, extra_time_seconds: u64) -> Result<(), Error> {
         if extra_time_seconds == 0 {
             return Err(Error::InvalidTimeRange);
         }
@@ -320,7 +351,7 @@ impl DripStream {
 
         let info = state::load(env);
         state::assert_not_cancelled(&info)?;
-        info.sender.require_auth();
+        require_sender_or_operator(env, caller, &info.sender)?;
 
         let mut end_time: u64 = info.end_time;
         if end_time == 0 {
@@ -352,17 +383,17 @@ impl DripStream {
 
         // Emit topped_up event to indicate funds were deposited
         let new_balance = tk.balance(&contract_addr);
-        events::topped_up(env, &info.sender, required_deposit, new_balance);
+        events::topped_up(env, caller, required_deposit, new_balance);
 
         Ok(())
     }
 
     /// Sender reclaims unstreamed tokens (only if clawback was enabled).
-    pub fn clawback(env: Env) -> Result<i128, Error> {
-        state::with_guard(&env, Self::_clawback)
+    pub fn clawback(env: Env, caller: Address) -> Result<i128, Error> {
+        state::with_guard(&env, |env| Self::_clawback(env, &caller))
     }
 
-    fn _clawback(env: &Env) -> Result<i128, Error> {
+    fn _clawback(env: &Env, caller: &Address) -> Result<i128, Error> {
         ttl::bump(env);
 
         let info = state::load(env);
@@ -370,7 +401,7 @@ impl DripStream {
         if !info.is_clawback_enabled() {
             return Err(Error::ClawbackDisabled);
         }
-        info.sender.require_auth();
+        require_sender_or_operator(env, caller, &info.sender)?;
 
         let streamed = math::streamed_amount(env, &info)?;
         let owed = (streamed - info.withdrawn).max(0);
@@ -384,7 +415,7 @@ impl DripStream {
             tk.transfer(&contract_addr, &info.sender, &amount);
         }
 
-        events::clawback(env, &info.sender, amount);
+        events::clawback(env, caller, amount);
         Ok(amount)
     }
 
@@ -395,6 +426,18 @@ impl DripStream {
             return 0;
         }
         math::withdrawable(&env, &info).unwrap_or(0)
+    }
+
+    /// Read-only: whether clawback is enabled for this stream.
+    ///
+    /// Returns the `clawback_enabled` flag that was set at initialization time.
+    /// If `false`, calling `clawback()` will be rejected with `ClawbackDisabled`.
+    ///
+    /// Use this before attempting `clawback()` to avoid unnecessarily executing
+    /// a call that will be rejected.
+    pub fn clawback_enabled(env: Env) -> bool {
+        let info = state::load(&env);
+        info.is_clawback_enabled()
     }
 
     /// Recipient force-cancels a stream that has been paused beyond a threshold.
@@ -471,6 +514,45 @@ impl DripStream {
         state::save(env, &updated);
         events::recipient_transferred(env, &info.recipient, &new_recipient);
         Ok(())
+    }
+
+    /// Sender designates an operator who can perform sender-level actions
+    /// (pause, cancel, clawback, top_up, extend_duration) on this stream.
+    ///
+    /// Only the sender may call this. The operator has no power over
+    /// withdrawals (which are recipient-only) or recipient transfers.
+    pub fn set_operator(env: Env, caller: Address, operator: Address) -> Result<(), Error> {
+        let info = state::load(&env);
+        state::assert_not_cancelled(&info)?;
+        if caller != info.sender {
+            return Err(Error::NotAuthorized);
+        }
+        caller.require_auth();
+        ttl::bump(&env);
+
+        env.storage().instance().set(&DataKey::Operator, &operator);
+        events::operator_set(&env, &caller, &operator);
+        Ok(())
+    }
+
+    /// Sender revokes the operator, removing all delegated sender rights.
+    pub fn revoke_operator(env: Env, caller: Address) -> Result<(), Error> {
+        let info = state::load(&env);
+        state::assert_not_cancelled(&info)?;
+        if caller != info.sender {
+            return Err(Error::NotAuthorized);
+        }
+        caller.require_auth();
+        ttl::bump(&env);
+
+        env.storage().instance().remove(&DataKey::Operator);
+        events::operator_revoked(&env, &caller);
+        Ok(())
+    }
+
+    /// Read-only: the current operator address, if any.
+    pub fn operator(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::Operator)
     }
 
     /// Read-only: total tokens streamed so far (regardless of withdrawals).

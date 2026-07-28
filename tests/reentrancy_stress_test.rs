@@ -112,7 +112,7 @@ fn test_reentrancy_guard_released_after_cancel() {
     let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
     assert_eq!(guard_depth(&env, &client.address), 0);
-    client.cancel();
+    client.cancel(&sender);
     assert_eq!(guard_depth(&env, &client.address), 0);
 }
 
@@ -124,9 +124,9 @@ fn test_reentrancy_guard_released_after_pause_resume() {
     let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
     assert_eq!(guard_depth(&env, &client.address), 0);
-    client.pause();
+    client.pause(&sender);
     assert_eq!(guard_depth(&env, &client.address), 0);
-    client.resume();
+    client.resume(&sender);
     assert_eq!(guard_depth(&env, &client.address), 0);
 }
 
@@ -141,7 +141,7 @@ fn test_reentrancy_guard_released_after_top_up() {
     tok_admin.mint(&sender, &50_000);
 
     assert_eq!(guard_depth(&env, &client.address), 0);
-    client.top_up(&50_000);
+    client.top_up(&sender, &50_000);
     assert_eq!(guard_depth(&env, &client.address), 0);
 }
 
@@ -153,7 +153,7 @@ fn test_reentrancy_guard_released_after_clawback() {
     let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, true);
 
     assert_eq!(guard_depth(&env, &client.address), 0);
-    let amount = client.clawback();
+    let amount = client.clawback(&sender);
     assert!(amount > 0);
     assert_eq!(guard_depth(&env, &client.address), 0);
 }
@@ -165,7 +165,7 @@ fn test_reentrancy_guard_released_after_force_cancel() {
     let recipient = Address::generate(&env);
     let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
-    client.pause();
+    client.pause(&sender);
 
     // Fast-forward 30 days to meet the force-cancel threshold
     env.ledger().set(LedgerInfo {
@@ -262,19 +262,28 @@ fn test_reentrancy_guard_blocks_all_mutating_operations_when_locked() {
         client.try_withdraw(&50),
         Err(Ok(Error::ReentrancyForbidden))
     );
-    assert_eq!(client.try_cancel(), Err(Ok(Error::ReentrancyForbidden)));
-    assert_eq!(client.try_pause(), Err(Ok(Error::ReentrancyForbidden)));
     assert_eq!(
-        client.try_top_up(&50_000),
+        client.try_cancel(&sender),
         Err(Ok(Error::ReentrancyForbidden))
     );
-    assert_eq!(client.try_clawback(), Err(Ok(Error::ReentrancyForbidden)));
+    assert_eq!(
+        client.try_pause(&sender),
+        Err(Ok(Error::ReentrancyForbidden))
+    );
+    assert_eq!(
+        client.try_top_up(&sender, &50_000),
+        Err(Ok(Error::ReentrancyForbidden))
+    );
+    assert_eq!(
+        client.try_clawback(&sender),
+        Err(Ok(Error::ReentrancyForbidden))
+    );
     assert_eq!(
         client.try_transfer_recipient(&new_recipient),
         Err(Ok(Error::ReentrancyForbidden))
     );
     assert_eq!(
-        client.try_extend_duration(&3600),
+        client.try_extend_duration(&sender, &3600),
         Err(Ok(Error::ReentrancyForbidden))
     );
 
@@ -430,7 +439,7 @@ fn test_guard_released_on_cancelled_stream() {
     let recipient = Address::generate(&env);
     let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
-    client.cancel();
+    client.cancel(&sender);
     assert_eq!(guard_depth(&env, &client.address), 0);
 
     // Any further mutation on a cancelled stream fails but releases guard
@@ -438,7 +447,7 @@ fn test_guard_released_on_cancelled_stream() {
     assert_eq!(result, Err(Ok(Error::StreamCancelled)));
     assert_eq!(guard_depth(&env, &client.address), 0);
 
-    let result = client.try_cancel();
+    let result = client.try_cancel(&sender);
     assert_eq!(result, Err(Ok(Error::StreamCancelled)));
     assert_eq!(guard_depth(&env, &client.address), 0);
 }
@@ -450,10 +459,10 @@ fn test_guard_released_on_already_paused() {
     let recipient = Address::generate(&env);
     let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
-    client.pause();
+    client.pause(&sender);
     assert_eq!(guard_depth(&env, &client.address), 0);
 
-    let result = client.try_pause();
+    let result = client.try_pause(&sender);
     assert_eq!(result, Err(Ok(Error::AlreadyPaused)));
     assert_eq!(guard_depth(&env, &client.address), 0);
 }
@@ -465,7 +474,7 @@ fn test_guard_released_on_not_paused() {
     let recipient = Address::generate(&env);
     let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
-    let result = client.try_resume();
+    let result = client.try_resume(&sender);
     assert_eq!(result, Err(Ok(Error::NotPaused)));
     assert_eq!(guard_depth(&env, &client.address), 0);
 }
@@ -477,7 +486,7 @@ fn test_guard_released_on_clawback_disabled() {
     let recipient = Address::generate(&env);
     let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
-    let result = client.try_clawback();
+    let result = client.try_clawback(&sender);
     assert_eq!(result, Err(Ok(Error::ClawbackDisabled)));
     assert_eq!(guard_depth(&env, &client.address), 0);
 }
@@ -489,7 +498,7 @@ fn test_guard_released_on_pause_threshold_not_met() {
     let recipient = Address::generate(&env);
     let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
-    client.pause();
+    client.pause(&sender);
 
     // Time hasn't passed enough for force-cancel
     let result = client.try_force_cancel();
@@ -506,7 +515,7 @@ fn test_guard_released_on_extend_duration_zero() {
     let recipient = Address::generate(&env);
     let (client, _token_addr) = deploy_funded_stream(&env, &sender, &recipient, 100, 3600, false);
 
-    let result = client.try_extend_duration(&0);
+    let result = client.try_extend_duration(&sender, &0);
     assert_eq!(result, Err(Ok(Error::InvalidTimeRange)));
     assert_eq!(guard_depth(&env, &client.address), 0);
 }
@@ -529,24 +538,24 @@ fn test_sequential_operations_all_release_guard() {
     client.withdraw(&50);
     assert_eq!(guard_depth(&env, &client.address), 0);
 
-    client.top_up(&100_000);
+    client.top_up(&sender, &100_000);
     assert_eq!(guard_depth(&env, &client.address), 0);
 
-    client.pause();
+    client.pause(&sender);
     assert_eq!(guard_depth(&env, &client.address), 0);
 
-    client.resume();
+    client.resume(&sender);
     assert_eq!(guard_depth(&env, &client.address), 0);
 
     client.transfer_recipient(&new_recipient);
     assert_eq!(guard_depth(&env, &client.address), 0);
 
-    client.clawback();
+    client.clawback(&sender);
     assert_eq!(guard_depth(&env, &client.address), 0);
 
-    client.extend_duration(&3600);
+    client.extend_duration(&sender, &3600);
     assert_eq!(guard_depth(&env, &client.address), 0);
 
-    client.cancel();
+    client.cancel(&sender);
     assert_eq!(guard_depth(&env, &client.address), 0);
 }

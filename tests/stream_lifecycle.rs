@@ -103,7 +103,7 @@ mod stream_lifecycle {
         // Sender cancels
         let sender_before = tok.balance(&sender);
         let recipient_before = tok.balance(&recipient);
-        client.cancel();
+        client.cancel(&sender);
 
         // Recipient gets remaining owed (1_750_000), sender gets back 1_800_000 (half the deposit)
         assert_eq!(tok.balance(&recipient) - recipient_before, 1_750_000);
@@ -138,7 +138,7 @@ mod stream_lifecycle {
         let tok_admin = token::StellarAssetClient::new(&env, &token_addr);
         tok_admin.mint(&sender, &50_000);
 
-        client.top_up(&50_000);
+        client.top_up(&sender, &50_000);
 
         let tok = token::Client::new(&env, &token_addr);
         // Contract now holds 10_000 (original) + 50_000 (top-up) = 60_000

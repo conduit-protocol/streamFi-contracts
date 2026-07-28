@@ -16,6 +16,17 @@ pub struct BatchStreamRequest {
     pub end_time: u64,
 }
 
+/// Combined status of the DripFactory contract.
+///
+/// Combines `is_paused` and `protocol_fee_bps` into a single view struct so
+/// UIs and indexers can query overall protocol health in a single RPC call.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FactoryStatus {
+    pub is_paused: bool,
+    pub protocol_fee_bps: u32,
+}
+
 /// Storage keys for the DripFactory contract.
 ///
 /// The `#[contracttype]` macro serializes each variant as an XDR tagged union:

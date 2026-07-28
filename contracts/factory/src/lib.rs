@@ -15,8 +15,8 @@ use soroban_sdk::{
 };
 
 pub use errors::Error;
-pub use storage::BatchStreamRequest;
 use storage::DataKey;
+pub use storage::{BatchStreamRequest, FactoryStatus};
 
 /// Maximum number of streams accepted by a single `create_batch_streams`
 /// call. Bounds per-transaction Soroban CPU instructions so an oversized
@@ -480,5 +480,16 @@ impl DripFactory {
     /// enforce the halt on withdrawals as well as creation.
     pub fn is_paused(env: Env) -> bool {
         pause::is_paused(&env)
+    }
+
+    /// Read-only: combined factory status (pause state and protocol fee bps).
+    ///
+    /// Combines `is_paused` and `protocol_fee_bps` into a single view call
+    /// to save a round-trip for UI/indexer health checks.
+    pub fn factory_status(env: Env) -> FactoryStatus {
+        FactoryStatus {
+            is_paused: Self::is_paused(env.clone()),
+            protocol_fee_bps: Self::protocol_fee_bps(env),
+        }
     }
 }

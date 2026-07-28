@@ -1,3 +1,5 @@
+#![no_std]
+
 use soroban_sdk::{contract, contracterror, contractimpl, symbol_short, Env, Symbol};
 
 #[contracterror]
@@ -19,9 +21,6 @@ const STATE_VERSION_KEY: Symbol = symbol_short!("B_Ver");
 
 /// Storage key for the callback sequence counter.
 const CALLBACK_SEQ_KEY: Symbol = symbol_short!("B_CbSeq");
-
-/// Storage key that holds the last known-good state version snapshot.
-const SNAPSHOT_KEY: Symbol = symbol_short!("B_Snap");
 
 #[contractimpl]
 impl BatchTransferProcessor {
@@ -115,22 +114,19 @@ fn load_state_version(env: &Env) -> u64 {
 }
 
 /// Increment the state version.
+///
+/// Uses `checked_add` for consistency with the rest of the crate's
+/// checked-arithmetic convention (see `process_batch`'s amount-summing loop).
 fn bump_state_version(env: &Env) {
-    let v = load_state_version(env) + 1;
+    let v = load_state_version(env)
+        .checked_add(1)
+        .expect("state version counter overflowed u64");
     env.storage().instance().set(&STATE_VERSION_KEY, &v);
-}
-
-/// Save a snapshot of the state version at the start of processing.
-fn save_snapshot(env: &Env, version: u64) {
-    env.storage().instance().set(&SNAPSHOT_KEY, &version);
 }
 
 /// Load the callback sequence counter.
 fn load_callback_seq(env: &Env) -> u64 {
-    env.storage()
-        .instance()
-        .get(&CALLBACK_SEQ_KEY)
-        .unwrap_or(0)
+    env.storage().instance().get(&CALLBACK_SEQ_KEY).unwrap_or(0)
 }
 
 /// Clean up any stale pending callbacks.
@@ -141,8 +137,6 @@ fn cleanup_stale_callbacks(env: &Env) {
     let seq = load_callback_seq(env);
     if seq > 0 {
         // Invalidate all pending callbacks by advancing the sequence.
-        env.storage()
-            .instance()
-            .set(&CALLBACK_SEQ_KEY, &(seq + 1));
+        env.storage().instance().set(&CALLBACK_SEQ_KEY, &(seq + 1));
     }
 }

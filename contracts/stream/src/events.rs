@@ -105,3 +105,17 @@ pub fn recipient_transferred(env: &Env, old_recipient: &Address, new_recipient: 
         new_recipient.clone(),
     );
 }
+
+pub fn operator_set(env: &Env, sender: &Address, operator: &Address) {
+    let sequence = next_sequence(env);
+    env.events().publish(
+        (symbol_short!("set_op"), sender.clone(), sequence),
+        operator.clone(),
+    );
+}
+
+pub fn operator_revoked(env: &Env, sender: &Address) {
+    let sequence = next_sequence(env);
+    env.events()
+        .publish((symbol_short!("rm_op"), sender.clone()), sequence);
+}

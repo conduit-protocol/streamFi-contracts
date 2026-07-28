@@ -1,5 +1,16 @@
 use soroban_sdk::{Env, Vec};
 
+/// Returns a paginated slice of `v` starting at `offset` with at most `limit`
+/// elements.
+///
+/// Uses `saturating_add` to avoid panicking when `offset + limit` overflows
+/// `usize` — both values are caller-controlled and the release profile enables
+/// overflow checks, so a raw `+` would abort this read-only view call instead
+/// of gracefully clamping. The result is clamped to the vector's actual length,
+/// so callers never receive more elements than exist.
+///
+/// This function is shared by [`DripFactory::streams_by_sender`] and
+/// [`DripFactory::streams_by_recipient`].
 pub fn paginate(env: &Env, v: Vec<u64>, offset: u32, limit: u32) -> Vec<u64> {
     let mut result = Vec::new(env);
     let start = offset as usize;

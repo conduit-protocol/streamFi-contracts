@@ -58,6 +58,20 @@ fn pause_then_unpause_flips_state() {
 }
 
 #[test]
+fn factory_status_returns_combined_pause_and_fee_status() {
+    let s = Setup::new();
+    let status = s.client.factory_status();
+    assert!(!status.is_paused);
+    assert_eq!(status.protocol_fee_bps, 30);
+
+    s.client.pause();
+    let status_paused = s.client.factory_status();
+    assert!(status_paused.is_paused);
+    assert_eq!(status_paused.protocol_fee_bps, 30);
+}
+
+
+#[test]
 fn pause_when_already_paused_errors_and_leaves_state_unchanged() {
     let s = Setup::new();
     s.client.pause();

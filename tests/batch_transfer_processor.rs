@@ -8,9 +8,7 @@
 
 #![cfg(test)]
 
-use conduit_integration_tests::batch_transfer_processor::{
-    BatchTransferProcessor, BatchTransferProcessorClient, Error,
-};
+use drip_batch_processor::{BatchTransferProcessor, BatchTransferProcessorClient, Error};
 use soroban_sdk::{symbol_short, Env, Vec};
 
 const LOCK_KEY: soroban_sdk::Symbol = symbol_short!("B_Lock");
@@ -194,24 +192,29 @@ fn process_batch_rejects_single_zero_entry() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn process_batch_rejects_concurrent_state_mutation() {
+fn process_batch_succeeds_from_arbitrary_starting_version() {
     let env = Env::default();
     let client = deploy_processor(&env);
 
-    // Simulate a concurrent state mutation by bumping the version
-    // from outside between the snapshot and the final check.
+    // Pre-set the version to an arbitrary value (e.g. 99) to verify the
+    // contract correctly increments from any starting point.
     let state_ver_key = soroban_sdk::symbol_short!("B_Ver");
     env.as_contract(&client.address, || {
         env.storage().instance().set(&state_ver_key, &99_u64);
     });
 
     let amounts = Vec::from_array(&env, [10u64, 20]);
-    let result = client.try_process_batch(&amounts);
-    assert_eq!(result, Err(Ok(Error::StateVersionMismatch)));
+    assert_eq!(client.try_process_batch(&amounts), Ok(Ok(30)));
     assert!(
         !lock_state(&env, &client),
-        "lock must be released after version mismatch",
+        "lock must be released after a successful call",
     );
+
+    // Version should have been bumped to 100.
+    let v: u64 = env.as_contract(&client.address, || {
+        env.storage().instance().get(&state_ver_key).unwrap_or(0)
+    });
+    assert_eq!(v, 100);
 }
 
 #[test]
@@ -238,7 +241,7 @@ fn process_batch_increments_version_on_success() {
 }
 
 #[test]
-fn process_batch_rejects_version_mutation_mid_batch() {
+fn process_batch_succeeds_after_manual_version_set() {
     let env = Env::default();
     let client = deploy_processor(&env);
     let state_ver_key = soroban_sdk::symbol_short!("B_Ver");
@@ -247,14 +250,21 @@ fn process_batch_rejects_version_mutation_mid_batch() {
     let amounts = Vec::from_array(&env, [100u64]);
     assert!(client.try_process_batch(&amounts).is_ok());
 
-    // Manually bump version further so the next call sees a mismatch.
+    // Manually set version to 42 to simulate external state change.
+    // The contract should still succeed — it reads the current version,
+    // bumps it, and verifies the bump was applied correctly.
     env.as_contract(&client.address, || {
         env.storage().instance().set(&state_ver_key, &42_u64);
     });
 
     let amounts = Vec::from_array(&env, [200u64]);
-    let result = client.try_process_batch(&amounts);
-    assert_eq!(result, Err(Ok(Error::StateVersionMismatch)));
+    assert_eq!(client.try_process_batch(&amounts), Ok(Ok(200)));
+
+    // Version should now be 43.
+    let v: u64 = env.as_contract(&client.address, || {
+        env.storage().instance().get(&state_ver_key).unwrap_or(0)
+    });
+    assert_eq!(v, 43);
 }
 
 #[test]

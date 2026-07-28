@@ -61,6 +61,20 @@ fn factory_starts_unpaused() {
     assert!(!client.is_paused());
 }
 
+#[test]
+fn factory_status_reflects_pause_state_and_protocol_fee() {
+    let env = base_env();
+    let client = deploy_factory(&env);
+    let status = client.factory_status();
+    assert!(!status.is_paused);
+    assert_eq!(status.protocol_fee_bps, 30);
+
+    client.pause();
+    let status_paused = client.factory_status();
+    assert!(status_paused.is_paused);
+    assert_eq!(status_paused.protocol_fee_bps, 30);
+}
+
 // ── Pause / unpause lifecycle ──────────────────────────────────────────────────
 
 #[test]
