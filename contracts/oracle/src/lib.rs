@@ -2,6 +2,18 @@
 
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Vec};
 
+/// TTL extension constants matching the convention used across sibling
+/// contracts (factory, governor, stream). `bump_instance` is called from
+/// every state-mutating entry point so instance storage entries
+/// (`DataKey::Admin`, `DataKey::Config`, `DataKey::Price`, etc.) never
+/// silently archive during idle periods.
+const THRESHOLD: u32 = 100_000;
+const EXTEND_TO: u32 = 200_000;
+
+fn bump_instance(env: &Env) {
+    env.storage().instance().extend_ttl(THRESHOLD, EXTEND_TO);
+}
+
 /// Protocol administration roles for the oracle.
 ///
 /// Separates concerns so independent wallets can own price submission
@@ -95,6 +107,7 @@ impl TwapOracle {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
+        bump_instance(&env);
         env.storage().instance().set(&DataKey::Admin, &admin);
         grant_role_inner(&env, Role::Admin, &admin);
         Ok(())
@@ -115,6 +128,7 @@ impl TwapOracle {
         account: Address,
     ) -> Result<(), Error> {
         require_role_or_admin(&env, &caller, Role::Admin)?;
+        bump_instance(&env);
         if grant_role_inner(&env, role, &account) {
             events::grant_role(&env, &caller, role, &account);
         }
@@ -131,6 +145,7 @@ impl TwapOracle {
         account: Address,
     ) -> Result<(), Error> {
         require_role_or_admin(&env, &caller, Role::Admin)?;
+        bump_instance(&env);
         if revoke_role_inner(&env, role, &account)? {
             events::revoke_role(&env, &caller, role, &account);
         }
@@ -145,6 +160,7 @@ impl TwapOracle {
     /// `new_admin` already holding the role.
     pub fn transfer_admin(env: Env, caller: Address, new_admin: Address) -> Result<(), Error> {
         require_role_or_admin(&env, &caller, Role::Admin)?;
+        bump_instance(&env);
 
         grant_role_inner(&env, Role::Admin, &new_admin);
         revoke_role_inner(&env, Role::Admin, &caller)?;
@@ -162,6 +178,7 @@ impl TwapOracle {
             return Err(Error::InvalidDecimals);
         }
 
+        bump_instance(&env);
         env.storage().instance().set(&DataKey::Config, &config);
         events::oracle_configured(&env, &caller, config);
         Ok(())
@@ -189,6 +206,7 @@ impl TwapOracle {
             updated_at: now,
         };
 
+        bump_instance(&env);
         // Legacy single-value slot — kept so `price_age`/`is_price_stale`
         // and any external readers of the old scalar `Price` key continue
         // to see the most recent submission.
@@ -350,6 +368,7 @@ impl TwapOracle {
         if is_paused(&env) {
             return Err(Error::AlreadyPaused);
         }
+        bump_instance(&env);
         set_paused(&env, true);
         events::paused(&env, &caller, env.ledger().timestamp());
         Ok(())
@@ -361,6 +380,7 @@ impl TwapOracle {
         if !is_paused(&env) {
             return Err(Error::NotPaused);
         }
+        bump_instance(&env);
         set_paused(&env, false);
         events::unpaused(&env, &caller, env.ledger().timestamp());
         Ok(())
@@ -588,6 +608,7 @@ mod tests {
         testutils::{Address as _, Ledger, LedgerInfo},
         Address, Env,
     };
+    use soroban_sdk::testutils::storage::Instance as _;
 
     use super::*;
 
@@ -1231,5 +1252,47 @@ mod tests {
 
         // Reports true instead of erroring like get_twap_price would.
         assert!(client.is_price_stale());
+    }
+
+    // ── TTL extension tests (#189) ──────────────────────────────────────
+
+    #[test]
+    fn initialize_extends_instance_ttl() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let ttl = env
+            .as_contract(&client.address, || env.storage().instance().get_ttl());
+        assert!(ttl >= 100_000, "instance TTL after initialize: {ttl}");
+    }
+
+    #[test]
+    fn configure_oracle_extends_instance_ttl() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let oracle_addr = Address::generate(&env);
+        let config = OracleConfig {
+            oracle_address: oracle_addr,
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 300,
+        };
+        client.configure_oracle(&admin, &config);
+
+        let ttl = env
+            .as_contract(&client.address, || env.storage().instance().get_ttl());
+        assert!(ttl >= 100_000, "instance TTL after configure_oracle: {ttl}");
+    }
+
+    #[test]
+    fn submit_price_extends_instance_ttl() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+        client.submit_price(&admin, &50_000_000);
+
+        let ttl = env
+            .as_contract(&client.address, || env.storage().instance().get_ttl());
+        assert!(ttl >= 100_000, "instance TTL after submit_price: {ttl}");
     }
 }
