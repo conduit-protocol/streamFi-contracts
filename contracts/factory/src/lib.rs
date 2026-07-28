@@ -8,6 +8,8 @@ mod pause;
 mod query;
 pub mod storage;
 pub mod ttl;
+#[cfg(test)]
+mod tests;
 
 // Import `token` as `tok` to avoid shadowing by any `token: Address` parameter.
 use soroban_sdk::{

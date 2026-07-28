@@ -31,7 +31,6 @@ pub fn bump_instance(env: &Env) {
 /// is currently un-called from inside the contract. Make it public so
 /// external integrations / future tests can refresh a specific entry on
 /// demand without going through the walker.
-#[allow(dead_code)]
 pub fn bump_persistent(env: &Env, key: &DataKey) {
     env.storage()
         .persistent()
