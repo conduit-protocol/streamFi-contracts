@@ -313,6 +313,7 @@ impl DripGovernor {
         Ok(())
     }
 
+    /// Sets the fee recipient address. Only a `FeeManager` (or `Admin`) may call this.
     pub fn set_fee_recipient(env: Env, caller: Address, recipient: Address) -> Result<(), Error> {
         assert_not_paused(&env)?;
         role::require_role_or_admin(&env, &caller, Role::FeeManager)?;
