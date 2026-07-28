@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn initialize_sets_admin_and_grants_role() {
-        let (env, client, admin) = setup();
+        let (_env, client, admin) = setup();
         client.initialize(&admin);
         assert!(client.has_role(&Role::Admin, &admin));
         // Second init should fail
@@ -964,5 +964,132 @@ mod tests {
         assert_eq!(result, Err(Ok(Error::NotAuthorized)));
         // ...new admin is.
         client.configure_oracle(&new_admin, &config);
+    }
+
+    // ── Multi-feeder aggregation tests (#194) ─────────────────────────────
+
+    #[test]
+    fn get_twap_price_aggregates_median_across_feeders() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let oracle_addr = Address::generate(&env);
+        let config = OracleConfig {
+            oracle_address: oracle_addr,
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 300,
+        };
+        client.configure_oracle(&admin, &config);
+
+        let feeder_b = Address::generate(&env);
+        let feeder_c = Address::generate(&env);
+        client.grant_role(&admin, &Role::PriceFeeder, &feeder_b);
+        client.grant_role(&admin, &Role::PriceFeeder, &feeder_c);
+
+        client.submit_price(&admin, &10);
+        client.submit_price(&feeder_b, &20);
+        client.submit_price(&feeder_c, &30);
+
+        // Median of [10, 20, 30] = 20.
+        let price = client.get_twap_price();
+        assert_eq!(price, 20);
+    }
+
+    #[test]
+    fn get_twap_price_averages_middle_two_on_even_count() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let oracle_addr = Address::generate(&env);
+        let config = OracleConfig {
+            oracle_address: oracle_addr,
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 300,
+        };
+        client.configure_oracle(&admin, &config);
+
+        let feeder_b = Address::generate(&env);
+        client.grant_role(&admin, &Role::PriceFeeder, &feeder_b);
+
+        client.submit_price(&admin, &10);
+        client.submit_price(&feeder_b, &20);
+
+        // Even count: average of the two middle (only) values = 15.
+        let price = client.get_twap_price();
+        assert_eq!(price, 15);
+    }
+
+    #[test]
+    fn get_twap_price_ignores_stale_submitters_in_aggregate() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let oracle_addr = Address::generate(&env);
+        let config = OracleConfig {
+            oracle_address: oracle_addr,
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 60,
+        };
+        client.configure_oracle(&admin, &config);
+
+        let feeder_b = Address::generate(&env);
+        client.grant_role(&admin, &Role::PriceFeeder, &feeder_b);
+
+        client.submit_price(&admin, &10);
+        let submitted_at = env.ledger().timestamp();
+
+        // Advance time so admin's submission goes stale.
+        env.ledger().set(LedgerInfo {
+            timestamp: submitted_at + 61,
+            protocol_version: 21,
+            sequence_number: 1,
+            network_id: Default::default(),
+            base_reserve: 10,
+            min_temp_entry_ttl: 16,
+            min_persistent_entry_ttl: 4096,
+            max_entry_ttl: 6_312_000,
+        });
+
+        // feeder_b submits fresh after the jump.
+        client.submit_price(&feeder_b, &20);
+
+        // Only feeder_b's fresh submission counts toward the aggregate.
+        let price = client.get_twap_price();
+        assert_eq!(price, 20);
+    }
+
+    #[test]
+    fn get_twap_price_errors_stale_when_all_submitters_stale() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let oracle_addr = Address::generate(&env);
+        let config = OracleConfig {
+            oracle_address: oracle_addr,
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 60,
+        };
+        client.configure_oracle(&admin, &config);
+
+        client.submit_price(&admin, &10);
+        let submitted_at = env.ledger().timestamp();
+
+        env.ledger().set(LedgerInfo {
+            timestamp: submitted_at + 61,
+            protocol_version: 21,
+            sequence_number: 1,
+            network_id: Default::default(),
+            base_reserve: 10,
+            min_temp_entry_ttl: 16,
+            min_persistent_entry_ttl: 4096,
+            max_entry_ttl: 6_312_000,
+        });
+
+        let result = client.try_get_twap_price();
+        assert_eq!(result, Err(Ok(Error::OracleStalePrice)));
     }
 }
