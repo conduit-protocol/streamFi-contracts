@@ -19,6 +19,15 @@ export const WalletConnection: React.FC = () => {
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const client = useApolloClient();
 
+  const validateCurrentInputs = () => {
+    const result = validateStreamPayload({
+      recipient,
+      amount: Number(amount),
+      ratePerSecond: Number(ratePerSecond),
+    });
+    setValidationErrors(result.errors);
+  };
+
   const [submitStreamRequest, { loading }] = useMutation(SUBMIT_STREAM_REQUEST, {
     // FIX for Bug #148: Previously only refetched GET_DASHBOARD_SUMMARY,
     // leaving other cached queries (transactions, notifications, etc.)
@@ -65,17 +74,17 @@ export const WalletConnection: React.FC = () => {
 
       <label>
         Recipient address
-        <input value={recipient} onChange={(e) => setRecipient(e.target.value)} />
+        <input value={recipient} onChange={(e) => { setRecipient(e.target.value); validateCurrentInputs(); }} />
       </label>
 
       <label>
         Amount
-        <input value={amount} onChange={(e) => setAmount(e.target.value)} />
+        <input value={amount} onChange={(e) => { setAmount(e.target.value); validateCurrentInputs(); }} />
       </label>
 
       <label>
         Rate per second
-        <input value={ratePerSecond} onChange={(e) => setRatePerSecond(e.target.value)} />
+        <input value={ratePerSecond} onChange={(e) => { setRatePerSecond(e.target.value); validateCurrentInputs(); }} />
       </label>
 
       {validationErrors.length > 0 && (
