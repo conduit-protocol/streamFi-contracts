@@ -636,3 +636,16 @@ fn enforce_bounds_with_equal_start_and_end_time_returns_arithmetic_overflow() {
     );
     assert_eq!(result, Err(Ok(Error::InvalidDuration)));
 }
+
+// ── Issue #232: upgrade_stream_wasm zero-hash guard, integration-level ─────
+// Note: contracts/factory/src/tests.rs already covers this guard at the unit
+// level (upgrade_stream_wasm_rejects_zero_hash, added for issue #86). This
+// adds the equivalent check here since #232 specifically flagged this file.
+#[test]
+fn upgrade_stream_wasm_rejects_all_zero_hash() {
+    let env = base_env();
+    let client = deploy_factory(&env);
+    let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
+    let result = client.try_upgrade_stream_wasm(&zero_hash);
+    assert_eq!(result, Err(Ok(Error::InvalidWasmHash)));
+}
