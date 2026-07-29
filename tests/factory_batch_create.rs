@@ -6,8 +6,8 @@
 //! `cargo build --target wasm32-unknown-unknown --release`) are gated
 //! behind #[ignore]. The tests below cover everything reachable without
 //! a real deployment: the empty-batch guard, the MAX_BATCH_SIZE cap, and
-//! atomic revert-before-any-deployment when one request in the batch
-//! fails validation.
+//! atomic revert-before-any-deployment when one or all requests in the batch
+//! fail validation.
 
 use drip_factory::{BatchStreamRequest, DripFactory, DripFactoryClient, Error, MAX_BATCH_SIZE};
 use drip_governor::{DripGovernor, DripGovernorClient};
@@ -120,6 +120,43 @@ fn create_batch_streams_reverts_whole_batch_on_first_invalid_request() {
     let result = client.try_create_batch_streams(&sender, &requests, &false);
     assert_eq!(result, Err(Ok(Error::InvalidDeposit)));
     assert_eq!(client.stream_count(), 0);
+}
+
+#[test]
+fn create_batch_streams_reverts_when_all_requests_invalid() {
+    // Confirms that when every request in a multi-request batch fails validation
+    // (e.g. deposit = 0, rate_per_sec = 0, end_time <= start_time), the call
+    // reverts with the first validation error encountered, and the entire batch
+    // is rolled back with no partial state (no streams deployed, stream_count stays 0,
+    // and no registry indices mutated).
+    let env = base_env();
+    let client = deploy_factory(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let now = env.ledger().timestamp();
+    let token = make_token(&env, &sender, 100_000);
+
+    let mut bad_1 = valid_request(&recipient, &token, now);
+    bad_1.deposit = 0;
+
+    let mut bad_2 = valid_request(&recipient, &token, now);
+    bad_2.rate_per_sec = 0;
+
+    let mut bad_3 = valid_request(&recipient, &token, now);
+    bad_3.start_time = now + 100;
+    bad_3.end_time = now + 50;
+
+    let mut requests: Vec<BatchStreamRequest> = Vec::new(&env);
+    requests.push_back(bad_1);
+    requests.push_back(bad_2);
+    requests.push_back(bad_3);
+
+    let result = client.try_create_batch_streams(&sender, &requests, &false);
+    assert_eq!(result, Err(Ok(Error::InvalidDeposit)));
+    assert_eq!(client.stream_count(), 0);
+    assert_eq!(client.stream_address(0), None);
+    assert_eq!(client.stream_count_by_sender(&sender), 0);
+    assert_eq!(client.stream_count_by_recipient(&recipient), 0);
 }
 
 // -- Gas benchmark (requires a built stream WASM) ----------------------------
