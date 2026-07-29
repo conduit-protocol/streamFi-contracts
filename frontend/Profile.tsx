@@ -28,7 +28,7 @@ export const Profile: React.FC<ProfileProps> = ({ profile: profileProp }) => {
       
       <div className={styles.avatarSection}>
         <div className={styles.avatar}>
-          {profile.displayName?.charAt(0).toUpperCase() || "A"}
+          {profile.displayName?.charAt(0)?.toUpperCase() || "A"}
         </div>
         <div className={styles.userInfo}>
           <p className={styles.displayName}>{profile.displayName}</p>

@@ -1,0 +1,22 @@
+{
+  "name": "frontend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "lib": "lib"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@apollo/client": "^4.2.8",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "graphql": "^16.14.2",
+    "typescript": "^7.0.2"
+  }
+}
