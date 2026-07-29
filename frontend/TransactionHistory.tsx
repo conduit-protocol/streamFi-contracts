@@ -1,5 +1,7 @@
-import React from 'react';
-import { useQuery, useMutation, gql } from '@apollo/client';
+import React, { useState } from 'react';
+import { useQuery, useMutation, gql, useApolloClient } from '@apollo/client';
+
+const MUTATION_TIMEOUT_MS = 10_000;
 
 export const GET_TRANSACTIONS = gql`
   query GetTransactions {
@@ -23,25 +25,36 @@ const TRIGGER_ACTION = gql`
   }
 `;
 
-export const TransactionHistory: React.FC = () => {
+interface TransactionHistoryProps {
+  onRefreshNeeded?: () => void;
+}
+
+export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ onRefreshNeeded }) => {
   const { data, loading, error } = useQuery(GET_TRANSACTIONS);
-  
+  const [actionError, setActionError] = useState<string | null>(null);
+  const client = useApolloClient();
+
   const [triggerAction, { loading: mutationLoading }] = useMutation(TRIGGER_ACTION, {
-    // FIX for Bug #140: Invalidate Apollo cache to ensure the data displayed 
-    // is not stale and reflects the latest on-chain state.
-    // Using refetchQueries guarantees graceful handling and fresh data on re-render.
-    refetchQueries: [{ query: GET_TRANSACTIONS }],
-    awaitRefetchQueries: true,
+    onCompleted: () => {
+      client.cache.reset();
+      onRefreshNeeded?.();
+    },
   });
 
   if (loading) return <p>Loading transaction history...</p>;
   if (error) return <p>Error loading transactions: {error.message}</p>;
 
   const handleAction = async () => {
+    setActionError(null);
+
+    const timeout = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Action timed out. Please try again.')), MUTATION_TIMEOUT_MS);
+    });
+
     try {
-      await triggerAction({ variables: { amount: 100 } });
+      await Promise.race([triggerAction({ variables: { amount: 100 } }), timeout]);
     } catch (e) {
-      console.error('Action failed gracefully', e);
+      setActionError(e instanceof Error ? e.message : 'Action failed. Please try again.');
     }
   };
 
@@ -51,6 +64,8 @@ export const TransactionHistory: React.FC = () => {
       <button onClick={handleAction} disabled={mutationLoading}>
         {mutationLoading ? 'Processing...' : 'Trigger Action'}
       </button>
+
+      {actionError && <p className="action-error">{actionError}</p>}
       
       <ul className="transaction-list">
         {data?.transactions?.map((tx: any) => (
