@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, gql } from '@apollo/client';
 
 export const GET_TRANSACTIONS = gql`
@@ -23,8 +23,20 @@ const TRIGGER_ACTION = gql`
   }
 `;
 
+const TRANSACTION_TIMEOUT_MS = 10_000;
+
 export const TransactionHistory: React.FC = () => {
   const { data, loading, error } = useQuery(GET_TRANSACTIONS);
+  const [timedOut, setTimedOut] = useState(false);
+
+  useEffect(() => {
+    if (!loading) {
+      setTimedOut(false);
+      return;
+    }
+    const timer = setTimeout(() => setTimedOut(true), TRANSACTION_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [loading]);
   
   const [triggerAction, { loading: mutationLoading }] = useMutation(TRIGGER_ACTION, {
     // FIX for Bug #140: Invalidate Apollo cache to ensure the data displayed 
@@ -34,6 +46,7 @@ export const TransactionHistory: React.FC = () => {
     awaitRefetchQueries: true,
   });
 
+  if (timedOut) return <p>Error loading transactions: Request timed out.</p>;
   if (loading) return <p>Loading transaction history...</p>;
   if (error) return <p>Error loading transactions: {error.message}</p>;
 
