@@ -221,6 +221,23 @@ impl TwapOracle {
 
     /// Submit a price observation. Gated on `PriceFeeder` (or `Admin`).
     ///
+    /// `price` is a fixed-point integer scaled by `10^decimals`, where
+    /// `decimals` comes from the oracle's stored `OracleConfig` (set via
+    /// `configure_oracle`, max 38). For example, with `decimals: 8`, a
+    /// real-world price of `100.0` is submitted as `100_00000000`.
+    /// `calculate_fiat_stream_payout` divides by `10^decimals` when
+    /// converting a submission back to a real value, so submissions must
+    /// use the same scale as the currently configured `decimals` or
+    /// downstream payouts will be wrong by that scale factor.
+    ///
+    /// There is no fixed time-bucketed TWAP window. Instead, every
+    /// feeder's most recent submission is kept independently
+    /// (`DataKey::Submission`) and `get_twap_price` aggregates the median
+    /// (or the average of the two middle values, on an even count) across
+    /// every submission still within `max_staleness` seconds of the
+    /// current ledger time — see `get_twap_price` for the aggregation
+    /// logic and `OracleConfig::max_staleness` for the staleness window.
+    ///
     /// Blocked while the oracle is under an emergency pause. Each feeder's
     /// submission is tracked independently (`DataKey::Submission`) and
     /// aggregated by `get_twap_price` — no single feeder's price is trusted
