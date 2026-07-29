@@ -71,7 +71,6 @@ fn factory_status_returns_combined_pause_and_fee_status() {
     assert_eq!(status_paused.protocol_fee_bps, 30);
 }
 
-
 #[test]
 fn pause_when_already_paused_errors_and_leaves_state_unchanged() {
     let s = Setup::new();
@@ -201,10 +200,7 @@ fn bump_persistent_extends_ttl_of_persistent_entry() {
         // Write a persistent entry so bump_persistent has a key to extend.
         let key = DataKey::StreamAddr(0);
         let dummy = Address::generate(&s.env);
-        s.env
-            .storage()
-            .persistent()
-            .set(&key, &dummy);
+        s.env.storage().persistent().set(&key, &dummy);
 
         // Verify the key exists before bump.
         assert!(s.env.storage().persistent().has(&key));

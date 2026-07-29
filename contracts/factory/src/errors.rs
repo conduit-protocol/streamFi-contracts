@@ -38,4 +38,6 @@ pub enum Error {
     StreamFundingFailed = 25,
     /// The WASM hash provided to `upgrade_stream_wasm` is all zeros (invalid).
     InvalidWasmHash = 26,
+    /// Stream duration is invalid (end_time <= start_time).
+    InvalidDuration = 27,
 }

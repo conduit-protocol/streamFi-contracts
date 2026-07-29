@@ -378,10 +378,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "drip-common"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "drip-factory"
 version = "0.1.0"
 dependencies = [
+ "drip-common",
  "drip-governor",
+ "drip-stream",
  "soroban-sdk",
 ]
 
@@ -389,6 +398,7 @@ dependencies = [
 name = "drip-governor"
 version = "0.1.0"
 dependencies = [
+ "drip-common",
  "soroban-sdk",
 ]
 
@@ -403,6 +413,7 @@ dependencies = [
 name = "drip-stream"
 version = "0.1.0"
 dependencies = [
+ "drip-common",
  "soroban-sdk",
 ]
 

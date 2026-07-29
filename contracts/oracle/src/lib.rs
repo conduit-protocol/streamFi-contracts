@@ -639,11 +639,11 @@ mod events {
 mod tests {
     extern crate std;
 
+    use soroban_sdk::testutils::storage::Instance as _;
     use soroban_sdk::{
         testutils::{Address as _, Ledger, LedgerInfo},
         Address, Env,
     };
-    use soroban_sdk::testutils::storage::Instance as _;
 
     use super::*;
 
@@ -1314,8 +1314,7 @@ mod tests {
         let (env, client, admin) = setup();
         client.initialize(&admin);
 
-        let ttl = env
-            .as_contract(&client.address, || env.storage().instance().get_ttl());
+        let ttl = env.as_contract(&client.address, || env.storage().instance().get_ttl());
         assert!(ttl >= 100_000, "instance TTL after initialize: {ttl}");
     }
 
@@ -1333,8 +1332,7 @@ mod tests {
         };
         client.configure_oracle(&admin, &config);
 
-        let ttl = env
-            .as_contract(&client.address, || env.storage().instance().get_ttl());
+        let ttl = env.as_contract(&client.address, || env.storage().instance().get_ttl());
         assert!(ttl >= 100_000, "instance TTL after configure_oracle: {ttl}");
     }
 
@@ -1344,8 +1342,7 @@ mod tests {
         client.initialize(&admin);
         client.submit_price(&admin, &50_000_000);
 
-        let ttl = env
-            .as_contract(&client.address, || env.storage().instance().get_ttl());
+        let ttl = env.as_contract(&client.address, || env.storage().instance().get_ttl());
         assert!(ttl >= 100_000, "instance TTL after submit_price: {ttl}");
     }
 

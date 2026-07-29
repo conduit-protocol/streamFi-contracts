@@ -7,9 +7,9 @@ mod governance;
 mod pause;
 mod query;
 pub mod storage;
-pub mod ttl;
 #[cfg(test)]
 mod tests;
+pub mod ttl;
 
 // Import `token` as `tok` to avoid shadowing by any `token: Address` parameter.
 use soroban_sdk::{
@@ -107,6 +107,9 @@ impl DripFactory {
         // Fail early: all input checks run before any state is touched, so
         // invalid calls (e.g. an empty stream with a non-positive amount)
         // neither mutate storage nor pay a TTL extension.
+        if end_time > 0 && end_time <= start_time {
+            return Err(Error::InvalidDuration);
+        }
         if deposit <= 0 {
             return Err(Error::InvalidDeposit);
         }
@@ -115,9 +118,6 @@ impl DripFactory {
         }
         if deposit < rate_per_sec {
             return Err(Error::InsufficientDeposit);
-        }
-        if end_time > 0 && end_time <= start_time {
-            return Err(Error::InvalidTimeRange);
         }
         if start_time < env.ledger().timestamp() {
             return Err(Error::BackdatedStream);

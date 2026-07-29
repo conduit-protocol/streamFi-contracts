@@ -1,12 +1,11 @@
 use soroban_sdk::Env;
 
 use crate::storage::DataKey;
-use drip_common::{TTL_THRESHOLD, TTL_EXTEND_TO};
 
 // Exposed as `pub` so callers can reuse the same threshold/extend-to values
 // for the persistent BySender/ByRecipient/StreamAddr registry entries.
-pub use drip_common::TTL_THRESHOLD as THRESHOLD;
 pub use drip_common::TTL_EXTEND_TO as EXTEND_TO;
+pub use drip_common::TTL_THRESHOLD as THRESHOLD;
 
 /// How many persistent entries the bounded walker bumps per call. Sized so
 /// the gas cost of any single `pause`/`unpause`/`upgrade_stream_wasm`

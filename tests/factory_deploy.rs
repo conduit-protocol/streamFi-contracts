@@ -388,7 +388,7 @@ fn create_stream_rejects_end_before_start() {
     let recip = Address::generate(&env);
     let token = make_token(&env, &sender, 100_000);
     let now = env.ledger().timestamp();
-    // end_time <= start_time → InvalidTimeRange
+    // end_time <= start_time → InvalidDuration
     let result = client.try_create_stream(
         &sender,
         &recip,
@@ -399,7 +399,7 @@ fn create_stream_rejects_end_before_start() {
         &(now + 50),
         &false,
     );
-    assert_eq!(result, Err(Ok(Error::InvalidTimeRange)));
+    assert_eq!(result, Err(Ok(Error::InvalidDuration)));
 }
 
 #[test]
@@ -414,7 +414,22 @@ fn create_stream_rejects_end_equal_to_start() {
     let result = client.try_create_stream(
         &sender, &recip, &token, &100_000, &100, &start, &start, &false,
     );
-    assert_eq!(result, Err(Ok(Error::InvalidTimeRange)));
+    assert_eq!(result, Err(Ok(Error::InvalidDuration)));
+}
+
+#[test]
+fn test_create_stream_zero_duration_reverts() {
+    let env = base_env();
+    let client = deploy_factory(&env);
+    let sender = Address::generate(&env);
+    let recip = Address::generate(&env);
+    let token = make_token(&env, &sender, 100_000);
+    let now = env.ledger().timestamp();
+    let start = now + 100;
+    let result = client.try_create_stream(
+        &sender, &recip, &token, &100_000, &100, &start, &start, &false,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidDuration)));
 }
 
 // ── Governor-controlled bounds ────────────────────────────────────────────────
@@ -583,8 +598,7 @@ fn enforce_bounds_with_end_time_before_start_time_returns_arithmetic_overflow() 
     let now = env.ledger().timestamp();
 
     // Attempt to create a stream where end_time < start_time.
-    // Before the fix, this would hit a u64 underflow panic.
-    // After the fix, enforce_bounds uses checked_sub and returns ArithmeticOverflow.
+    // Early validation in create_stream returns InvalidDuration.
     let result = factory.try_create_stream(
         &sender,
         &recip,
@@ -595,7 +609,7 @@ fn enforce_bounds_with_end_time_before_start_time_returns_arithmetic_overflow() 
         &(now + 3_600), // end_time < start_time
         &false,
     );
-    assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
+    assert_eq!(result, Err(Ok(Error::InvalidDuration)));
 }
 
 #[test]
@@ -609,9 +623,7 @@ fn enforce_bounds_with_equal_start_and_end_time_returns_arithmetic_overflow() {
     let now = env.ledger().timestamp();
 
     // A stream where start_time == end_time has zero duration.
-    // enforce_bounds should detect this and return ArithmeticOverflow
-    // (the pre-check in create_stream would also catch this, but enforce_bounds
-    // must be defensive against direct calls from any future code path).
+    // Early validation in create_stream returns InvalidDuration.
     let result = factory.try_create_stream(
         &sender,
         &recip,
@@ -622,5 +634,5 @@ fn enforce_bounds_with_equal_start_and_end_time_returns_arithmetic_overflow() {
         &(now + 7_200), // end_time == start_time
         &false,
     );
-    assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
+    assert_eq!(result, Err(Ok(Error::InvalidDuration)));
 }

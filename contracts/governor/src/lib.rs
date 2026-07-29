@@ -373,11 +373,7 @@ impl DripGovernor {
         if fee_bps > 10_000 {
             return Err(Error::InvalidParam);
         }
-        let old_fee_bps: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::FeeBps)
-            .unwrap_or(30);
+        let old_fee_bps: u32 = env.storage().instance().get(&DataKey::FeeBps).unwrap_or(30);
         env.storage().instance().set(&DataKey::FeeBps, &fee_bps);
         events::set_fee_bps(&env, &caller, old_fee_bps, fee_bps);
         Ok(())

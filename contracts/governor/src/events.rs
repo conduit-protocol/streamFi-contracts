@@ -91,7 +91,12 @@ pub fn set_fee_bps(env: &Env, caller: &Address, old_fee_bps: u32, new_fee_bps: u
     );
 }
 
-pub fn set_fee_recipient(env: &Env, caller: &Address, old_recipient: &Address, new_recipient: &Address) {
+pub fn set_fee_recipient(
+    env: &Env,
+    caller: &Address,
+    old_recipient: &Address,
+    new_recipient: &Address,
+) {
     env.events().publish(
         (symbol_short!("fee_rec"), caller.clone()),
         (old_recipient.clone(), new_recipient.clone()),
