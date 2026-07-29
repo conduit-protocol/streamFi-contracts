@@ -100,7 +100,11 @@ pub struct TwapOracle;
 impl TwapOracle {
     /// One-time setup — called by the deploy script.
     ///
-    /// Grants every role to `admin` so a single wallet can bootstrap the
+    /// Guards against re-initialization: without this check, anyone could call
+    /// `initialize` again to set themselves as `Admin`, takeover oracle
+    /// governance, and manipulate price updates.
+    ///
+    /// Grants `Admin` role to `admin` so a single wallet can bootstrap the
     /// oracle and later delegate price submission to a separate
     /// `PriceFeeder` wallet via [`TwapOracle::grant_role`].
     pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
