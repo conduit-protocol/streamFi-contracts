@@ -359,6 +359,24 @@ fn set_fee_recipient_extends_instance_ttl() {
 }
 
 #[test]
+fn set_fee_recipient_rejects_zero_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, fee_recipient) = deploy_governor(&env);
+    let zero_account = Address::from_string(&soroban_sdk::String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+
+    let result = client.try_set_fee_recipient(&authority, &zero_account);
+    assert_eq!(result, Err(Ok(Error::InvalidParam)));
+
+    // The rejected call must not have mutated state.
+    assert_eq!(client.config().fee_recipient, fee_recipient);
+}
+
+#[test]
 fn set_min_duration_extends_instance_ttl() {
     let env = Env::default();
     env.mock_all_auths();
