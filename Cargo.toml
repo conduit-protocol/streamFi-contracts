@@ -8,6 +8,7 @@ members = [
     "contracts/oracle",
     "contracts/batch-processor",
     "contracts/common",
+    "contracts/token-vault",
 ]
 
 [workspace.dependencies]

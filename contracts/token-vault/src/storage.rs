@@ -1,5 +1,6 @@
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{contracttype, Address, Env};
 
+#[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
     Owner,

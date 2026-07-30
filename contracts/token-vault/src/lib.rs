@@ -31,6 +31,8 @@ impl TokenVault {
     }
 
     pub fn deposit(env: Env, from: Address, amount: i128) -> Result<(), Error> {
+        from.require_auth();
+
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -39,7 +41,6 @@ impl TokenVault {
         Self::cleanup_pending(&env);
 
         let owner = get_owner(&env).ok_or(Error::NotAuthorized)?;
-        // auth: require nothing special for demo; in production require auth
         // Check current balance and max_limit safely
         let balance = get_balance(&env).unwrap_or(0_i128);
         let max = get_max_limit(&env).ok_or(Error::ArithmeticOverflow)?;
@@ -61,6 +62,9 @@ impl TokenVault {
     }
 
     pub fn withdraw(env: Env, to: Address, amount: i128) -> Result<(), Error> {
+        let owner = get_owner(&env).ok_or(Error::NotAuthorized)?;
+        owner.require_auth();
+
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -83,6 +87,7 @@ impl TokenVault {
         if caller != owner {
             return Err(Error::NotAuthorized);
         }
+        owner.require_auth();
         if new_limit <= 0 {
             return Err(Error::InvalidAmount);
         }
