@@ -192,3 +192,34 @@ fn multiple_pause_resume_cycles_accumulate_correctly() {
     // Only 100 + 200 + 50 = 350 seconds of actual streaming
     assert_eq!(client.withdrawable(), 350_000);
 }
+
+// ── Withdraw at same timestamp as resume ───────────────────────────────────────
+
+#[test]
+fn withdraw_at_same_timestamp_as_resume() {
+    let env = base_env();
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let (client, token_addr) = deploy_stream(&env, &sender, &recipient, 1_000, 3_600);
+    let tok = token::Client::new(&env, &token_addr);
+
+    advance(&env, 300); // 300_000 streamed
+    client.pause(&sender);
+    advance(&env, 1_000); // 1000s paused (should not count)
+    
+    // Resume the stream
+    client.resume(&sender);
+    
+    // Immediately withdraw at the same timestamp as resume
+    // This should only withdraw the 300_000 from before the pause
+    // with zero newly-streamed tokens since resume
+    let withdrawable_at_resume = client.withdrawable();
+    assert_eq!(withdrawable_at_resume, 300_000);
+    
+    let withdrawn = client.withdraw(&300_000);
+    assert_eq!(withdrawn, 300_000);
+    assert_eq!(tok.balance(&recipient), 300_000);
+    
+    // Nothing more should be withdrawable (zero elapsed since resume)
+    assert_eq!(client.withdrawable(), 0);
+}
