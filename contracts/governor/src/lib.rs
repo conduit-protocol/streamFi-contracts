@@ -91,6 +91,9 @@ impl DripGovernor {
 
     // ── Reads ────────────────────────────────────────────────────────────
 
+    /// Returns the complete [`GovernorConfig`] from storage.
+    ///
+    /// Returns `Err(NotInitialized)` if the governor has not yet been initialized.
     pub fn config(env: Env) -> Result<GovernorConfig, Error> {
         config::load(&env)
     }
