@@ -50,6 +50,17 @@ fn assert_not_paused(env: &Env) -> Result<(), Error> {
     }
 }
 
+/// The zero Stellar account is represented by an Ed25519 public key
+/// consisting entirely of zero bytes.
+fn is_zero_stellar_account(env: &Env, address: &Address) -> bool {
+    let zero_account = Address::from_string(&soroban_sdk::String::from_str(
+        env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+
+    address == &zero_account
+}
+
 #[contract]
 pub struct DripGovernor;
 
@@ -391,6 +402,9 @@ impl DripGovernor {
     pub fn set_fee_recipient(env: Env, caller: Address, recipient: Address) -> Result<(), Error> {
         assert_not_paused(&env)?;
         role::require_role_or_admin(&env, &caller, Role::FeeManager)?;
+        if is_zero_stellar_account(&env, &recipient) {
+            return Err(Error::InvalidParam);
+        }
         ttl::bump(&env);
         let old_recipient: Address = env
             .storage()
