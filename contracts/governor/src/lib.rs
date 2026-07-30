@@ -366,6 +366,11 @@ impl DripGovernor {
 
     // ── Parameter writes (role-gated + pause guard) ──────────────────────
 
+    /// Sets the protocol fee in basis points (1 bps = 0.01%).
+    ///
+    /// Only a `FeeManager` (or `Admin`) may call this. The fee must be between
+    /// 0 and 10,000 basis points (0% to 100%); values above 10,000 revert with
+    /// `Error::InvalidParam`.
     pub fn set_fee_bps(env: Env, caller: Address, fee_bps: u32) -> Result<(), Error> {
         assert_not_paused(&env)?;
         role::require_role_or_admin(&env, &caller, Role::FeeManager)?;

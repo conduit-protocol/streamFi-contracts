@@ -100,7 +100,11 @@ pub struct TwapOracle;
 impl TwapOracle {
     /// One-time setup — called by the deploy script.
     ///
-    /// Grants every role to `admin` so a single wallet can bootstrap the
+    /// Guards against re-initialization: without this check, anyone could call
+    /// `initialize` again to set themselves as `Admin`, takeover oracle
+    /// governance, and manipulate price updates.
+    ///
+    /// Grants `Admin` role to `admin` so a single wallet can bootstrap the
     /// oracle and later delegate price submission to a separate
     /// `PriceFeeder` wallet via [`TwapOracle::grant_role`].
     pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
@@ -220,6 +224,23 @@ impl TwapOracle {
     }
 
     /// Submit a price observation. Gated on `PriceFeeder` (or `Admin`).
+    ///
+    /// `price` is a fixed-point integer scaled by `10^decimals`, where
+    /// `decimals` comes from the oracle's stored `OracleConfig` (set via
+    /// `configure_oracle`, max 38). For example, with `decimals: 8`, a
+    /// real-world price of `100.0` is submitted as `100_00000000`.
+    /// `calculate_fiat_stream_payout` divides by `10^decimals` when
+    /// converting a submission back to a real value, so submissions must
+    /// use the same scale as the currently configured `decimals` or
+    /// downstream payouts will be wrong by that scale factor.
+    ///
+    /// There is no fixed time-bucketed TWAP window. Instead, every
+    /// feeder's most recent submission is kept independently
+    /// (`DataKey::Submission`) and `get_twap_price` aggregates the median
+    /// (or the average of the two middle values, on an even count) across
+    /// every submission still within `max_staleness` seconds of the
+    /// current ledger time — see `get_twap_price` for the aggregation
+    /// logic and `OracleConfig::max_staleness` for the staleness window.
     ///
     /// Blocked while the oracle is under an emergency pause. Each feeder's
     /// submission is tracked independently (`DataKey::Submission`) and

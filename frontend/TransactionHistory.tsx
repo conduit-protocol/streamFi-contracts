@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { useQuery, useMutation, gql, useApolloClient } from '@apollo/client';
 
 const MUTATION_TIMEOUT_MS = 10_000;
+import React, { useState, useEffect } from 'react';
+import { useQuery, useMutation, gql } from '@apollo/client';
 
 export const GET_TRANSACTIONS = gql`
   query GetTransactions {
@@ -25,15 +27,21 @@ const TRIGGER_ACTION = gql`
   }
 `;
 
-interface TransactionHistoryProps {
-  onRefreshNeeded?: () => void;
-}
+const TRANSACTION_TIMEOUT_MS = 10_000;
 
-export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ onRefreshNeeded }) => {
+export const TransactionHistory: React.FC = () => {
   const { data, loading, error } = useQuery(GET_TRANSACTIONS);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const client = useApolloClient();
+  const [timedOut, setTimedOut] = useState(false);
 
+  useEffect(() => {
+    if (!loading) {
+      setTimedOut(false);
+      return;
+    }
+    const timer = setTimeout(() => setTimedOut(true), TRANSACTION_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [loading]);
+  
   const [triggerAction, { loading: mutationLoading }] = useMutation(TRIGGER_ACTION, {
     onCompleted: () => {
       client.cache.reset();
@@ -41,6 +49,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ onRefres
     },
   });
 
+  if (timedOut) return <p>Error loading transactions: Request timed out.</p>;
   if (loading) return <p>Loading transaction history...</p>;
   if (error) return <p>Error loading transactions: {error.message}</p>;
 
