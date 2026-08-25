@@ -32,3 +32,8 @@ pub fn unpaused(env: &Env, governor: &Address, resumed_at: u64) {
     env.events()
         .publish((symbol_short!("unpaused"), governor.clone()), resumed_at);
 }
+
+pub fn upgraded(env: &Env, governor: &Address, upgraded_at: u64) {
+    env.events()
+        .publish((symbol_short!("upgraded"), governor.clone()), upgraded_at);
+}

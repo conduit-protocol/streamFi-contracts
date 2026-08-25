@@ -508,6 +508,38 @@ impl DripFactory {
         Ok(())
     }
 
+    /// Replace this contract's own WASM bytecode.
+    ///
+    /// The new WASM must already be uploaded to the ledger (via
+    /// `stellar contract upload`); only the hash is passed here. Gated on
+    /// the governor, matching `upgrade_stream_wasm` — the same authority
+    /// that controls protocol parameters controls code changes.
+    ///
+    /// This is distinct from `upgrade_stream_wasm`, which only updates the
+    /// WASM hash used for *future* `create_stream` deployments. `upgrade`
+    /// replaces the factory's own implementation.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        let governor: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::GovernorAddress)
+            .ok_or(Error::NotInitialized)?;
+        governor.require_auth();
+
+        if is_zero_wasm_hash(&env, &new_wasm_hash) {
+            return Err(Error::InvalidWasmHash);
+        }
+
+        if pause::is_paused(&env) {
+            return Err(Error::ContractPaused);
+        }
+
+        ttl::bump_instance(&env);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        events::upgraded(&env, &governor, env.ledger().timestamp());
+        Ok(())
+    }
+
     /// Emergency halt: stop all new stream creation.
     ///
     /// Intended for an extreme protocol emergency. While paused, every

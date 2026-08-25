@@ -22,7 +22,7 @@ mod role;
 mod storage;
 mod ttl;
 
-use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, panic_with_error, Address, BytesN, Env, Symbol, Vec};
 
 pub use config::GovernorConfig;
 pub use errors::Error;
@@ -375,6 +375,31 @@ impl DripGovernor {
             .remove(&DataKey::PendingAuthorityProposer);
 
         events::accept_authority(&env, &caller, &proposer);
+        Ok(())
+    }
+
+    // ── Self-upgrade (Admin-gated) ──────────────────────────────────────
+
+    /// Replace this contract's own WASM bytecode.
+    ///
+    /// The new WASM must already be uploaded to the ledger (via
+    /// `stellar contract upload`); only the hash is passed here. Gated on
+    /// `Admin` so a compromised or abandoned admin key cannot silently swap
+    /// the implementation.
+    ///
+    /// Blocked while the governor is paused, matching the factory's
+    /// `upgrade` guard — a halted protocol should accept no code changes.
+    pub fn upgrade(env: Env, caller: Address, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        role::require_role(&env, &caller, Role::Admin)?;
+        assert_not_paused(&env)?;
+
+        if new_wasm_hash == BytesN::from_array(&env, &[0u8; 32]) {
+            return Err(Error::InvalidWasmHash);
+        }
+
+        ttl::bump(&env);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        events::upgraded(&env, &caller, env.ledger().timestamp());
         Ok(())
     }
 

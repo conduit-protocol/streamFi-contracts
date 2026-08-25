@@ -141,3 +141,8 @@ pub fn factory_unpaused(env: &Env, caller: &Address, resumed_at: u64) {
     env.events()
         .publish((symbol_short!("funpaused"), caller.clone()), resumed_at);
 }
+
+pub fn upgraded(env: &Env, caller: &Address, upgraded_at: u64) {
+    env.events()
+        .publish((symbol_short!("upgraded"), caller.clone()), upgraded_at);
+}
