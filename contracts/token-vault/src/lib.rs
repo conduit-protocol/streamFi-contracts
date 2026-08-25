@@ -1,6 +1,7 @@
 #![no_std]
 
 mod errors;
+mod events;
 mod storage;
 #[cfg(test)]
 mod tests;
@@ -60,6 +61,8 @@ impl TokenVault {
         set_max_limit(&env, &max_limit);
         set_balance(&env, &0_i128);
         set_pending(&env, &None);
+
+        events::initialized(&env, &owner, &token, max_limit);
     }
 
     pub fn deposit(env: Env, from: Address, amount: i128) -> Result<(), Error> {
@@ -93,6 +96,7 @@ impl TokenVault {
         // clear pending after success
         set_pending(&env, &None);
         let _ = owner;
+        events::deposited(&env, &from, amount, new_balance);
         Ok(())
     }
 
@@ -116,6 +120,7 @@ impl TokenVault {
 
         set_balance(&env, &new_balance);
         set_pending(&env, &None);
+        events::withdrawn(&env, &caller, &to, amount, new_balance);
         Ok(())
     }
 
@@ -131,7 +136,9 @@ impl TokenVault {
         if new_limit < balance {
             return Err(Error::LimitExceeded);
         }
+        let old_limit = get_max_limit(&env).ok_or(Error::ArithmeticOverflow)?;
         set_max_limit(&env, &new_limit);
+        events::limit_set(&env, &caller, old_limit, new_limit);
         Ok(())
     }
 
@@ -150,6 +157,7 @@ impl TokenVault {
         }
         caller.require_auth();
         set_operator(&env, &operator);
+        events::operator_set(&env, &caller, &operator);
         Ok(())
     }
 
@@ -163,6 +171,7 @@ impl TokenVault {
         }
         caller.require_auth();
         remove_operator(&env);
+        events::operator_revoked(&env, &caller);
         Ok(())
     }
 
@@ -189,6 +198,7 @@ impl TokenVault {
             return Err(Error::AlreadyPaused);
         }
         set_paused(&env, true);
+        events::paused(&env, &caller, env.ledger().timestamp());
         Ok(())
     }
 
@@ -203,6 +213,7 @@ impl TokenVault {
             return Err(Error::NotPaused);
         }
         set_paused(&env, false);
+        events::unpaused(&env, &caller, env.ledger().timestamp());
         Ok(())
     }
 

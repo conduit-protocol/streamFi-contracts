@@ -16,6 +16,8 @@ use soroban_sdk::{
     contract, contractimpl, panic_with_error, token as tok, Address, BytesN, Env, IntoVal, Vec,
 };
 
+use drip_common::is_zero_stellar_account;
+
 pub use errors::Error;
 use storage::DataKey;
 pub use storage::{BatchStreamRequest, FactoryStatus};
@@ -25,19 +27,6 @@ pub use storage::{BatchStreamRequest, FactoryStatus};
 /// batch fails fast with `BatchTooLarge` instead of exhausting the
 /// transaction's instruction budget mid-execution.
 pub const MAX_BATCH_SIZE: u32 = 100;
-
-/// Returns true when `address` is the all-zero Stellar account address.
-///
-/// The zero Stellar account is represented by an Ed25519 public key
-/// consisting entirely of zero bytes.
-fn is_zero_stellar_account(env: &Env, address: &Address) -> bool {
-    let zero_account = Address::from_string(&soroban_sdk::String::from_str(
-        env,
-        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-    ));
-
-    address == &zero_account
-}
 
 /// Returns true when `hash` is an all-zero 32-byte WASM hash.
 fn is_zero_wasm_hash(env: &Env, hash: &BytesN<32>) -> bool {

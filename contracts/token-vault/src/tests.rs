@@ -2,7 +2,11 @@
 
 extern crate std;
 
-use soroban_sdk::{testutils::Address as _, token, Address, Env};
+use soroban_sdk::{
+    symbol_short,
+    testutils::{Address as _, Events as _},
+    token, Address, Env, IntoVal, TryIntoVal,
+};
 
 use crate::errors::Error;
 use crate::storage;
@@ -364,4 +368,191 @@ fn operator_also_blocked_by_pause() {
     let recipient = Address::generate(&s.env);
     let result = s.client.try_withdraw(&op, &recipient, &100);
     assert_eq!(result, Err(Ok(Error::ContractPaused)));
+}
+
+// ── Event emission (issue #311) ────────────────────────────────────────────
+
+/// All events published by the vault contract, oldest first.
+///
+/// `env.events().all()` also captures events emitted by other contracts in the
+/// same test (e.g. the token's own transfer events), so filter down to the
+/// vault's contract address. `Setup::new` publishes the `init` event, so
+/// `events[0]` is always the initialization event.
+fn vault_events(
+    s: &Setup,
+) -> std::vec::Vec<(
+    Address,
+    soroban_sdk::Vec<soroban_sdk::Val>,
+    soroban_sdk::Val,
+)> {
+    s.env
+        .events()
+        .all()
+        .iter()
+        .filter(|(contract, _, _)| contract == &s.client.address)
+        .map(|(c, t, d)| (c.clone(), t.clone(), d))
+        .collect()
+}
+
+#[test]
+fn initialize_emits_initialized_event() {
+    let s = Setup::new(1_000_000);
+
+    let events = vault_events(&s);
+    assert_eq!(events.len(), 1);
+
+    let (_, topics, data) = &events[0];
+    assert_eq!(
+        topics.clone(),
+        (symbol_short!("init"), s.owner.clone()).into_val(&s.env)
+    );
+    let payload: (Address, i128) = data.clone().try_into_val(&s.env).unwrap();
+    assert_eq!(payload, (s.token.address.clone(), 1_000_000_i128));
+}
+
+#[test]
+fn deposit_emits_deposited_event() {
+    let s = Setup::new(1_000_000);
+    s.client.deposit(&s.user, &500);
+
+    let events = vault_events(&s);
+    assert_eq!(events.len(), 2);
+
+    let (_, topics, data) = &events[1];
+    assert_eq!(
+        topics.clone(),
+        (symbol_short!("deposited"), s.user.clone()).into_val(&s.env)
+    );
+    let payload: (i128, i128) = data.clone().try_into_val(&s.env).unwrap();
+    assert_eq!(payload, (500_i128, 500_i128));
+}
+
+#[test]
+fn withdraw_emits_withdrawn_event() {
+    let s = Setup::new(1_000_000);
+    s.client.deposit(&s.user, &1_000);
+
+    let recipient = Address::generate(&s.env);
+    s.client.withdraw(&s.owner, &recipient, &400);
+
+    let events = vault_events(&s);
+    assert_eq!(events.len(), 3);
+
+    let (_, topics, data) = &events[2];
+    assert_eq!(
+        topics.clone(),
+        (symbol_short!("withdrawn"), s.owner.clone()).into_val(&s.env)
+    );
+    let payload: (Address, i128, i128) = data.clone().try_into_val(&s.env).unwrap();
+    assert_eq!(payload, (recipient.clone(), 400_i128, 600_i128));
+}
+
+#[test]
+fn set_limit_emits_limit_set_event_with_old_and_new() {
+    let s = Setup::new(1_000_000);
+    s.client.set_limit(&s.owner, &2_000_000);
+
+    let events = vault_events(&s);
+    assert_eq!(events.len(), 2);
+
+    let (_, topics, data) = &events[1];
+    assert_eq!(
+        topics.clone(),
+        (symbol_short!("limit_set"), s.owner.clone()).into_val(&s.env)
+    );
+    let payload: (i128, i128) = data.clone().try_into_val(&s.env).unwrap();
+    assert_eq!(payload, (1_000_000_i128, 2_000_000_i128));
+}
+
+#[test]
+fn operator_set_and_revoke_emit_events() {
+    let s = Setup::new(1_000_000);
+
+    let op = Address::generate(&s.env);
+    s.client.set_operator(&s.owner, &op);
+
+    let events = vault_events(&s);
+    assert_eq!(events.len(), 2);
+    let (_, topics, data) = &events[1];
+    assert_eq!(
+        topics.clone(),
+        (symbol_short!("set_op"), s.owner.clone()).into_val(&s.env)
+    );
+    let payload: Address = data.clone().try_into_val(&s.env).unwrap();
+    assert_eq!(payload, op);
+
+    s.client.revoke_operator(&s.owner);
+
+    let events = vault_events(&s);
+    assert_eq!(events.len(), 3);
+    let (_, topics, data) = &events[2];
+    assert_eq!(
+        topics.clone(),
+        (symbol_short!("rm_op"), s.owner.clone()).into_val(&s.env)
+    );
+    let payload: () = data.clone().try_into_val(&s.env).unwrap();
+    assert_eq!(payload, ());
+}
+
+#[test]
+fn pause_and_unpause_emit_events() {
+    let s = Setup::new(1_000_000);
+    let paused_at = s.env.ledger().timestamp();
+
+    s.client.pause(&s.owner);
+    let events = vault_events(&s);
+    assert_eq!(events.len(), 2);
+    let (_, topics, data) = &events[1];
+    assert_eq!(
+        topics.clone(),
+        (symbol_short!("paused"), s.owner.clone()).into_val(&s.env)
+    );
+    let payload: u64 = data.clone().try_into_val(&s.env).unwrap();
+    assert_eq!(payload, paused_at);
+
+    s.client.unpause(&s.owner);
+    let events = vault_events(&s);
+    assert_eq!(events.len(), 3);
+    let (_, topics, data) = &events[2];
+    assert_eq!(
+        topics.clone(),
+        (symbol_short!("unpaused"), s.owner.clone()).into_val(&s.env)
+    );
+    let payload: u64 = data.clone().try_into_val(&s.env).unwrap();
+    assert_eq!(payload, paused_at);
+}
+
+#[test]
+fn failed_operations_emit_no_events() {
+    let s = Setup::new(1_000_000);
+    let base = vault_events(&s).len();
+
+    // Deposit over the limit reverts without publishing a `deposited` event.
+    s.client.deposit(&s.user, &999_900);
+    let result = s.client.try_deposit(&s.user, &200);
+    assert_eq!(result, Err(Ok(Error::LimitExceeded)));
+    assert_eq!(vault_events(&s).len(), base + 1);
+
+    // Double pause reverts without publishing a second `paused` event.
+    s.client.pause(&s.owner);
+    let result = s.client.try_pause(&s.owner);
+    assert_eq!(result, Err(Ok(Error::AlreadyPaused)));
+    assert_eq!(vault_events(&s).len(), base + 2);
+
+    // Unpause when not paused reverts without publishing an `unpaused` event.
+    s.client.unpause(&s.owner);
+    let result = s.client.try_unpause(&s.owner);
+    assert_eq!(result, Err(Ok(Error::NotPaused)));
+    assert_eq!(vault_events(&s).len(), base + 3);
+
+    // Unauthorized withdraw reverts without publishing a `withdrawn` event.
+    let stranger = Address::generate(&s.env);
+    let result = s.client.try_withdraw(&stranger, &stranger, &1);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+    assert_eq!(vault_events(&s).len(), base + 3);
+
+    // Setting a limit below the current balance reverts without publishing.
+    let result = s.client.try_set_limit(&s.owner, &100);
+    assert_eq!(result, Err(Ok(Error::LimitExceeded)));
+    assert_eq!(vault_events(&s).len(), base + 3);
 }

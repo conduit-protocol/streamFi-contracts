@@ -24,6 +24,8 @@ mod ttl;
 
 use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Symbol, Vec};
 
+use drip_common::is_zero_stellar_account;
+
 pub use config::GovernorConfig;
 pub use errors::Error;
 pub use role::Role;
@@ -48,17 +50,6 @@ fn assert_not_paused(env: &Env) -> Result<(), Error> {
     } else {
         Ok(())
     }
-}
-
-/// The zero Stellar account is represented by an Ed25519 public key
-/// consisting entirely of zero bytes.
-fn is_zero_stellar_account(env: &Env, address: &Address) -> bool {
-    let zero_account = Address::from_string(&soroban_sdk::String::from_str(
-        env,
-        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-    ));
-
-    address == &zero_account
 }
 
 #[contract]

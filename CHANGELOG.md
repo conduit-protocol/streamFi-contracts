@@ -14,6 +14,8 @@ All notable changes are documented here. Format based on [Keep a Changelog](http
 
 ### Added
 - Emergency pause on `DripFactory` — governor-gated `pause()`/`unpause()` halt all new `create_stream` calls during a protocol emergency; `is_paused()` view exposes the flag so the stream contract and off-chain infra can also gate withdrawals. Adds `ContractPaused` (11), `AlreadyPaused` (12), and `NotPaused` (13) error codes and a `Paused` instance-storage key
+- **`TokenVault` event emission** — added a dedicated `events.rs` module so `initialize`, `deposit`, `withdraw`, `set_limit`, `set_operator`, `revoke_operator`, `pause`, and `unpause` each publish an event (`init`, `deposited`, `withdrawn`, `limit_set`, `set_op`, `rm_op`, `paused`, `unpaused`), matching the other contracts and letting off-chain indexers observe vault activity without diffing storage (closes #311)
+- **`is_zero_stellar_account` centralized in `drip_common`** — the helper (with its zero-account literal) previously existed as two verbatim private copies in `DripFactory` and `DripGovernor`; it now lives once in `drip-common` and is shared by both contracts (closes #310)
 - `force_cancel()` on `DripStream` — recipient can settle atomically after sender leaves stream paused for more than 30 days (`PauseThresholdNotMet` error returned if threshold not met)
 - `PauseThresholdNotMet` error code (13) added to `Error` enum
 - `max_duration_seconds` governor parameter with default of 10 years (315,360,000 s) to prevent integer overflow in `rate_per_sec × duration` calculations
