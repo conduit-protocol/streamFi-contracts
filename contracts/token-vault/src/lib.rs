@@ -8,12 +8,41 @@ mod tests;
 use errors::Error;
 use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env};
 use storage::{
-    get_balance, get_max_limit, get_owner, get_pending, get_token, set_balance, set_max_limit,
-    set_owner, set_pending, set_token,
+    get_balance, get_max_limit, get_operator, get_owner, get_pending, get_token, is_paused,
+    remove_operator, set_balance, set_max_limit, set_operator, set_owner, set_paused, set_pending,
+    set_token,
 };
 
 #[contract]
 pub struct TokenVault;
+
+/// Checks that `caller` is either the vault owner or the currently delegated
+/// operator, then consumes the caller's auth. Returns `NotAuthorized` if
+/// `caller` matches neither role.
+///
+/// Mirrors `DripStream::require_sender_or_operator` — the owner can hand off
+/// day-to-day withdrawal authority to a hot wallet / ops key without exposing
+/// the cold owner key for routine operations.
+fn require_owner_or_operator(env: &Env, caller: &Address, owner: &Address) -> Result<(), Error> {
+    let operator = get_operator(env);
+    let is_owner = caller == owner;
+    let is_op = operator.as_ref().map(|op| caller == op).unwrap_or(false);
+    if is_owner || is_op {
+        caller.require_auth();
+        Ok(())
+    } else {
+        Err(Error::NotAuthorized)
+    }
+}
+
+/// Short-circuit helper: reject any state-mutating call while paused.
+fn assert_not_paused(env: &Env) -> Result<(), Error> {
+    if is_paused(env) {
+        Err(Error::ContractPaused)
+    } else {
+        Ok(())
+    }
+}
 
 #[contractimpl]
 impl TokenVault {
@@ -34,6 +63,7 @@ impl TokenVault {
     }
 
     pub fn deposit(env: Env, from: Address, amount: i128) -> Result<(), Error> {
+        assert_not_paused(&env)?;
         from.require_auth();
 
         if amount <= 0 {
@@ -66,9 +96,10 @@ impl TokenVault {
         Ok(())
     }
 
-    pub fn withdraw(env: Env, to: Address, amount: i128) -> Result<(), Error> {
+    pub fn withdraw(env: Env, caller: Address, to: Address, amount: i128) -> Result<(), Error> {
+        assert_not_paused(&env)?;
         let owner = get_owner(&env).ok_or(Error::NotAuthorized)?;
-        owner.require_auth();
+        require_owner_or_operator(&env, &caller, &owner)?;
 
         if amount <= 0 {
             return Err(Error::InvalidAmount);
@@ -89,12 +120,10 @@ impl TokenVault {
     }
 
     pub fn set_limit(env: Env, caller: Address, new_limit: i128) -> Result<(), Error> {
-        // Only owner may set limit
+        assert_not_paused(&env)?;
         let owner = get_owner(&env).ok_or(Error::NotAuthorized)?;
-        if caller != owner {
-            return Err(Error::NotAuthorized);
-        }
-        owner.require_auth();
+        require_owner_or_operator(&env, &caller, &owner)?;
+
         if new_limit <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -105,6 +134,84 @@ impl TokenVault {
         set_max_limit(&env, &new_limit);
         Ok(())
     }
+
+    // ── Operator delegation (owner-gated) ─────────────────────────────────
+
+    /// Owner designates an operator who can perform owner-level actions
+    /// (`withdraw`, `set_limit`) on this vault.
+    ///
+    /// Only the owner may call this. Matches `DripStream::set_operator` — the
+    /// owner can delegate day-to-day operations to a hot wallet while keeping
+    /// the owner key in cold storage.
+    pub fn set_operator(env: Env, caller: Address, operator: Address) -> Result<(), Error> {
+        let owner = get_owner(&env).ok_or(Error::NotAuthorized)?;
+        if caller != owner {
+            return Err(Error::NotAuthorized);
+        }
+        caller.require_auth();
+        set_operator(&env, &operator);
+        Ok(())
+    }
+
+    /// Owner revokes the operator, removing all delegated authority.
+    ///
+    /// No-op (not an error) if no operator is currently set.
+    pub fn revoke_operator(env: Env, caller: Address) -> Result<(), Error> {
+        let owner = get_owner(&env).ok_or(Error::NotAuthorized)?;
+        if caller != owner {
+            return Err(Error::NotAuthorized);
+        }
+        caller.require_auth();
+        remove_operator(&env);
+        Ok(())
+    }
+
+    /// Read-only: the current operator address, if any.
+    pub fn operator(env: Env) -> Option<Address> {
+        get_operator(&env)
+    }
+
+    // ── Emergency pause (owner-gated) ─────────────────────────────────────
+
+    /// Emergency halt: freeze all state-mutating operations.
+    ///
+    /// While paused, `deposit`, `withdraw`, and `set_limit` all revert with
+    /// `ContractPaused` before touching any state. Matches the
+    /// `pause`/`unpause`/`is_paused` triple present on `DripFactory`,
+    /// `DripGovernor`, and `TwapOracle`.
+    pub fn pause(env: Env, caller: Address) -> Result<(), Error> {
+        let owner = get_owner(&env).ok_or(Error::NotAuthorized)?;
+        if caller != owner {
+            return Err(Error::NotAuthorized);
+        }
+        caller.require_auth();
+        if is_paused(&env) {
+            return Err(Error::AlreadyPaused);
+        }
+        set_paused(&env, true);
+        Ok(())
+    }
+
+    /// Lift the emergency pause, re-enabling all state-mutating operations.
+    pub fn unpause(env: Env, caller: Address) -> Result<(), Error> {
+        let owner = get_owner(&env).ok_or(Error::NotAuthorized)?;
+        if caller != owner {
+            return Err(Error::NotAuthorized);
+        }
+        caller.require_auth();
+        if !is_paused(&env) {
+            return Err(Error::NotPaused);
+        }
+        set_paused(&env, false);
+        Ok(())
+    }
+
+    /// Read-only: whether the vault is currently under an emergency pause.
+    pub fn is_paused(env: Env) -> bool {
+        is_paused(&env)
+    }
+
+    // ── Internal helpers ────────────────────────────────────────────────────
 
     // Exposed for tests: ensures any pending async callbacks are cleared.
     pub fn cleanup_pending(env: &Env) {

@@ -16,16 +16,24 @@ fn bump_instance(env: &Env) {
 
 /// Protocol administration roles for the oracle.
 ///
-/// Separates concerns so independent wallets can own price submission
-/// versus oracle configuration:
+/// Separates concerns so independent wallets can own price submission,
+/// oracle configuration, and emergency pause authority:
 ///
 /// - `Admin`       — configure oracle, grant/revoke roles, emergency pause.
 /// - `PriceFeeder` — submit prices (or Admin, acting as super-user).
+/// - `Pauser`      — call `pause`/`unpause` without needing full `Admin`.
+///                   Mirrors `DripGovernor::Role::Pauser`, closing the
+///                   delegation gap noted in issue #203.
 #[contracttype]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Role {
     Admin,
     PriceFeeder,
+    /// Emergency-pause authority. A holder can call `pause`/`unpause`
+    /// without being granted full `Admin` — enabling an operational hot
+    /// wallet to halt price submission during an incident while the admin
+    /// key stays in cold storage.
+    Pauser,
 }
 
 /// Composite key identifying a single (role, account) grant.
@@ -51,6 +59,14 @@ pub enum DataKey {
     /// Every address that has ever called `submit_price`, iterated by
     /// `get_twap_price` to build the aggregation set.
     Submitters,
+    /// Index of all accounts currently holding a given role.
+    ///
+    /// Maintained alongside every `grant_role_inner`/`revoke_role_inner`
+    /// call so role membership can be enumerated on-chain without replaying
+    /// every `grant`/`revoke` event from genesis — mirrors
+    /// `DripGovernor::DataKey::RoleMembers`, closing the gap noted in the
+    /// off-chain tooling audit.
+    RoleMembers(Role),
 }
 
 #[contracttype]
@@ -122,6 +138,15 @@ impl TwapOracle {
     /// Whether `account` currently holds `role`.
     pub fn has_role(env: Env, role: Role, account: Address) -> bool {
         has_role(&env, role, &account)
+    }
+
+    /// Returns every account currently holding `role`.
+    ///
+    /// Reads from the persistent `RoleMembers` index maintained by
+    /// `grant_role`/`revoke_role`. Returns an empty vector if no accounts
+    /// hold the role — no event-log replay needed, unlike the old design.
+    pub fn role_members(env: Env, role: Role) -> Vec<Address> {
+        role_members(&env, role)
     }
 
     /// Grants `role` to `account`. Only an `Admin` may call this.
@@ -411,7 +436,7 @@ impl TwapOracle {
         Ok(value as u64)
     }
 
-    // ── Emergency pause (Admin-gated) ────────────────────────────────────
+    // ── Emergency pause (Pauser or Admin-gated) ──────────────────────────
 
     /// Emergency halt: freeze price submission.
     ///
@@ -419,8 +444,13 @@ impl TwapOracle {
     /// any state is touched. Read-only methods (`get_twap_price`,
     /// `calculate_fiat_stream_payout`) continue to work with the last
     /// committed price.
+    ///
+    /// Gated on `Role::Pauser` (or `Admin` as super-user), so a dedicated
+    /// ops wallet can halt price submission without holding a full `Admin`
+    /// key — mirrors `DripGovernor::governor_pause` and closes the
+    /// delegation gap noted in the audit.
     pub fn pause(env: Env, caller: Address) -> Result<(), Error> {
-        require_role_or_admin(&env, &caller, Role::Admin)?;
+        require_role_or_admin(&env, &caller, Role::Pauser)?;
         if is_paused(&env) {
             return Err(Error::AlreadyPaused);
         }
@@ -431,8 +461,10 @@ impl TwapOracle {
     }
 
     /// Lift the emergency pause, allowing `submit_price` again.
+    ///
+    /// Gated on `Role::Pauser` (or `Admin`).
     pub fn unpause(env: Env, caller: Address) -> Result<(), Error> {
-        require_role_or_admin(&env, &caller, Role::Admin)?;
+        require_role_or_admin(&env, &caller, Role::Pauser)?;
         if !is_paused(&env) {
             return Err(Error::NotPaused);
         }
@@ -458,6 +490,14 @@ fn has_role(env: &Env, role: Role, account: &Address) -> bool {
     env.storage().instance().has(&key)
 }
 
+/// Returns every account currently holding `role` from the persistent index.
+fn role_members(env: &Env, role: Role) -> Vec<Address> {
+    env.storage()
+        .instance()
+        .get(&DataKey::RoleMembers(role))
+        .unwrap_or(Vec::new(env))
+}
+
 fn grant_role_inner(env: &Env, role: Role, account: &Address) -> bool {
     if has_role(env, role, account) {
         return false;
@@ -476,6 +516,12 @@ fn grant_role_inner(env: &Env, role: Role, account: &Address) -> bool {
             + 1;
         env.storage().instance().set(&DataKey::AdminCount, &next);
     }
+    // Maintain the role-members index.
+    let mut members: Vec<Address> = role_members(env, role);
+    members.push_back(account.clone());
+    env.storage()
+        .instance()
+        .set(&DataKey::RoleMembers(role), &members);
     true
 }
 
@@ -501,6 +547,17 @@ fn revoke_role_inner(env: &Env, role: Role, account: &Address) -> Result<bool, E
         account: account.clone(),
     });
     env.storage().instance().remove(&key);
+    // Remove from the role-members index.
+    let members: Vec<Address> = role_members(env, role);
+    let mut updated: Vec<Address> = Vec::new(env);
+    for m in members.iter() {
+        if m != *account {
+            updated.push_back(m);
+        }
+    }
+    env.storage()
+        .instance()
+        .set(&DataKey::RoleMembers(role), &updated);
     Ok(true)
 }
 
@@ -736,14 +793,11 @@ mod tests {
         let (env, client, admin) = setup();
         client.initialize(&admin);
 
-        // Create a caller with no roles (neither Admin nor PriceFeeder).
         let impostor = Address::generate(&env);
 
-        // Caller with no authorization should be rejected explicitly.
         let result = client.try_submit_price(&impostor, &100);
         assert_eq!(result, Err(Ok(Error::NotAuthorized)));
 
-        // Verify that granting PriceFeeder role permits submission.
         client.grant_role(&admin, &Role::PriceFeeder, &impostor);
         let result = client.try_submit_price(&impostor, &100);
         assert!(result.is_ok());
@@ -820,7 +874,6 @@ mod tests {
 
         client.submit_price(&admin, &50_000_000);
 
-        // Advance time beyond max_staleness
         env.ledger().set(LedgerInfo {
             timestamp: 1_000_000 + 61,
             protocol_version: 21,
@@ -870,10 +923,8 @@ mod tests {
         };
         client.configure_oracle(&admin, &config);
 
-        // Price = 50_000_000 with 8 decimals = $0.50 per token
         client.submit_price(&admin, &50_000_000);
 
-        // 100 tokens * 50_000_000 / 10^8 = 50
         let payout = client.calculate_fiat_stream_payout(&100);
         assert_eq!(payout, 50);
     }
@@ -898,8 +949,6 @@ mod tests {
         assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
     }
 
-    /// Regression test for the nested-lock warning on
-    /// `calculate_fiat_stream_payout`.
     #[test]
     fn calculate_fiat_stream_payout_deadlocks_when_outer_lock_held() {
         let (env, client, admin) = setup();
@@ -915,11 +964,9 @@ mod tests {
         client.configure_oracle(&admin, &config);
         client.submit_price(&admin, &50_000_000);
 
-        // Verify the happy path works without a held lock.
         let payout = client.calculate_fiat_stream_payout(&100);
         assert_eq!(payout, 50);
 
-        // Simulate an outer re-entrancy guard already held at depth 1.
         let lock_key = soroban_sdk::symbol_short!("O_Lock");
         env.as_contract(&client.address, || {
             env.storage().instance().set(&lock_key, &1_u32);
@@ -1057,9 +1104,173 @@ mod tests {
         client.submit_price(&admin, &50_000_000);
 
         client.pause(&admin);
-        // Read-only methods still work with the last committed price.
         let price = client.get_twap_price();
         assert_eq!(price, 50_000_000);
+    }
+
+    // ── Role::Pauser tests ────────────────────────────────────────────────
+
+    #[test]
+    fn pauser_can_pause_and_unpause_without_admin() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let pauser = Address::generate(&env);
+        // pauser holds only Role::Pauser — not Admin
+        client.grant_role(&admin, &Role::Pauser, &pauser);
+        assert!(!client.has_role(&Role::Admin, &pauser));
+
+        assert!(!client.is_paused());
+        client.pause(&pauser);
+        assert!(client.is_paused());
+        client.unpause(&pauser);
+        assert!(!client.is_paused());
+    }
+
+    #[test]
+    fn non_pauser_non_admin_cannot_pause() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let stranger = Address::generate(&env);
+        let result = client.try_pause(&stranger);
+        assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+    }
+
+    #[test]
+    fn non_pauser_non_admin_cannot_unpause() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        client.pause(&admin);
+
+        let stranger = Address::generate(&env);
+        let result = client.try_unpause(&stranger);
+        assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+    }
+
+    #[test]
+    fn price_feeder_cannot_pause() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let feeder = Address::generate(&env);
+        client.grant_role(&admin, &Role::PriceFeeder, &feeder);
+
+        // PriceFeeder does not imply Pauser authority
+        let result = client.try_pause(&feeder);
+        assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+    }
+
+    #[test]
+    fn pauser_revoked_can_no_longer_pause() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let pauser = Address::generate(&env);
+        client.grant_role(&admin, &Role::Pauser, &pauser);
+        client.revoke_role(&admin, &Role::Pauser, &pauser);
+
+        let result = client.try_pause(&pauser);
+        assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+    }
+
+    // ── RoleMembers index tests ───────────────────────────────────────────
+
+    #[test]
+    fn role_members_empty_before_any_grants() {
+        let (_env, client, admin) = setup();
+        client.initialize(&admin);
+
+        // PriceFeeder index is empty until someone is granted that role
+        let members = client.role_members(&Role::PriceFeeder);
+        assert_eq!(members.len(), 0);
+    }
+
+    #[test]
+    fn role_members_tracks_admin_from_initialize() {
+        let (_env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let members = client.role_members(&Role::Admin);
+        assert_eq!(members.len(), 1);
+        assert_eq!(members.get(0).unwrap(), admin);
+    }
+
+    #[test]
+    fn role_members_grows_on_grant() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let f1 = Address::generate(&env);
+        let f2 = Address::generate(&env);
+        client.grant_role(&admin, &Role::PriceFeeder, &f1);
+        client.grant_role(&admin, &Role::PriceFeeder, &f2);
+
+        let members = client.role_members(&Role::PriceFeeder);
+        assert_eq!(members.len(), 2);
+        assert!(members.iter().any(|m| m == f1));
+        assert!(members.iter().any(|m| m == f2));
+    }
+
+    #[test]
+    fn role_members_shrinks_on_revoke() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let f1 = Address::generate(&env);
+        let f2 = Address::generate(&env);
+        client.grant_role(&admin, &Role::PriceFeeder, &f1);
+        client.grant_role(&admin, &Role::PriceFeeder, &f2);
+        client.revoke_role(&admin, &Role::PriceFeeder, &f1);
+
+        let members = client.role_members(&Role::PriceFeeder);
+        assert_eq!(members.len(), 1);
+        assert_eq!(members.get(0).unwrap(), f2);
+    }
+
+    #[test]
+    fn role_members_admin_index_updated_on_transfer() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&admin, &new_admin);
+
+        let members = client.role_members(&Role::Admin);
+        assert_eq!(members.len(), 1);
+        assert_eq!(members.get(0).unwrap(), new_admin);
+    }
+
+    #[test]
+    fn role_members_pauser_index_maintained() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let pauser = Address::generate(&env);
+        client.grant_role(&admin, &Role::Pauser, &pauser);
+
+        let members = client.role_members(&Role::Pauser);
+        assert_eq!(members.len(), 1);
+        assert_eq!(members.get(0).unwrap(), pauser);
+
+        client.revoke_role(&admin, &Role::Pauser, &pauser);
+        let members = client.role_members(&Role::Pauser);
+        assert_eq!(members.len(), 0);
+    }
+
+    #[test]
+    fn grant_is_idempotent_and_does_not_double_count_in_index() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let feeder = Address::generate(&env);
+        client.grant_role(&admin, &Role::PriceFeeder, &feeder);
+        // Granting again is a no-op — index must not grow
+        client.grant_role(&admin, &Role::PriceFeeder, &feeder);
+
+        let members = client.role_members(&Role::PriceFeeder);
+        assert_eq!(members.len(), 1);
     }
 
     // ── Admin rotation tests (#192) ───────────────────────────────────────
@@ -1102,10 +1313,8 @@ mod tests {
             asset_peg: 1,
             max_staleness: 300,
         };
-        // Old admin is no longer authorized...
         let result = client.try_configure_oracle(&admin, &config);
         assert_eq!(result, Err(Ok(Error::NotAuthorized)));
-        // ...new admin is.
         client.configure_oracle(&new_admin, &config);
     }
 
@@ -1134,7 +1343,6 @@ mod tests {
         client.submit_price(&feeder_b, &20);
         client.submit_price(&feeder_c, &30);
 
-        // Median of [10, 20, 30] = 20.
         let price = client.get_twap_price();
         assert_eq!(price, 20);
     }
@@ -1159,7 +1367,6 @@ mod tests {
         client.submit_price(&admin, &10);
         client.submit_price(&feeder_b, &20);
 
-        // Even count: average of the two middle (only) values = 15.
         let price = client.get_twap_price();
         assert_eq!(price, 15);
     }
@@ -1184,7 +1391,6 @@ mod tests {
         client.submit_price(&admin, &10);
         let submitted_at = env.ledger().timestamp();
 
-        // Advance time so admin's submission goes stale.
         env.ledger().set(LedgerInfo {
             timestamp: submitted_at + 61,
             protocol_version: 21,
@@ -1196,10 +1402,8 @@ mod tests {
             max_entry_ttl: 6_312_000,
         });
 
-        // feeder_b submits fresh after the jump.
         client.submit_price(&feeder_b, &20);
 
-        // Only feeder_b's fresh submission counts toward the aggregate.
         let price = client.get_twap_price();
         assert_eq!(price, 20);
     }
@@ -1324,7 +1528,6 @@ mod tests {
             max_entry_ttl: 6_312_000,
         });
 
-        // Reports true instead of erroring like get_twap_price would.
         assert!(client.is_price_stale());
     }
 
@@ -1384,11 +1587,9 @@ mod tests {
         client.configure_oracle(&admin, &config);
         client.submit_price(&admin, &50_000_000);
 
-        // Price exists and is fresh
         let price = client.get_twap_price();
         assert_eq!(price, 50_000_000);
 
-        // Reconfigure with different decimals
         let new_config = OracleConfig {
             oracle_address: oracle_addr.clone(),
             decimals: 6,
@@ -1397,7 +1598,6 @@ mod tests {
         };
         client.configure_oracle(&admin, &new_config);
 
-        // After decimals change, old price data should be cleared
         let result = client.try_get_twap_price();
         assert_eq!(result, Err(Ok(Error::NoPriceAvailable)));
     }
@@ -1420,7 +1620,6 @@ mod tests {
         let price = client.get_twap_price();
         assert_eq!(price, 50_000_000);
 
-        // Reconfigure with different asset_peg
         let new_config = OracleConfig {
             oracle_address: oracle_addr.clone(),
             decimals: 8,
@@ -1429,7 +1628,6 @@ mod tests {
         };
         client.configure_oracle(&admin, &new_config);
 
-        // After asset_peg change, old price data should be cleared
         let result = client.try_get_twap_price();
         assert_eq!(result, Err(Ok(Error::NoPriceAvailable)));
     }
@@ -1452,7 +1650,6 @@ mod tests {
         let price = client.get_twap_price();
         assert_eq!(price, 50_000_000);
 
-        // Reconfigure with only max_staleness changed
         let new_config = OracleConfig {
             oracle_address: oracle_addr.clone(),
             decimals: 8,
@@ -1461,7 +1658,6 @@ mod tests {
         };
         client.configure_oracle(&admin, &new_config);
 
-        // Price should still be available — only staleness window changed
         let price_after = client.get_twap_price();
         assert_eq!(price_after, 50_000_000);
     }

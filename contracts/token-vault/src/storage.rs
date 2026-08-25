@@ -8,6 +8,16 @@ pub enum DataKey {
     MaxLimit,
     Balance,
     PendingCallback,
+    /// Optional operator address delegated by the owner.
+    ///
+    /// When set, the operator can perform owner-level actions (`withdraw`,
+    /// `set_limit`) on behalf of the owner — a hot-wallet / ops-key
+    /// pattern matching `DripStream`'s `set_operator` design.
+    /// Absent key means no operator has been delegated.
+    Operator,
+    /// Emergency-pause flag. When `true`, all state-mutating entry points
+    /// (`deposit`, `withdraw`, `set_limit`) revert before touching state.
+    Paused,
 }
 
 impl DataKey {
@@ -54,4 +64,27 @@ pub fn set_pending(env: &Env, v: &Option<i128>) {
 
 pub fn get_pending(env: &Env) -> Option<Option<i128>> {
     env.storage().instance().get(&DataKey::PendingCallback)
+}
+
+pub fn set_operator(env: &Env, op: &Address) {
+    env.storage().instance().set(&DataKey::Operator, op);
+}
+
+pub fn get_operator(env: &Env) -> Option<Address> {
+    env.storage().instance().get(&DataKey::Operator)
+}
+
+pub fn remove_operator(env: &Env) {
+    env.storage().instance().remove(&DataKey::Operator);
+}
+
+pub fn set_paused(env: &Env, paused: bool) {
+    env.storage().instance().set(&DataKey::Paused, &paused);
+}
+
+pub fn is_paused(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false)
 }
