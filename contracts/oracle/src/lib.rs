@@ -69,12 +69,25 @@ pub enum DataKey {
     RoleMembers(Role),
 }
 
+/// Configuration parameters for the TWAP oracle.
+///
+/// Defines the external oracle address, fixed-point decimal scaling,
+/// asset peg identifier, and maximum allowed price staleness.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OracleConfig {
+    /// The address of the oracle provider or associated contract identifier.
     pub oracle_address: Address,
+    /// Number of decimal places used in fixed-point price submissions (maximum 38).
+    ///
+    /// Fixed-point prices submitted via [`TwapOracle::submit_price`] are scaled
+    /// by `10^decimals`. Exceeding 38 causes [`TwapOracle::configure_oracle`] to
+    /// return `Err(Error::InvalidDecimals)`.
     pub decimals: u32,
+    /// Target asset peg identifier (e.g., currency/asset pairing representation).
     pub asset_peg: u32,
+    /// Maximum allowable age (in seconds) of a price submission before it is
+    /// treated as stale by [`TwapOracle::get_twap_price`] or [`TwapOracle::is_price_stale`].
     pub max_staleness: u64,
 }
 
@@ -200,7 +213,27 @@ impl TwapOracle {
 
     // ── Reads ────────────────────────────────────────────────────────────
 
-    /// Reconfigure the oracle parameters. Admin-gated.
+    /// Reconfigures oracle parameters and pricing settings. Admin-gated.
+    ///
+    /// # Authorization
+    ///
+    /// Only an account holding the `Admin` role (`Role::Admin`) may call this.
+    /// The `caller` must authenticate the transaction via `caller.require_auth()`.
+    /// Reverts with [`Error::NotAuthorized`] if `caller` does not hold the `Admin` role.
+    ///
+    /// # Parameters
+    ///
+    /// - `env`: The Soroban environment.
+    /// - `caller`: Address of the admin invoking the configuration update (must authenticate).
+    /// - `config`: An [`OracleConfig`] struct carrying:
+    ///   - `oracle_address`: The address of the oracle provider or contract.
+    ///   - `decimals`: Fixed-point decimal precision for submitted prices (max 38).
+    ///     Reverts with [`Error::InvalidDecimals`] if `config.decimals > 38`.
+    ///   - `asset_peg`: Target asset peg identifier/format.
+    ///   - `max_staleness`: Maximum allowable age in seconds for price observations before
+    ///     they are deemed stale.
+    ///
+    /// # Price Cache Invalidation
     ///
     /// When `decimals` or `asset_peg` changes relative to the currently stored
     /// config, all existing price data (`DataKey::Price`, per-feeder
@@ -211,6 +244,11 @@ impl TwapOracle {
     /// `submit_price` is made. Changes to `max_staleness` or `oracle_address`
     /// alone do not clear price data, as those do not affect price magnitude
     /// interpretation.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::NotAuthorized`]: `caller` is not an `Admin` or auth verification fails.
+    /// - [`Error::InvalidDecimals`]: `config.decimals` exceeds 38.
     pub fn configure_oracle(env: Env, caller: Address, config: OracleConfig) -> Result<(), Error> {
         require_role_or_admin(&env, &caller, Role::Admin)?;
 
