@@ -348,16 +348,15 @@ impl DripGovernor {
         caller.require_auth();
         ttl::bump(&env);
 
-        // Revoke Admin from the original proposer.
+        // Grant Admin to the new authority (the caller) first, then revoke from proposer.
+        // This ensures the LastAdmin guard never blocks the transfer.
         let proposer: Address = env
             .storage()
             .instance()
             .get(&DataKey::PendingAuthorityProposer)
             .ok_or(Error::NoPendingAuthority)?;
-        let _ = role::revoke(&env, Role::Admin, &proposer)?;
-
-        // Grant Admin to the new authority (the caller).
         role::grant(&env, Role::Admin, &caller);
+        let _ = role::revoke(&env, Role::Admin, &proposer)?;
 
         // Clean up pending state.
         env.storage().instance().remove(&DataKey::PendingAuthority);
