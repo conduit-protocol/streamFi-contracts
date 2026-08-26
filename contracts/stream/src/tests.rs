@@ -1051,3 +1051,346 @@ fn top_up_and_extend_rejected_for_open_ended_stream() {
     let result = client.try_top_up_and_extend(&sender, &10_000, &100);
     assert_eq!(result, Err(Ok(Error::InvalidTimeRange)));
 }
+
+// ── Operator access control ─────────────────────────────────────────────────
+
+#[test]
+fn operator_returns_none_initially() {
+    let s = Setup::new(100, 3600, false);
+    assert_eq!(s.client.operator(), None);
+}
+
+#[test]
+fn set_operator_sets_address() {
+    let s = Setup::new(100, 3600, false);
+    let operator = Address::generate(&s.env);
+    s.client.set_operator(&s.sender, &operator);
+    assert_eq!(s.client.operator(), Some(operator));
+}
+
+#[test]
+fn set_operator_rejects_non_sender() {
+    let s = Setup::new(100, 3600, false);
+    let non_sender = Address::generate(&s.env);
+    let operator = Address::generate(&s.env);
+    let result = s.client.try_set_operator(&non_sender, &operator);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+#[test]
+fn set_operator_rejects_on_cancelled_stream() {
+    let s = Setup::new(100, 3600, false);
+    s.client.cancel(&s.sender);
+    let operator = Address::generate(&s.env);
+    let result = s.client.try_set_operator(&s.sender, &operator);
+    assert_eq!(result, Err(Ok(Error::StreamCancelled)));
+}
+
+#[test]
+fn set_operator_replaces_previous() {
+    let s = Setup::new(100, 3600, false);
+    let op1 = Address::generate(&s.env);
+    let op2 = Address::generate(&s.env);
+    s.client.set_operator(&s.sender, &op1);
+    assert_eq!(s.client.operator(), Some(op1.clone()));
+    s.client.set_operator(&s.sender, &op2);
+    assert_eq!(s.client.operator(), Some(op2));
+}
+
+#[test]
+fn revoke_operator_removes_address() {
+    let s = Setup::new(100, 3600, false);
+    let operator = Address::generate(&s.env);
+    s.client.set_operator(&s.sender, &operator);
+    assert_eq!(s.client.operator(), Some(operator));
+    s.client.revoke_operator(&s.sender);
+    assert_eq!(s.client.operator(), None);
+}
+
+#[test]
+fn revoke_operator_rejects_non_sender() {
+    let s = Setup::new(100, 3600, false);
+    let operator = Address::generate(&s.env);
+    s.client.set_operator(&s.sender, &operator);
+    let non_sender = Address::generate(&s.env);
+    let result = s.client.try_revoke_operator(&non_sender);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+#[test]
+fn revoke_operator_rejects_on_cancelled_stream() {
+    let s = Setup::new(100, 3600, false);
+    let operator = Address::generate(&s.env);
+    s.client.set_operator(&s.sender, &operator);
+    s.client.cancel(&s.sender);
+    let result = s.client.try_revoke_operator(&s.sender);
+    assert_eq!(result, Err(Ok(Error::StreamCancelled)));
+}
+
+// ── Operator exercises sender-gated functions ──────────────────────────────
+
+#[test]
+fn operator_can_cancel() {
+    let s = Setup::new(100, 3600, false);
+    let operator = Address::generate(&s.env);
+    s.client.set_operator(&s.sender, &operator);
+
+    s.advance_secs(1800);
+    let sender_before = s.token.balance(&s.sender);
+    let recipient_before = s.token.balance(&s.recipient);
+    s.client.cancel(&operator);
+
+    assert!(s.client.info().is_cancelled());
+    assert_eq!(s.token.balance(&s.recipient) - recipient_before, 180_000);
+    assert_eq!(s.token.balance(&s.sender) - sender_before, 180_000);
+}
+
+#[test]
+fn operator_can_pause() {
+    let s = Setup::new(100, 3600, false);
+    let operator = Address::generate(&s.env);
+    s.client.set_operator(&s.sender, &operator);
+
+    s.advance_secs(100);
+    let before_pause = s.client.withdrawable();
+    s.client.pause(&operator);
+
+    assert!(s.client.info().is_paused());
+    s.advance_secs(500);
+    assert_eq!(s.client.withdrawable(), before_pause);
+}
+
+#[test]
+fn operator_can_resume() {
+    let s = Setup::new(100, 3600, false);
+    let operator = Address::generate(&s.env);
+    s.client.set_operator(&s.sender, &operator);
+
+    s.advance_secs(100);
+    s.client.pause(&operator);
+    s.advance_secs(200);
+    s.client.resume(&operator);
+    s.advance_secs(50);
+
+    // 150s of streaming = 15_000
+    assert_eq!(s.client.withdrawable(), 15_000);
+}
+
+#[test]
+fn operator_passes_auth_gate_for_top_up() {
+    // top_up transfers tokens FROM the sender via tk.transfer(&sender, …),
+    // which requires the sender's auth in a nested cross-contract call.
+    // mock_all_auths() only covers root-level auth, so the full happy-path
+    // cannot be exercised without explicit non-root auth entries. Instead,
+    // we verify the operator clears the require_sender_or_operator gate:
+    // a cancelled stream fails with StreamCancelled (not NotAuthorized),
+    // proving the operator was accepted as authorized.
+    let s = Setup::new(100, 3600, false);
+    let operator = Address::generate(&s.env);
+    s.client.set_operator(&s.sender, &operator);
+    s.client.cancel(&s.sender);
+
+    let result = s.client.try_top_up(&operator, &1_000);
+    assert_eq!(result, Err(Ok(Error::StreamCancelled)));
+}
+
+#[test]
+fn operator_passes_auth_gate_for_extend_duration() {
+    // extend_duration transfers tokens FROM the sender via tk.transfer.
+    // Same auth limitation as top_up — verify the operator clears the gate
+    // by checking StreamCancelled (not NotAuthorized) on a cancelled stream.
+    let s = Setup::new(100, 3_600, false);
+    let operator = Address::generate(&s.env);
+    s.client.set_operator(&s.sender, &operator);
+    s.client.cancel(&s.sender);
+
+    let result = s.client.try_extend_duration(&operator, &100);
+    assert_eq!(result, Err(Ok(Error::StreamCancelled)));
+}
+
+#[test]
+fn operator_passes_auth_gate_for_top_up_and_extend() {
+    // top_up_and_extend transfers tokens FROM the sender via tk.transfer.
+    // Same auth limitation as top_up — verify the operator clears the gate
+    // by checking StreamCancelled (not NotAuthorized) on a cancelled stream.
+    let s = Setup::new(100, 3_600, false);
+    let operator = Address::generate(&s.env);
+    s.client.set_operator(&s.sender, &operator);
+    s.client.cancel(&s.sender);
+
+    let result = s.client.try_top_up_and_extend(&operator, &1_000, &100);
+    assert_eq!(result, Err(Ok(Error::StreamCancelled)));
+}
+
+#[test]
+fn operator_can_clawback() {
+    let s = Setup::new(100, 3600, true);
+    let operator = Address::generate(&s.env);
+    s.client.set_operator(&s.sender, &operator);
+
+    s.advance_secs(600); // 60_000 owed to recipient
+    let sender_before = s.token.balance(&s.sender);
+    let reclaimed = s.client.clawback(&operator);
+
+    assert_eq!(reclaimed, 300_000);
+    assert_eq!(s.token.balance(&s.sender) - sender_before, 300_000);
+}
+
+// ── Non-sender/non-operator rejected by sender-gated functions ─────────────
+
+#[test]
+fn non_sender_non_operator_rejected_by_cancel() {
+    let s = Setup::new(100, 3600, false);
+    let rando = Address::generate(&s.env);
+    let result = s.client.try_cancel(&rando);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+#[test]
+fn non_sender_non_operator_rejected_by_pause() {
+    let s = Setup::new(100, 3600, false);
+    let rando = Address::generate(&s.env);
+    let result = s.client.try_pause(&rando);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+#[test]
+fn non_sender_non_operator_rejected_by_resume() {
+    let s = Setup::new(100, 3600, false);
+    s.client.pause(&s.sender);
+    let rando = Address::generate(&s.env);
+    let result = s.client.try_resume(&rando);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+#[test]
+fn non_sender_non_operator_rejected_by_top_up() {
+    let s = Setup::new(100, 3600, false);
+    let rando = Address::generate(&s.env);
+    let result = s.client.try_top_up(&rando, &1_000);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+#[test]
+fn non_sender_non_operator_rejected_by_extend_duration() {
+    let s = Setup::new(100, 3_600, false);
+    let rando = Address::generate(&s.env);
+    let result = s.client.try_extend_duration(&rando, &100);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+#[test]
+fn non_sender_non_operator_rejected_by_top_up_and_extend() {
+    let s = Setup::new(100, 3_600, false);
+    let rando = Address::generate(&s.env);
+    let result = s.client.try_top_up_and_extend(&rando, &1_000, &100);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+#[test]
+fn non_sender_non_operator_rejected_by_clawback() {
+    let s = Setup::new(100, 3600, true);
+    let rando = Address::generate(&s.env);
+    let result = s.client.try_clawback(&rando);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+// ── Revoked operator loses all delegated rights ────────────────────────────
+
+#[test]
+fn revoked_operator_rejected_by_cancel() {
+    let s = Setup::new(100, 3600, false);
+    let operator = Address::generate(&s.env);
+    s.client.set_operator(&s.sender, &operator);
+    s.client.revoke_operator(&s.sender);
+
+    let result = s.client.try_cancel(&operator);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+#[test]
+fn revoked_operator_rejected_by_pause() {
+    let s = Setup::new(100, 3600, false);
+    let operator = Address::generate(&s.env);
+    s.client.set_operator(&s.sender, &operator);
+    s.client.revoke_operator(&s.sender);
+
+    let result = s.client.try_pause(&operator);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+#[test]
+fn revoked_operator_rejected_by_top_up() {
+    let s = Setup::new(100, 3600, false);
+    let operator = Address::generate(&s.env);
+    s.client.set_operator(&s.sender, &operator);
+    s.client.revoke_operator(&s.sender);
+
+    let result = s.client.try_top_up(&operator, &1_000);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+#[test]
+fn revoked_operator_rejected_by_clawback() {
+    let s = Setup::new(100, 3600, true);
+    let operator = Address::generate(&s.env);
+    s.client.set_operator(&s.sender, &operator);
+    s.client.revoke_operator(&s.sender);
+
+    let result = s.client.try_clawback(&operator);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+#[test]
+fn revoked_operator_rejected_by_extend_duration() {
+    let s = Setup::new(100, 3_600, false);
+    let operator = Address::generate(&s.env);
+    s.client.set_operator(&s.sender, &operator);
+    s.client.revoke_operator(&s.sender);
+
+    let result = s.client.try_extend_duration(&operator, &100);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+#[test]
+fn revoked_operator_rejected_by_top_up_and_extend() {
+    let s = Setup::new(100, 3_600, false);
+    let operator = Address::generate(&s.env);
+    s.client.set_operator(&s.sender, &operator);
+    s.client.revoke_operator(&s.sender);
+
+    let result = s.client.try_top_up_and_extend(&operator, &1_000, &100);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+// ── Sender retains access after setting operator ───────────────────────────
+
+#[test]
+fn sender_still_can_cancel_after_setting_operator() {
+    let s = Setup::new(100, 3600, false);
+    let operator = Address::generate(&s.env);
+    s.client.set_operator(&s.sender, &operator);
+
+    s.advance_secs(900);
+    s.client.cancel(&s.sender);
+    assert!(s.client.info().is_cancelled());
+}
+
+#[test]
+fn sender_still_can_pause_after_setting_operator() {
+    let s = Setup::new(100, 3600, false);
+    let operator = Address::generate(&s.env);
+    s.client.set_operator(&s.sender, &operator);
+
+    s.client.pause(&s.sender);
+    assert!(s.client.info().is_paused());
+}
+
+// ── Operator cannot access recipient-only functions ────────────────────────
+
+// withdraw() and transfer_recipient() are gated by info.recipient.require_auth(),
+// not by require_sender_or_operator. They don't take a caller parameter — the
+// auth is checked against the stored recipient address. An operator cannot
+// satisfy this auth because they are not the recipient. This is already covered
+// by the existing withdraw tests (which always pass recipient auth) and would
+// require disabling mock_all_auths() to test negative cases properly.

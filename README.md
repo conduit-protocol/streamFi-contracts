@@ -31,14 +31,24 @@ The core contract. One instance is deployed per payment stream. Holds the token 
 **Public functions:**
 
 ```rust
-fn withdraw(env: Env, amount: i128) -> Result<i128, Error>
-fn cancel(env: Env) -> Result<(), Error>
-fn pause(env: Env) -> Result<(), Error>
-fn resume(env: Env) -> Result<(), Error>
-fn top_up(env: Env, amount: i128) -> Result<(), Error>
-fn clawback(env: Env) -> Result<i128, Error>
+fn withdraw(env: Env, amount: i128) -> Result<i128, Error>   // recipient-only
+
+// caller must be the sender or the delegated operator, if any (see below)
+fn cancel(env: Env, caller: Address) -> Result<(), Error>
+fn pause(env: Env, caller: Address) -> Result<(), Error>
+fn resume(env: Env, caller: Address) -> Result<(), Error>
+fn top_up(env: Env, caller: Address, amount: i128) -> Result<(), Error>
+fn clawback(env: Env, caller: Address) -> Result<i128, Error>
+
+// Extend end_time by extra_time_seconds, pulling the exact rate-implied deposit from the sender
+fn extend_duration(env: Env, caller: Address, extra_time_seconds: u64) -> Result<(), Error>
+
+// Combines top_up(amount) + extend_duration(extra_time_seconds) in one call; neither works on an open-ended stream (end_time == 0)
+fn top_up_and_extend(env: Env, caller: Address, amount: i128, extra_time_seconds: u64) -> Result<(), Error>
+
 fn withdrawable(env: Env) -> i128
 fn info(env: Env) -> StreamInfo
+fn clawback_enabled(env: Env) -> bool
 
 // Recipient-initiated escape hatch — see docs/architecture.md
 fn force_cancel(env: Env) -> Result<(), Error>
@@ -46,13 +56,29 @@ fn force_cancel(env: Env) -> Result<(), Error>
 // Recipient reassigns their claim to a new address; withdrawable balance carries over
 fn transfer_recipient(env: Env, new_recipient: Address) -> Result<(), Error>
 
+// Operator delegation — sender-only; see "Operator delegation" below
+fn set_operator(env: Env, caller: Address, operator: Address) -> Result<(), Error>
+fn revoke_operator(env: Env, caller: Address) -> Result<(), Error>
+fn operator(env: Env) -> Option<Address>
+
 // Read-only: total streamed so far, regardless of what's been withdrawn
 fn streamed_total(env: Env) -> i128
+
+// Read-only: latest committed event sequence, for detecting a gap after reconnecting
+fn event_sequence(env: Env) -> u64
+
+// Read-only: storage layout version this instance was initialized with
+fn storage_version(env: Env) -> u32
 ```
 
-> **Not yet in the SDK.** `force_cancel`, `transfer_recipient`, and `streamed_total` exist in the
-> contract but aren't wrapped by `conduit-sdk` yet — callers need to invoke them directly until
-> the SDK catches up.
+> **Not yet in the SDK.** `force_cancel`, `transfer_recipient`, `streamed_total`, `extend_duration`,
+> `top_up_and_extend`, `set_operator`, `revoke_operator`, `operator`, `event_sequence`, and
+> `storage_version` exist in the contract but aren't wrapped by `conduit-sdk` yet — callers need
+> to invoke them directly until the SDK catches up.
+
+**Operator delegation:**
+
+A sender can delegate `pause`, `resume`, `cancel`, `top_up`, `clawback`, and `extend_duration` (and by extension `top_up_and_extend`) to another address via `set_operator`, without handing over `sender` itself. Only the sender may call `set_operator`/`revoke_operator`; the operator cannot re-delegate. `withdraw` (recipient-only) and `transfer_recipient` (sender-only) are unaffected by delegation. See `docs/architecture.md` for the full write-up.
 
 **Events emitted:**
 

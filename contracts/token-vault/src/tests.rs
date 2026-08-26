@@ -2,10 +2,15 @@
 
 extern crate std;
 
-use soroban_sdk::{testutils::Address as _, token, Address, Env};
+use soroban_sdk::{
+    symbol_short,
+    testutils::{Address as _, Events as _},
+    token, Address, Env, IntoVal, TryIntoVal,
+};
 
-use crate::TokenVaultClient;
+use crate::errors::Error;
 use crate::storage;
+use crate::TokenVaultClient;
 
 struct Setup {
     env: Env,
@@ -38,11 +43,7 @@ impl Setup {
 
         client.initialize(&owner, &token_addr, &max_limit);
 
-        // Leak env for 'static lifetime convenience in tests -- Env is cheap
-        // to clone (it's a handle around shared Rc-like internals), so we
-        // just clone the leaked reference back out instead of the previous
-        // `unsafe { std::ptr::read(env) }`, which created two values that
-        // both believed they owned the same underlying Env.
+        // Leak env for 'static lifetime convenience in tests
         let env: &'static Env = std::boxed::Box::leak(std::boxed::Box::new(env));
         let client = TokenVaultClient::new(env, &vault_id);
         let token = token::Client::new(env, &token_addr);
@@ -57,30 +58,26 @@ impl Setup {
     }
 }
 
+// ── Original deposit / withdraw / set_limit tests ──────────────────────────
+
 #[test]
 fn deposit_respects_max_limit() {
     let max_limit: i128 = 1_000_000;
     let s = Setup::new(max_limit);
 
-    // Deposit up to the limit through the contract itself (not a raw token
-    // transfer), so the internal `balance` counter and the real on-chain
-    // balance move together the way `deposit`'s own bookkeeping assumes.
     s.client.deposit(&s.user, &max_limit);
 
-    // Any additional deposit must be rejected for exceeding max_limit.
     let result = s.client.try_deposit(&s.user, &1);
-    assert_eq!(result, Err(Ok(super::errors::Error::LimitExceeded)));
+    assert_eq!(result, Err(Ok(Error::LimitExceeded)));
 }
 
 #[test]
 fn deposit_rejects_amount_that_would_overflow_i128() {
-    // max_limit is i128::MAX, so the LimitExceeded check can never fire --
-    // this isolates the checked_add overflow guard specifically.
     let s = Setup::new(i128::MAX);
 
     s.client.deposit(&s.user, &(i128::MAX - 10));
     let result = s.client.try_deposit(&s.user, &20);
-    assert_eq!(result, Err(Ok(super::errors::Error::ArithmeticOverflow)));
+    assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
 }
 
 #[test]
@@ -88,17 +85,16 @@ fn deposit_succeeds_with_real_sender_auth() {
     let max_limit: i128 = 1_000_000;
     let s = Setup::new(max_limit);
 
-    // mock_all_auths() satisfies `from.require_auth()` here -- this is the
-    // control case proving the happy path still works once auth is enforced.
     s.client.deposit(&s.user, &999_900);
-    assert_eq!(s.client.try_deposit(&s.user, &200), Err(Ok(super::errors::Error::LimitExceeded)));
+    assert_eq!(
+        s.client.try_deposit(&s.user, &200),
+        Err(Ok(Error::LimitExceeded))
+    );
 }
 
 #[test]
 fn set_limit_succeeds_for_owner_with_real_auth() {
     let s = Setup::new(1_000_000);
-    // mock_all_auths() satisfies owner.require_auth() here -- proves the
-    // happy path still works once set_limit() enforces real authorization.
     s.client.set_limit(&s.owner, &2_000_000);
 }
 
@@ -108,23 +104,21 @@ fn withdraw_succeeds_with_real_owner_auth() {
     s.client.deposit(&s.user, &1_000);
 
     let recipient = Address::generate(&s.env);
-    // mock_all_auths() satisfies owner.require_auth() here -- proves the
-    // happy path still works once withdraw() enforces real authorization.
-    s.client.withdraw(&recipient, &400);
+    s.client.withdraw(&s.owner, &recipient, &400);
 
     assert_eq!(s.token.balance(&recipient), 400);
 }
 
 // ── Auth-bypass regressions ─────────────────────────────────────────────────
-//
-// These deliberately do NOT call `env.mock_all_auths()` (which would make
-// every `require_auth()` call succeed regardless of who's actually calling,
-// hiding exactly the bugs being tested for). Storage is seeded directly via
-// `env.as_contract(...)` so setup itself never needs to satisfy an auth
-// check -- each test isolates only the one `require_auth()` call it cares
-// about, which must panic since no matching authorization was ever provided.
 
-fn seed_vault(env: &Env, vault_id: &Address, owner: &Address, token_addr: &Address, balance: i128, max_limit: i128) {
+fn seed_vault(
+    env: &Env,
+    vault_id: &Address,
+    owner: &Address,
+    token_addr: &Address,
+    balance: i128,
+    max_limit: i128,
+) {
     env.as_contract(vault_id, || {
         storage::set_owner(env, owner);
         storage::set_token(env, token_addr);
@@ -139,6 +133,7 @@ fn seed_vault(env: &Env, vault_id: &Address, owner: &Address, token_addr: &Addre
 fn withdraw_without_owner_auth_panics() {
     let env = Env::default();
     let owner = Address::generate(&env);
+    let stranger = Address::generate(&env);
     let to = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let token_addr = env
@@ -149,9 +144,8 @@ fn withdraw_without_owner_auth_panics() {
     seed_vault(&env, &vault_id, &owner, &token_addr, 1_000, 1_000_000);
 
     let client = TokenVaultClient::new(&env, &vault_id);
-    // No auth was ever provided for `owner` -- withdraw() must panic
-    // rather than let an arbitrary caller drain the vault.
-    client.withdraw(&to, &1);
+    // stranger is neither owner nor operator — must panic
+    client.withdraw(&stranger, &to, &1);
 }
 
 #[test]
@@ -168,8 +162,7 @@ fn set_limit_with_owner_address_but_no_real_auth_panics() {
     seed_vault(&env, &vault_id, &owner, &token_addr, 0, 1_000_000);
 
     let client = TokenVaultClient::new(&env, &vault_id);
-    // Passing the real owner's (public) address as `caller` is not proof of
-    // identity -- without a real signed authorization, this must still panic.
+    // Passing the real owner address without signed auth must still panic.
     client.set_limit(&owner, &2_000_000);
 }
 
@@ -188,7 +181,422 @@ fn deposit_without_sender_auth_panics() {
     seed_vault(&env, &vault_id, &owner, &token_addr, 0, 1_000_000);
 
     let client = TokenVaultClient::new(&env, &vault_id);
-    // `user` never authorized this deposit -- must panic rather than
-    // silently pulling funds via the underlying token's own auth check.
     client.deposit(&user, &1);
+}
+
+// ── Operator delegation tests ───────────────────────────────────────────────
+
+#[test]
+fn owner_can_set_and_revoke_operator() {
+    let s = Setup::new(1_000_000);
+
+    let op = Address::generate(&s.env);
+    assert_eq!(s.client.operator(), None);
+
+    s.client.set_operator(&s.owner, &op);
+    assert_eq!(s.client.operator(), Some(op.clone()));
+
+    s.client.revoke_operator(&s.owner);
+    assert_eq!(s.client.operator(), None);
+}
+
+#[test]
+fn non_owner_cannot_set_operator() {
+    let s = Setup::new(1_000_000);
+
+    let stranger = Address::generate(&s.env);
+    let op = Address::generate(&s.env);
+    let result = s.client.try_set_operator(&stranger, &op);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+#[test]
+fn non_owner_cannot_revoke_operator() {
+    let s = Setup::new(1_000_000);
+
+    let op = Address::generate(&s.env);
+    s.client.set_operator(&s.owner, &op);
+
+    let stranger = Address::generate(&s.env);
+    let result = s.client.try_revoke_operator(&stranger);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+#[test]
+fn operator_can_withdraw() {
+    let s = Setup::new(1_000_000);
+    s.client.deposit(&s.user, &500);
+
+    let op = Address::generate(&s.env);
+    s.client.set_operator(&s.owner, &op);
+
+    let recipient = Address::generate(&s.env);
+    s.client.withdraw(&op, &recipient, &200);
+    assert_eq!(s.token.balance(&recipient), 200);
+}
+
+#[test]
+fn operator_can_set_limit() {
+    let s = Setup::new(1_000_000);
+
+    let op = Address::generate(&s.env);
+    s.client.set_operator(&s.owner, &op);
+
+    s.client.set_limit(&op, &2_000_000);
+}
+
+#[test]
+fn stranger_cannot_withdraw_even_with_operator_set() {
+    let s = Setup::new(1_000_000);
+    s.client.deposit(&s.user, &500);
+
+    let op = Address::generate(&s.env);
+    s.client.set_operator(&s.owner, &op);
+
+    let stranger = Address::generate(&s.env);
+    let result = s.client.try_withdraw(&stranger, &stranger, &1);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+#[test]
+fn after_revoke_operator_can_no_longer_withdraw() {
+    let s = Setup::new(1_000_000);
+    s.client.deposit(&s.user, &500);
+
+    let op = Address::generate(&s.env);
+    s.client.set_operator(&s.owner, &op);
+    s.client.revoke_operator(&s.owner);
+
+    let result = s.client.try_withdraw(&op, &op, &1);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+#[test]
+fn revoke_operator_when_none_set_is_ok() {
+    let s = Setup::new(1_000_000);
+    // No operator set — revoke should be a no-op, not an error.
+    let result = s.client.try_revoke_operator(&s.owner);
+    assert!(result.is_ok());
+}
+
+// ── Emergency pause tests ───────────────────────────────────────────────────
+
+#[test]
+fn owner_can_pause_and_unpause() {
+    let s = Setup::new(1_000_000);
+
+    assert!(!s.client.is_paused());
+    s.client.pause(&s.owner);
+    assert!(s.client.is_paused());
+    s.client.unpause(&s.owner);
+    assert!(!s.client.is_paused());
+}
+
+#[test]
+fn non_owner_cannot_pause() {
+    let s = Setup::new(1_000_000);
+    let stranger = Address::generate(&s.env);
+    let result = s.client.try_pause(&stranger);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+}
+
+#[test]
+fn double_pause_is_rejected() {
+    let s = Setup::new(1_000_000);
+    s.client.pause(&s.owner);
+    let result = s.client.try_pause(&s.owner);
+    assert_eq!(result, Err(Ok(Error::AlreadyPaused)));
+}
+
+#[test]
+fn unpause_when_not_paused_is_rejected() {
+    let s = Setup::new(1_000_000);
+    let result = s.client.try_unpause(&s.owner);
+    assert_eq!(result, Err(Ok(Error::NotPaused)));
+}
+
+#[test]
+fn pause_blocks_deposit() {
+    let s = Setup::new(1_000_000);
+    s.client.pause(&s.owner);
+    let result = s.client.try_deposit(&s.user, &100);
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+}
+
+#[test]
+fn pause_blocks_withdraw() {
+    let s = Setup::new(1_000_000);
+    s.client.deposit(&s.user, &500);
+    s.client.pause(&s.owner);
+
+    let recipient = Address::generate(&s.env);
+    let result = s.client.try_withdraw(&s.owner, &recipient, &100);
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+}
+
+#[test]
+fn pause_blocks_set_limit() {
+    let s = Setup::new(1_000_000);
+    s.client.pause(&s.owner);
+    let result = s.client.try_set_limit(&s.owner, &2_000_000);
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+}
+
+#[test]
+fn operations_resume_after_unpause() {
+    let s = Setup::new(1_000_000);
+    s.client.pause(&s.owner);
+    s.client.unpause(&s.owner);
+
+    // All three should work again after unpause
+    s.client.deposit(&s.user, &100);
+    s.client.set_limit(&s.owner, &2_000_000);
+    let recipient = Address::generate(&s.env);
+    s.client.withdraw(&s.owner, &recipient, &50);
+    assert_eq!(s.token.balance(&recipient), 50);
+}
+
+#[test]
+fn operator_also_blocked_by_pause() {
+    let s = Setup::new(1_000_000);
+    s.client.deposit(&s.user, &500);
+
+    let op = Address::generate(&s.env);
+    s.client.set_operator(&s.owner, &op);
+    s.client.pause(&s.owner);
+
+    let recipient = Address::generate(&s.env);
+    let result = s.client.try_withdraw(&op, &recipient, &100);
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+}
+
+// ── Event emission (issue #311) ────────────────────────────────────────────
+
+/// All events published by the vault contract, oldest first.
+///
+/// `env.events().all()` also captures events emitted by other contracts in the
+/// same test (e.g. the token's own transfer events), so filter down to the
+/// vault's contract address. `Setup::new` publishes the `init` event, so
+/// `events[0]` is always the initialization event.
+fn vault_events(
+    s: &Setup,
+) -> std::vec::Vec<(
+    Address,
+    soroban_sdk::Vec<soroban_sdk::Val>,
+    soroban_sdk::Val,
+)> {
+    s.env
+        .events()
+        .all()
+        .iter()
+        .filter(|(contract, _, _)| contract == &s.client.address)
+        .map(|(c, t, d)| (c.clone(), t.clone(), d))
+        .collect()
+}
+
+#[test]
+fn initialize_emits_initialized_event() {
+    let s = Setup::new(1_000_000);
+
+    let events = vault_events(&s);
+    assert_eq!(events.len(), 1);
+
+    let (_, topics, data) = &events[0];
+    assert_eq!(
+        topics.clone(),
+        (symbol_short!("init"), s.owner.clone()).into_val(&s.env)
+    );
+    let payload: (Address, i128) = data.clone().try_into_val(&s.env).unwrap();
+    assert_eq!(payload, (s.token.address.clone(), 1_000_000_i128));
+}
+
+#[test]
+fn deposit_emits_deposited_event() {
+    let s = Setup::new(1_000_000);
+    s.client.deposit(&s.user, &500);
+
+    let events = vault_events(&s);
+    assert_eq!(events.len(), 2);
+
+    let (_, topics, data) = &events[1];
+    assert_eq!(
+        topics.clone(),
+        (symbol_short!("deposited"), s.user.clone()).into_val(&s.env)
+    );
+    let payload: (i128, i128) = data.clone().try_into_val(&s.env).unwrap();
+    assert_eq!(payload, (500_i128, 500_i128));
+}
+
+#[test]
+fn withdraw_emits_withdrawn_event() {
+    let s = Setup::new(1_000_000);
+    s.client.deposit(&s.user, &1_000);
+
+    let recipient = Address::generate(&s.env);
+    s.client.withdraw(&s.owner, &recipient, &400);
+
+    let events = vault_events(&s);
+    assert_eq!(events.len(), 3);
+
+    let (_, topics, data) = &events[2];
+    assert_eq!(
+        topics.clone(),
+        (symbol_short!("withdrawn"), s.owner.clone()).into_val(&s.env)
+    );
+    let payload: (Address, i128, i128) = data.clone().try_into_val(&s.env).unwrap();
+    assert_eq!(payload, (recipient.clone(), 400_i128, 600_i128));
+}
+
+#[test]
+fn set_limit_emits_limit_set_event_with_old_and_new() {
+    let s = Setup::new(1_000_000);
+    s.client.set_limit(&s.owner, &2_000_000);
+
+    let events = vault_events(&s);
+    assert_eq!(events.len(), 2);
+
+    let (_, topics, data) = &events[1];
+    assert_eq!(
+        topics.clone(),
+        (symbol_short!("limit_set"), s.owner.clone()).into_val(&s.env)
+    );
+    let payload: (i128, i128) = data.clone().try_into_val(&s.env).unwrap();
+    assert_eq!(payload, (1_000_000_i128, 2_000_000_i128));
+}
+
+#[test]
+fn operator_set_and_revoke_emit_events() {
+    let s = Setup::new(1_000_000);
+
+    let op = Address::generate(&s.env);
+    s.client.set_operator(&s.owner, &op);
+
+    let events = vault_events(&s);
+    assert_eq!(events.len(), 2);
+    let (_, topics, data) = &events[1];
+    assert_eq!(
+        topics.clone(),
+        (symbol_short!("set_op"), s.owner.clone()).into_val(&s.env)
+    );
+    let payload: Address = data.clone().try_into_val(&s.env).unwrap();
+    assert_eq!(payload, op);
+
+    s.client.revoke_operator(&s.owner);
+
+    let events = vault_events(&s);
+    assert_eq!(events.len(), 3);
+    let (_, topics, data) = &events[2];
+    assert_eq!(
+        topics.clone(),
+        (symbol_short!("rm_op"), s.owner.clone()).into_val(&s.env)
+    );
+    let payload: () = data.clone().try_into_val(&s.env).unwrap();
+    assert_eq!(payload, ());
+}
+
+#[test]
+fn pause_and_unpause_emit_events() {
+    let s = Setup::new(1_000_000);
+    let paused_at = s.env.ledger().timestamp();
+
+    s.client.pause(&s.owner);
+    let events = vault_events(&s);
+    assert_eq!(events.len(), 2);
+    let (_, topics, data) = &events[1];
+    assert_eq!(
+        topics.clone(),
+        (symbol_short!("paused"), s.owner.clone()).into_val(&s.env)
+    );
+    let payload: u64 = data.clone().try_into_val(&s.env).unwrap();
+    assert_eq!(payload, paused_at);
+
+    s.client.unpause(&s.owner);
+    let events = vault_events(&s);
+    assert_eq!(events.len(), 3);
+    let (_, topics, data) = &events[2];
+    assert_eq!(
+        topics.clone(),
+        (symbol_short!("unpaused"), s.owner.clone()).into_val(&s.env)
+    );
+    let payload: u64 = data.clone().try_into_val(&s.env).unwrap();
+    assert_eq!(payload, paused_at);
+}
+
+#[test]
+fn failed_operations_emit_no_events() {
+    let s = Setup::new(1_000_000);
+    let base = vault_events(&s).len();
+
+    // Deposit over the limit reverts without publishing a `deposited` event.
+    s.client.deposit(&s.user, &999_900);
+    let result = s.client.try_deposit(&s.user, &200);
+    assert_eq!(result, Err(Ok(Error::LimitExceeded)));
+    assert_eq!(vault_events(&s).len(), base + 1);
+
+    // Double pause reverts without publishing a second `paused` event.
+    s.client.pause(&s.owner);
+    let result = s.client.try_pause(&s.owner);
+    assert_eq!(result, Err(Ok(Error::AlreadyPaused)));
+    assert_eq!(vault_events(&s).len(), base + 2);
+
+    // Unpause when not paused reverts without publishing an `unpaused` event.
+    s.client.unpause(&s.owner);
+    let result = s.client.try_unpause(&s.owner);
+    assert_eq!(result, Err(Ok(Error::NotPaused)));
+    assert_eq!(vault_events(&s).len(), base + 3);
+
+    // Unauthorized withdraw reverts without publishing a `withdrawn` event.
+    let stranger = Address::generate(&s.env);
+    let result = s.client.try_withdraw(&stranger, &stranger, &1);
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+    assert_eq!(vault_events(&s).len(), base + 3);
+
+    // Setting a limit below the current balance reverts without publishing.
+    let result = s.client.try_set_limit(&s.owner, &100);
+    assert_eq!(result, Err(Ok(Error::LimitExceeded)));
+    assert_eq!(vault_events(&s).len(), base + 3);
+}
+
+// ── Uninitialized state tests ───────────────────────────────────────────────
+
+#[test]
+fn uninitialized_vault_returns_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let vault_id = env.register_contract(None, super::TokenVault);
+    let client = TokenVaultClient::new(&env, &vault_id);
+
+    let user = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let operator = Address::generate(&env);
+
+    assert_eq!(client.try_deposit(&user, &100), Err(Ok(Error::NotInitialized)));
+    assert_eq!(
+        client.try_withdraw(&user, &recipient, &100),
+        Err(Ok(Error::NotInitialized))
+    );
+    assert_eq!(client.try_set_limit(&user, &100), Err(Ok(Error::NotInitialized)));
+    assert_eq!(
+        client.try_set_operator(&user, &operator),
+        Err(Ok(Error::NotInitialized))
+    );
+    assert_eq!(
+        client.try_revoke_operator(&user),
+        Err(Ok(Error::NotInitialized))
+    );
+    assert_eq!(client.try_pause(&user), Err(Ok(Error::NotInitialized)));
+    assert_eq!(client.try_unpause(&user), Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #9)")]
+fn re_initializing_vault_panics() {
+    let s = Setup::new(1_000_000);
+    let another_owner = Address::generate(&s.env);
+    let token_admin = Address::generate(&s.env);
+    let token_addr = s
+        .env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+    s.client.initialize(&another_owner, &token_addr, &2_000_000);
 }
