@@ -32,10 +32,10 @@ The core contract. One instance is deployed per payment stream. Holds the token 
 
 ```rust
 fn withdraw(env: Env, amount: i128) -> Result<i128, Error>
-fn cancel(env: Env) -> Result<(), Error>
-fn pause(env: Env) -> Result<(), Error>
-fn resume(env: Env) -> Result<(), Error>
-fn top_up(env: Env, amount: i128) -> Result<(), Error>
+fn cancel(env: Env, caller: Address) -> Result<(), Error>
+fn pause(env: Env, caller: Address) -> Result<(), Error>
+fn resume(env: Env, caller: Address) -> Result<(), Error>
+fn top_up(env: Env, caller: Address, amount: i128) -> Result<(), Error>
 fn clawback(env: Env) -> Result<i128, Error>
 fn withdrawable(env: Env) -> i128
 fn info(env: Env) -> StreamInfo
@@ -95,10 +95,26 @@ fn create_stream(
 ) -> Result<u64, Error>    // returns stream_id
 
 fn stream_address(env: Env, stream_id: u64) -> Option<Address>
+fn stream_addresses(env: Env, ids: Vec<u64>) -> Result<Vec<Option<Address>>, Error>  // batch-resolve; unknown IDs -> None, not an error
 fn streams_by_sender(env: Env, sender: Address, offset: u32, limit: u32) -> Vec<u64>
 fn streams_by_recipient(env: Env, recipient: Address, offset: u32, limit: u32) -> Vec<u64>
 fn stream_count(env: Env) -> u64
+fn stream_count_by_sender(env: Env, sender: Address) -> u32
+fn stream_count_by_recipient(env: Env, recipient: Address) -> u32
 fn protocol_fee_bps(env: Env) -> u32   // basis points, e.g. 30 = 0.3%; reads live from DripGovernor
+fn factory_status(env: Env) -> FactoryStatus  // { is_paused, protocol_fee_bps } in one RPC call
+
+// Bulk creation/cancellation — up to MAX_BATCH_SIZE (100) per call, all
+// funded/authorized by the same `sender`. Atomic: any failed request in
+// the batch reverts the whole call (Soroban transactions are all-or-nothing),
+// so no partial-batch state is ever left behind.
+fn create_batch_streams(
+    env:       Env,
+    sender:    Address,
+    requests:  Vec<BatchStreamRequest>,  // { recipient, token, deposit, rate_per_sec, start_time, end_time }
+    clawback:  bool,
+) -> Result<Vec<u64>, Error>   // returns one stream_id per request, same order
+fn cancel_batch_streams(env: Env, sender: Address, stream_addresses: Vec<Address>) -> Result<(), Error>
 
 // Governor-only: point future create_stream calls at a new DripStream WASM version.
 // Existing streams are unaffected — each is an independently deployed contract.
@@ -128,6 +144,10 @@ All checks run before any state mutation (fail early — invalid calls neither t
 - `recipient != sender` and `recipient` is not the all-zero account (else `InvalidRecipient`)
 - `token` is not the all-zero account (must be a valid Stellar asset contract address, else `InvalidToken`)
 
+**Validation on batch functions:**
+
+`create_batch_streams`, `cancel_batch_streams`, and `stream_addresses` each cap their input at `MAX_BATCH_SIZE` (100), reverting with `BatchTooLarge` above that. `create_batch_streams`/`cancel_batch_streams` also revert with `EmptyBatch` on an empty input vector; `stream_addresses` allows an empty `ids` and simply returns an empty result.
+
 ---
 
 ### `DripGovernor`
@@ -148,31 +168,52 @@ Protocol configuration and upgrade authority. Holds mutable parameters that Drip
 
 | Role | Governs | Granted at init to |
 |------|---------|--------------------|
-| `Admin` | `grant_role` / `revoke_role` (including `Admin` itself) | the deploy authority |
+| `Admin` | `grant_role` / `revoke_role` (including `Admin` itself), authority transfer | the deploy authority |
 | `FeeManager` | `set_fee_bps`, `set_fee_recipient` | the deploy authority |
-| `RateManager` | `set_max_rate`, `set_min_duration` | the deploy authority |
+| `RateManager` | `set_max_rate`, `set_min_duration`, `set_max_duration` | the deploy authority |
+| `Pauser` | `governor_pause`, `governor_unpause`, `pause_factory`, `unpause_factory` | the deploy authority |
 
-A role may be held by any number of accounts, and one account may hold any combination of roles. The deploy `authority` starts with all three, so it can bootstrap the protocol and then delegate fee and rate management to separate wallets. The final `Admin` cannot be revoked (`LastAdmin`), so governance can never be permanently frozen.
+A role may be held by any number of accounts, and one account may hold any combination of roles. The deploy `authority` starts with all four, so it can bootstrap the protocol and then delegate fee, rate, and pause management to separate wallets. The final `Admin` cannot be revoked (`LastAdmin`), so governance can never be permanently frozen.
 
 **Public functions:**
 
 ```rust
-fn config(env: Env) -> GovernorConfig                 // read-only: full config struct
+fn config(env: Env) -> Result<GovernorConfig, Error>   // full config struct; NotInitialized if not yet initialized
 fn has_role(env: Env, role: Role, account: Address) -> bool
+fn role_members(env: Env, role: Role) -> Vec<Address>  // every account currently holding `role`
+
+// Focused read-only accessors — avoid a full config() round-trip
+fn min_duration(env: Env) -> u64
+fn max_duration(env: Env) -> Result<u64, Error>
+fn max_rate(env: Env) -> Result<i128, Error>
+fn governor_is_paused(env: Env) -> bool
+
+// Emergency pause — caller must hold Pauser (or Admin)
+fn governor_pause(env: Env, caller: Address) -> Result<(), Error>    // AlreadyPaused if already paused
+fn governor_unpause(env: Env, caller: Address) -> Result<(), Error>  // NotPaused if not paused
+fn pause_factory(env: Env, caller: Address) -> Result<(), Error>     // passthrough: pauses the DripFactory this governor controls
+fn unpause_factory(env: Env, caller: Address) -> Result<(), Error>   // passthrough: unpauses it
 
 // Role administration — caller must hold Admin
 fn grant_role(env: Env, caller: Address, role: Role, account: Address) -> Result<(), Error>
 fn revoke_role(env: Env, caller: Address, role: Role, account: Address) -> Result<(), Error>  // LastAdmin if it drops the final Admin
-fn transfer_authority(env: Env, caller: Address, new_authority: Address) -> Result<(), Error>  // grant Admin to new, revoke from caller
+fn transfer_authority(env: Env, caller: Address, new_authority: Address) -> Result<(), Error>  // deprecated, see below
+
+// 2-step authority transfer (Ownable2Step) — caller must hold Admin, replaces transfer_authority
+fn propose_authority(env: Env, caller: Address, new_authority: Address) -> Result<(), Error>  // step 1: stores the pending authority
+fn accept_authority(env: Env, caller: Address) -> Result<(), Error>                            // step 2: must be called by the pending authority itself
 
 // Parameter setters — caller must hold the gating role; return InvalidParam on bad input
 fn set_fee_bps(env: Env, caller: Address, fee_bps: u32) -> Result<(), Error>              // FeeManager;  0..=10_000
 fn set_fee_recipient(env: Env, caller: Address, recipient: Address) -> Result<(), Error>  // FeeManager
 fn set_min_duration(env: Env, caller: Address, seconds: u64) -> Result<(), Error>         // RateManager; > 0
 fn set_max_rate(env: Env, caller: Address, max_rate: i128) -> Result<(), Error>           // RateManager; > 0
+fn set_max_duration(env: Env, caller: Address, seconds: u64) -> Result<(), Error>         // RateManager; > 0 and >= min_duration
 ```
 
 Each `caller` must `require_auth()` and hold the role gating the call, otherwise the call reverts with `NotAuthorized`.
+
+`transfer_authority` hands off `Admin` in a single call and is kept only for API familiarity — its own doc comment marks it **deprecated** in favor of `propose_authority` + `accept_authority`, the safer 2-step pattern that confirms the new address can actually sign before the handoff completes.
 
 ---
 
@@ -217,6 +258,18 @@ not by number alone.
 | `8` | `RateExceedsMax` | `rate_per_sec` exceeds `DripGovernor::config().max_rate_per_second` |
 | `9` | `DurationTooShort` | `end_time - start_time` is below `DripGovernor::config().min_duration_seconds` |
 | `10` | `ArithmeticOverflow` | Integer overflow validating `rate_per_sec × duration` |
+| `11` | `ContractPaused` | The factory is under an emergency pause; new stream creation is halted |
+| `12` | `AlreadyPaused` | `pause` called while the factory was already paused |
+| `13` | `NotPaused` | `unpause` called while the factory was not paused |
+| `14` | `DurationExceedsMax` | `end_time - start_time` exceeds `DripGovernor::config().max_duration_seconds` |
+| `15` | `GovernorNotResponding` | The governor contract did not respond (archived, not initialized, or a host-level error during the cross-contract call) |
+| `16` | `EmptyBatch` | `create_batch_streams` called with an empty `requests` vector |
+| `17` | `BatchTooLarge` | `create_batch_streams` requests exceeded `MAX_BATCH_SIZE` |
+| `18`–`21` | *(reserved)* | Previously `InvalidSignature`/`NonceAlreadyUsed`/`NetworkMismatch`/`SignatureExpired`, for a signed-payload feature that was removed. Not reused, so RPC error codes stay stable for existing integrations. |
+| `22` | `InvalidRecipient` | The recipient is the all-zero Stellar account address |
+| `23` | `CreateLocked` | Another `create_stream` call is already in progress (reentrancy guard) |
+| `24` | `DepositTransferFailed` | The deposit transfer from `sender` to the factory did not arrive |
+| `25` | `StreamFundingFailed` | The deposit forward from the factory to the deployed stream did not arrive |
 | `26` | `InvalidWasmHash` | `upgrade_stream_wasm` called with zero WASM hash |
 | `27` | `InvalidDuration` | `end_time != 0 && end_time <= start_time` (stream duration is zero or negative) |
 
@@ -309,7 +362,9 @@ conduit-contracts/
 │   │       ├── errors.rs       # Error enum
 │   │       ├── deploy.rs       # WASM hash + deploy logic
 │   │       ├── governance.rs   # cross-contract calls into DripGovernor + bounds checks
+│   │       ├── pause.rs        # emergency pause/unpause gating
 │   │       ├── query.rs        # pagination helper for streams_by_sender/recipient
+│   │       ├── events.rs       # event helpers
 │   │       └── ttl.rs          # instance + persistent-entry TTL extension
 │   └── governor/
 │       ├── Cargo.toml
@@ -318,7 +373,8 @@ conduit-contracts/
 │           ├── storage.rs      # DataKey enum
 │           ├── errors.rs       # Error enum
 │           ├── config.rs       # GovernorConfig struct + load helper
-│           ├── auth.rs         # authority-gate shared by every write
+│           ├── role.rs         # role storage + require_role/require_role_or_admin gates
+│           ├── events.rs       # event helpers
 │           └── ttl.rs          # instance TTL extension
 ├── tests/
 │   ├── stream_lifecycle.rs     # create → withdraw → cancel

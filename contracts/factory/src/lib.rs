@@ -16,6 +16,8 @@ use soroban_sdk::{
     contract, contractimpl, panic_with_error, token as tok, Address, BytesN, Env, IntoVal, Vec,
 };
 
+use drip_common::is_zero_stellar_account;
+
 pub use errors::Error;
 use storage::DataKey;
 pub use storage::{BatchStreamRequest, FactoryStatus};
@@ -25,19 +27,6 @@ pub use storage::{BatchStreamRequest, FactoryStatus};
 /// batch fails fast with `BatchTooLarge` instead of exhausting the
 /// transaction's instruction budget mid-execution.
 pub const MAX_BATCH_SIZE: u32 = 100;
-
-/// Returns true when `address` is the all-zero Stellar account address.
-///
-/// The zero Stellar account is represented by an Ed25519 public key
-/// consisting entirely of zero bytes.
-fn is_zero_stellar_account(env: &Env, address: &Address) -> bool {
-    let zero_account = Address::from_string(&soroban_sdk::String::from_str(
-        env,
-        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-    ));
-
-    address == &zero_account
-}
 
 /// Returns true when `hash` is an all-zero 32-byte WASM hash.
 fn is_zero_wasm_hash(env: &Env, hash: &BytesN<32>) -> bool {
@@ -510,6 +499,38 @@ impl DripFactory {
         env.storage()
             .instance()
             .set(&DataKey::StreamWasmHash, &new_wasm_hash);
+        Ok(())
+    }
+
+    /// Replace this contract's own WASM bytecode.
+    ///
+    /// The new WASM must already be uploaded to the ledger (via
+    /// `stellar contract upload`); only the hash is passed here. Gated on
+    /// the governor, matching `upgrade_stream_wasm` — the same authority
+    /// that controls protocol parameters controls code changes.
+    ///
+    /// This is distinct from `upgrade_stream_wasm`, which only updates the
+    /// WASM hash used for *future* `create_stream` deployments. `upgrade`
+    /// replaces the factory's own implementation.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        let governor: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::GovernorAddress)
+            .ok_or(Error::NotInitialized)?;
+        governor.require_auth();
+
+        if is_zero_wasm_hash(&env, &new_wasm_hash) {
+            return Err(Error::InvalidWasmHash);
+        }
+
+        if pause::is_paused(&env) {
+            return Err(Error::ContractPaused);
+        }
+
+        ttl::bump_instance(&env);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        events::upgraded(&env, &governor, env.ledger().timestamp());
         Ok(())
     }
 

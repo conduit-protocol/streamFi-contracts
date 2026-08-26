@@ -6,14 +6,16 @@ All notable changes are documented here. Format based on [Keep a Changelog](http
 
 ### Fixed
 - Settings page crash on load — created `app/settings/page.tsx` with properly guarded state initialization (conduit-protocol/streamFi-app#270, closes #156)
-- Token selector stale Apollo cache — added `onRefreshNeeded` callback for parent cache invalidation (conduit-protocol/streamFi-app#270, closes #153)
+- Transaction history stale Apollo cache — added `onRefreshNeeded` callback for parent cache invalidation in `frontend/TransactionHistory.tsx` (conduit-protocol/streamFi-app#270, closes #153)
 
 ### Fixed
 - Settings page crash on load — created `app/settings/page.tsx` with properly guarded state initialization (conduit-protocol/streamFi-app#270, closes #156)
-- Token selector stale Apollo cache — added `onRefreshNeeded` callback for parent cache invalidation (conduit-protocol/streamFi-app#270, closes #153)
+- Transaction history stale Apollo cache — added `onRefreshNeeded` callback for parent cache invalidation in `frontend/TransactionHistory.tsx` (conduit-protocol/streamFi-app#270, closes #153)
 
 ### Added
 - Emergency pause on `DripFactory` — governor-gated `pause()`/`unpause()` halt all new `create_stream` calls during a protocol emergency; `is_paused()` view exposes the flag so the stream contract and off-chain infra can also gate withdrawals. Adds `ContractPaused` (11), `AlreadyPaused` (12), and `NotPaused` (13) error codes and a `Paused` instance-storage key
+- **`TokenVault` event emission** — added a dedicated `events.rs` module so `initialize`, `deposit`, `withdraw`, `set_limit`, `set_operator`, `revoke_operator`, `pause`, and `unpause` each publish an event (`init`, `deposited`, `withdrawn`, `limit_set`, `set_op`, `rm_op`, `paused`, `unpaused`), matching the other contracts and letting off-chain indexers observe vault activity without diffing storage (closes #311)
+- **`is_zero_stellar_account` centralized in `drip_common`** — the helper (with its zero-account literal) previously existed as two verbatim private copies in `DripFactory` and `DripGovernor`; it now lives once in `drip-common` and is shared by both contracts (closes #310)
 - `force_cancel()` on `DripStream` — recipient can settle atomically after sender leaves stream paused for more than 30 days (`PauseThresholdNotMet` error returned if threshold not met)
 - `PauseThresholdNotMet` error code (13) added to `Error` enum
 - `max_duration_seconds` governor parameter with default of 10 years (315,360,000 s) to prevent integer overflow in `rate_per_sec × duration` calculations
@@ -31,6 +33,7 @@ All notable changes are documented here. Format based on [Keep a Changelog](http
 
 ### Fixed
 - Settings page crash on load — created `app/settings/page.tsx` with properly guarded state initialization (conduit-protocol/streamFi-app#270, closes #156)
+- Transaction history stale Apollo cache — added `onRefreshNeeded` callback for parent cache invalidation in `frontend/TransactionHistory.tsx` (conduit-protocol/streamFi-app#270, closes #153)
 - **Empty streams.** `DripStream::initialize` did not validate its amount parameter, so a stream deployed directly (ADR-001: each stream is an independent contract, deployable without the factory) could be initialized with a zero or negative `rate_per_second`, creating an "empty stream" that escrows tokens but never releases any. It now rejects `rate_per_second <= 0` with the existing `InvalidAmount` error, failing early before any state is written.
 - **`DripFactory::create_stream` fails early on invalid input.** Amount/validation checks (`deposit > 0`, `rate_per_sec > 0`, funding, time range, governor bounds) now run before any state mutation — previously the instance TTL was bumped even for calls that were about to be rejected, so an empty-stream attempt (`deposit <= 0`) still touched storage. `initialize()` had no auth check and no "already initialized" guard on `DripStream`, `DripFactory`, and `DripGovernor` — anyone could call it again post-deployment to hijack a funded stream's sender/recipient, the factory's stream WASM hash/governor address, or the governor's authority. All three now reject a second `initialize()` call with a new `AlreadyInitialized` error.
 - **Non-positive `withdraw`/`top_up` amounts.** Neither validated `amount > 0`; a negative `amount` in `withdraw` could shrink the stored `Withdrawn` total. Both now return `InvalidAmount` for `amount <= 0`.
@@ -59,6 +62,7 @@ All notable changes are documented here. Format based on [Keep a Changelog](http
 
 ### Fixed
 - Settings page crash on load — created `app/settings/page.tsx` with properly guarded state initialization (conduit-protocol/streamFi-app#270, closes #156)
+- Transaction history stale Apollo cache — added `onRefreshNeeded` callback for parent cache invalidation in `frontend/TransactionHistory.tsx` (conduit-protocol/streamFi-app#270, closes #153)
 - `DripFactory`: extend persistent storage TTL on `StreamAddr` entries to prevent ledger pruning on long-lived streams
 - `math.rs`: use `saturating_sub` in `withdrawable()` to guard against `withdrawn > streamed` edge case on rapid successive withdrawals
 

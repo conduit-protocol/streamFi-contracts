@@ -25,4 +25,6 @@ pub enum Error {
     NoPendingAuthority = 10,
     /// Caller is not the pending authority.
     NotPendingAuthority = 11,
+    /// The WASM hash provided to `upgrade` is all zeros (invalid).
+    InvalidWasmHash = 12,
 }
