@@ -159,6 +159,42 @@ fn create_batch_streams_reverts_when_all_requests_invalid() {
     assert_eq!(client.stream_count_by_recipient(&recipient), 0);
 }
 
+#[test]
+fn create_batch_streams_rejects_sender_as_recipient() {
+    let env = base_env();
+    let client = deploy_factory(&env);
+    let sender = Address::generate(&env);
+    let now = env.ledger().timestamp();
+    let token = make_token(&env, &sender, 100_000);
+
+    let bad = valid_request(&sender, &token, now); // recipient == sender
+    let mut requests: Vec<BatchStreamRequest> = Vec::new(&env);
+    requests.push_back(bad);
+
+    let result = client.try_create_batch_streams(&sender, &requests, &false);
+    assert_eq!(result, Err(Ok(Error::InvalidRecipient)));
+}
+
+#[test]
+fn create_batch_streams_rejects_zero_stellar_token() {
+    let env = base_env();
+    let client = deploy_factory(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let now = env.ledger().timestamp();
+
+    let zero_token = Address::from_string(&soroban_sdk::String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    let bad = valid_request(&recipient, &zero_token, now);
+    let mut requests: Vec<BatchStreamRequest> = Vec::new(&env);
+    requests.push_back(bad);
+
+    let result = client.try_create_batch_streams(&sender, &requests, &false);
+    assert_eq!(result, Err(Ok(Error::InvalidToken)));
+}
+
 // -- Gas benchmark (requires a built stream WASM) ----------------------------
 //
 // A full successful create_batch_streams call deploys a real DripStream
