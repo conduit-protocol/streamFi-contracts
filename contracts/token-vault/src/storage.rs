@@ -7,7 +7,6 @@ pub enum DataKey {
     Token,
     MaxLimit,
     Balance,
-    PendingCallback,
     /// Optional operator address delegated by the owner.
     ///
     /// When set, the operator can perform owner-level actions (`withdraw`,
@@ -18,12 +17,6 @@ pub enum DataKey {
     /// Emergency-pause flag. When `true`, all state-mutating entry points
     /// (`deposit`, `withdraw`, `set_limit`) revert before touching state.
     Paused,
-}
-
-impl DataKey {
-    pub fn owner_key() -> &'static str {
-        "owner"
-    }
 }
 
 pub fn set_owner(env: &Env, a: &Address) {
@@ -56,14 +49,6 @@ pub fn set_balance(env: &Env, v: &i128) {
 
 pub fn get_balance(env: &Env) -> Option<i128> {
     env.storage().instance().get(&DataKey::Balance)
-}
-
-pub fn set_pending(env: &Env, v: &Option<i128>) {
-    env.storage().instance().set(&DataKey::PendingCallback, v);
-}
-
-pub fn get_pending(env: &Env) -> Option<Option<i128>> {
-    env.storage().instance().get(&DataKey::PendingCallback)
 }
 
 pub fn set_operator(env: &Env, op: &Address) {
