@@ -32,10 +32,10 @@ The core contract. One instance is deployed per payment stream. Holds the token 
 
 ```rust
 fn withdraw(env: Env, amount: i128) -> Result<i128, Error>
-fn cancel(env: Env) -> Result<(), Error>
-fn pause(env: Env) -> Result<(), Error>
-fn resume(env: Env) -> Result<(), Error>
-fn top_up(env: Env, amount: i128) -> Result<(), Error>
+fn cancel(env: Env, caller: Address) -> Result<(), Error>
+fn pause(env: Env, caller: Address) -> Result<(), Error>
+fn resume(env: Env, caller: Address) -> Result<(), Error>
+fn top_up(env: Env, caller: Address, amount: i128) -> Result<(), Error>
 fn clawback(env: Env) -> Result<i128, Error>
 fn withdrawable(env: Env) -> i128
 fn info(env: Env) -> StreamInfo
