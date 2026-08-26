@@ -167,31 +167,52 @@ Protocol configuration and upgrade authority. Holds mutable parameters that Drip
 
 | Role | Governs | Granted at init to |
 |------|---------|--------------------|
-| `Admin` | `grant_role` / `revoke_role` (including `Admin` itself) | the deploy authority |
+| `Admin` | `grant_role` / `revoke_role` (including `Admin` itself), authority transfer | the deploy authority |
 | `FeeManager` | `set_fee_bps`, `set_fee_recipient` | the deploy authority |
-| `RateManager` | `set_max_rate`, `set_min_duration` | the deploy authority |
+| `RateManager` | `set_max_rate`, `set_min_duration`, `set_max_duration` | the deploy authority |
+| `Pauser` | `governor_pause`, `governor_unpause`, `pause_factory`, `unpause_factory` | the deploy authority |
 
-A role may be held by any number of accounts, and one account may hold any combination of roles. The deploy `authority` starts with all three, so it can bootstrap the protocol and then delegate fee and rate management to separate wallets. The final `Admin` cannot be revoked (`LastAdmin`), so governance can never be permanently frozen.
+A role may be held by any number of accounts, and one account may hold any combination of roles. The deploy `authority` starts with all four, so it can bootstrap the protocol and then delegate fee, rate, and pause management to separate wallets. The final `Admin` cannot be revoked (`LastAdmin`), so governance can never be permanently frozen.
 
 **Public functions:**
 
 ```rust
-fn config(env: Env) -> GovernorConfig                 // read-only: full config struct
+fn config(env: Env) -> Result<GovernorConfig, Error>   // full config struct; NotInitialized if not yet initialized
 fn has_role(env: Env, role: Role, account: Address) -> bool
+fn role_members(env: Env, role: Role) -> Vec<Address>  // every account currently holding `role`
+
+// Focused read-only accessors — avoid a full config() round-trip
+fn min_duration(env: Env) -> u64
+fn max_duration(env: Env) -> Result<u64, Error>
+fn max_rate(env: Env) -> Result<i128, Error>
+fn governor_is_paused(env: Env) -> bool
+
+// Emergency pause — caller must hold Pauser (or Admin)
+fn governor_pause(env: Env, caller: Address) -> Result<(), Error>    // AlreadyPaused if already paused
+fn governor_unpause(env: Env, caller: Address) -> Result<(), Error>  // NotPaused if not paused
+fn pause_factory(env: Env, caller: Address) -> Result<(), Error>     // passthrough: pauses the DripFactory this governor controls
+fn unpause_factory(env: Env, caller: Address) -> Result<(), Error>   // passthrough: unpauses it
 
 // Role administration — caller must hold Admin
 fn grant_role(env: Env, caller: Address, role: Role, account: Address) -> Result<(), Error>
 fn revoke_role(env: Env, caller: Address, role: Role, account: Address) -> Result<(), Error>  // LastAdmin if it drops the final Admin
-fn transfer_authority(env: Env, caller: Address, new_authority: Address) -> Result<(), Error>  // grant Admin to new, revoke from caller
+fn transfer_authority(env: Env, caller: Address, new_authority: Address) -> Result<(), Error>  // deprecated, see below
+
+// 2-step authority transfer (Ownable2Step) — caller must hold Admin, replaces transfer_authority
+fn propose_authority(env: Env, caller: Address, new_authority: Address) -> Result<(), Error>  // step 1: stores the pending authority
+fn accept_authority(env: Env, caller: Address) -> Result<(), Error>                            // step 2: must be called by the pending authority itself
 
 // Parameter setters — caller must hold the gating role; return InvalidParam on bad input
 fn set_fee_bps(env: Env, caller: Address, fee_bps: u32) -> Result<(), Error>              // FeeManager;  0..=10_000
 fn set_fee_recipient(env: Env, caller: Address, recipient: Address) -> Result<(), Error>  // FeeManager
 fn set_min_duration(env: Env, caller: Address, seconds: u64) -> Result<(), Error>         // RateManager; > 0
 fn set_max_rate(env: Env, caller: Address, max_rate: i128) -> Result<(), Error>           // RateManager; > 0
+fn set_max_duration(env: Env, caller: Address, seconds: u64) -> Result<(), Error>         // RateManager; > 0 and >= min_duration
 ```
 
 Each `caller` must `require_auth()` and hold the role gating the call, otherwise the call reverts with `NotAuthorized`.
+
+`transfer_authority` hands off `Admin` in a single call and is kept only for API familiarity — its own doc comment marks it **deprecated** in favor of `propose_authority` + `accept_authority`, the safer 2-step pattern that confirms the new address can actually sign before the handoff completes.
 
 ---
 
@@ -340,7 +361,9 @@ conduit-contracts/
 │   │       ├── errors.rs       # Error enum
 │   │       ├── deploy.rs       # WASM hash + deploy logic
 │   │       ├── governance.rs   # cross-contract calls into DripGovernor + bounds checks
+│   │       ├── pause.rs        # emergency pause/unpause gating
 │   │       ├── query.rs        # pagination helper for streams_by_sender/recipient
+│   │       ├── events.rs       # event helpers
 │   │       └── ttl.rs          # instance + persistent-entry TTL extension
 │   └── governor/
 │       ├── Cargo.toml
@@ -349,7 +372,8 @@ conduit-contracts/
 │           ├── storage.rs      # DataKey enum
 │           ├── errors.rs       # Error enum
 │           ├── config.rs       # GovernorConfig struct + load helper
-│           ├── auth.rs         # authority-gate shared by every write
+│           ├── role.rs         # role storage + require_role/require_role_or_admin gates
+│           ├── events.rs       # event helpers
 │           └── ttl.rs          # instance TTL extension
 ├── tests/
 │   ├── stream_lifecycle.rs     # create → withdraw → cancel
