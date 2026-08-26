@@ -95,7 +95,6 @@ impl TokenVault {
         set_balance(&env, &new_balance);
         // clear pending after success
         set_pending(&env, &None);
-        let _ = owner;
         events::deposited(&env, &from, amount, new_balance);
         Ok(())
     }
