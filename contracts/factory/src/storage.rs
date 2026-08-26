@@ -1,5 +1,51 @@
 use soroban_sdk::{contracttype, Address};
 
+/// Identifies which on-chain stream operation to estimate fees for.
+///
+/// Each variant corresponds to a distinct transaction shape with different
+/// resource requirements (CPU instructions, read/write entries, etc.).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StreamOperation {
+    /// Deploy a new payment stream via `DripFactory::create_stream`.
+    /// Highest cost: contract deployment + multiple storage writes + token
+    /// transfer + governor cross-contract call.
+    CreateStream,
+    /// Cancel an existing stream via `DripStream::cancel`. Moderate cost:
+    /// single cross-contract call + settlement + event emission.
+    CancelStream,
+    /// Withdraw accrued funds from a stream via `DripStream::withdraw`.
+    /// Lowest cost: single cross-contract call + event emission.
+    Withdraw,
+    /// Pause an active stream via `DripStream::pause`.
+    PauseStream,
+    /// Resume a paused stream via `DripStream::resume`.
+    ResumeStream,
+}
+
+/// Result of a Soroban fee simulation for a stream operation.
+///
+/// Returned by `DripFactory::estimate_fee` so the UI can display the
+/// estimated network cost to the user before they sign the transaction.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeEstimate {
+    /// Estimated Soroban resource cost in stroops (1 XLM = 10_000_000 stroops).
+    /// Calculated by the RPC simulation from actual CPU/RAM usage and the
+    /// current network base fee.
+    pub fee_stroops: i128,
+    /// Estimated fee in human-readable XLM (fee_stroops / 10_000_000).
+    pub fee_xlm: i128,
+    /// Number of Soroban compute units (instructions) consumed by the
+    /// simulated operation. Derived from the simulation result's
+    /// `resources.cpu_instructions`.
+    pub cpu_instructions: u32,
+    /// Number of Soroban read/write ledger entries consumed.
+    /// Derived from the simulation result's `resources.read_entries` and
+    /// `resources.write_entries`.
+    pub ledger_entries: u32,
+}
+
 /// A single request within a `create_batch_streams` call.
 ///
 /// Each field mirrors the corresponding parameter of

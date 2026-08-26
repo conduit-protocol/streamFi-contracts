@@ -1,7 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { validateStreamPayload } from './lib/validateStreamPayload';
+import { estimateFee, FeeEstimate, StreamOperation } from './lib/estimateFee';
 
 const RPC_TIMEOUT_MS = 10_000;
+const FEE_DEBOUNCE_MS = 500;
+const FACTORY_ADDRESS = process.env.REACT_APP_FACTORY_ADDRESS ?? '';
+const RPC_URL = process.env.REACT_APP_RPC_URL ?? 'https://soroban-testnet.stellar.org';
 
 interface CreateStreamPayload {
   recipient: string;
@@ -29,6 +33,10 @@ export const StreamCreation: React.FC = () => {
   const [ratePerSecond, setRatePerSecond] = useState('');
   const [loading, setLoading] = useState(false);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
+  const [feeEstimate, setFeeEstimate] = useState<FeeEstimate | null>(null);
+  const [feeLoading, setFeeLoading] = useState(false);
+  const [feeError, setFeeError] = useState<string | null>(null);
+  const feeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const validateCurrentInputs = () => {
     const result = validateStreamPayload({
@@ -38,6 +46,46 @@ export const StreamCreation: React.FC = () => {
     });
     setValidationErrors(result.errors);
   };
+
+  useEffect(() => {
+    if (feeDebounceRef.current) {
+      clearTimeout(feeDebounceRef.current);
+    }
+
+    const result = validateStreamPayload({
+      recipient,
+      amount: Number(amount),
+      ratePerSecond: Number(ratePerSecond),
+    });
+
+    if (!result.valid || !FACTORY_ADDRESS) {
+      setFeeEstimate(null);
+      setFeeError(null);
+      return;
+    }
+
+    feeDebounceRef.current = setTimeout(async () => {
+      setFeeLoading(true);
+      setFeeError(null);
+
+      try {
+        const operation: StreamOperation = 'CreateStream';
+        const estimate = await estimateFee(RPC_URL, FACTORY_ADDRESS, '', operation);
+        setFeeEstimate(estimate);
+      } catch (e) {
+        setFeeError(e instanceof Error ? e.message : 'Failed to estimate fee');
+        setFeeEstimate(null);
+      } finally {
+        setFeeLoading(false);
+      }
+    }, FEE_DEBOUNCE_MS);
+
+    return () => {
+      if (feeDebounceRef.current) {
+        clearTimeout(feeDebounceRef.current);
+      }
+    };
+  }, [recipient, amount, ratePerSecond]);
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -52,11 +100,6 @@ export const StreamCreation: React.FC = () => {
 
     setLoading(true);
 
-    // FIX for Bug #150: the previous implementation awaited the RPC call
-    // with no timeout, so if the RPC provider never responded, `loading`
-    // was never reset and the spinner spun forever. Racing the request
-    // against a timeout guarantees the loading state always clears, either
-    // with a result or a clear timeout error.
     const timeout = new Promise<never>((_, reject) => {
       setTimeout(() => reject(new Error('RPC provider timed out. Please try again.')), RPC_TIMEOUT_MS);
     });
@@ -88,6 +131,20 @@ export const StreamCreation: React.FC = () => {
         Rate per second
         <input value={ratePerSecond} onChange={(e) => { setRatePerSecond(e.target.value); validateCurrentInputs(); }} />
       </label>
+
+      {(feeEstimate || feeLoading || feeError) && (
+        <div className="fee-estimate">
+          {feeLoading && <p>Estimating network fee...</p>}
+          {feeError && <p className="fee-error">{feeError}</p>}
+          {feeEstimate && !feeLoading && (
+            <div className="fee-details">
+              <div>Network Fee: {feeEstimate.fee_xlm} XLM</div>
+              <div>CPU Instructions: {feeEstimate.cpu_instructions.toLocaleString()}</div>
+              <div>Ledger Entries: {feeEstimate.ledger_entries}</div>
+            </div>
+          )}
+        </div>
+      )}
 
       {validationErrors.length > 0 && (
         <ul className="validation-errors">
