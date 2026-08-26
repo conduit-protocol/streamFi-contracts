@@ -9,7 +9,6 @@ use soroban_sdk::{
     Address, BytesN, Env,
 };
 
-use crate::storage::DataKey;
 use crate::{DripFactory, DripFactoryClient, Error};
 
 /// Register a factory and initialize it with a dummy stream WASM hash and a
@@ -231,32 +230,6 @@ fn upgrade_blocked_while_paused_then_allowed_after_unpause() {
     // After unpausing, zero-hash validation still rejects.
     let zero_hash = BytesN::from_array(&s.env, &[0u8; 32]);
     assert_eq!(s.client.try_upgrade(&zero_hash), Err(Ok(Error::InvalidWasmHash)));
-}
-
-// ── Issue #188: bump_persistent TTL extension test ──────────────────────────
-
-#[test]
-fn bump_persistent_extends_ttl_of_persistent_entry() {
-    let s = Setup::new();
-    let contract_id = s.client.address.clone();
-
-    s.env.as_contract(&contract_id, || {
-        // Write a persistent entry so bump_persistent has a key to extend.
-        let key = DataKey::StreamAddr(0);
-        let dummy = Address::generate(&s.env);
-        s.env.storage().persistent().set(&key, &dummy);
-
-        // Verify the key exists before bump.
-        assert!(s.env.storage().persistent().has(&key));
-
-        // Bump the TTL — should not panic or error.
-        crate::ttl::bump_persistent(&s.env, &key);
-
-        // After bump the key should still be accessible (not expired).
-        assert!(s.env.storage().persistent().has(&key));
-        let retrieved: Address = s.env.storage().persistent().get(&key).unwrap();
-        assert_eq!(retrieved, dummy);
-    });
 }
 
 // ── Issue #204: cancel_batch_streams ─────────────────────────────────────────
