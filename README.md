@@ -393,6 +393,14 @@ conduit-contracts/
 
 ---
 
+## Off-chain Indexer
+
+`indexer/` holds a scaffold for polling contract events into Postgres (raw event log plus
+derived tables). It's not wired to a live RPC endpoint yet — see `indexer/README.md` for
+setup and known gaps (single-instance only, non-idempotent derived-table folds).
+
+---
+
 ## Security Considerations
 
 - All auth checks use `address.require_auth()` — no manual signature verification.
