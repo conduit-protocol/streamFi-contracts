@@ -44,6 +44,15 @@ A technical walkthrough of how the three Conduit contracts fit together.
   │      ▼                   ▼                                           │
   │   CANCELLED           CANCELLED                                      │
   │                                                                      │
+  │  pause/resume/cancel/top_up/clawback/extend_duration may be called   │
+  │  by the sender OR their delegated operator (see "Operator            │
+  │  Delegation" below) — every transition arrow above implicitly        │
+  │  includes that alternate caller.                                     │
+  │                                                                      │
+  │  extend_duration()/top_up_and_extend() don't change ACTIVE/PAUSED/   │
+  │  CANCELLED status — they mutate end_time (and, for the latter,       │
+  │  deposit balance) in place while the stream stays ACTIVE.            │
+  │                                                                      │
   │  Recipient calls withdraw() any time stream is ACTIVE or PAUSED.    │
   │  cancel() atomically settles both parties.                           │
   └─────────────────────────────────────────────────────────────────────┘
@@ -95,6 +104,16 @@ After `Cancelled = true`, `withdraw()` is blocked. The atomic settlement in `can
 
 - `force_cancel()` lets the recipient settle unilaterally if the sender pauses the stream and never resumes it — without this, a malicious or abandoned sender could freeze a paused stream indefinitely and hold the recipient's earned-but-unwithdrawn balance hostage. Guarded by a hardcoded 30-day threshold (`PAUSE_THRESHOLD_SECS`) measured from `paused_at`; settles identically to `cancel()`.
 - `transfer_recipient(new_recipient)` reassigns the recipient address. Any balance already earned stays claimable by whoever holds the role — it isn't tied to the original recipient's identity. The sender is not notified on-chain (an indexer watching the `xfer_rec` event is the intended integration point).
+
+**Operator delegation:**
+
+The sender can delegate a fixed set of sender-level actions to another address via `set_operator(caller, operator)`, without handing over `sender` itself (which stays fixed for the life of the stream). The delegated actions are exactly: `pause`, `resume`, `cancel`, `top_up`, `clawback`, and `extend_duration` (and by extension `top_up_and_extend`, which combines the last two). Every one of these entry points authorizes via a shared `require_sender_or_operator` check — the sender or the current operator, not both required.
+
+The operator has no power over `withdraw` (recipient-only, unaffected by this mechanism) or `transfer_recipient` (sender-only, not delegatable). Only the original `sender` may call `set_operator`/`revoke_operator` — an operator cannot re-delegate itself, and delegation doesn't survive a `revoke_operator` call or a `cancel`/`force_cancel` settlement. `operator()` is a read-only accessor for the currently-delegated address, if any.
+
+**Duration extension:**
+
+`extend_duration(caller, extra_time_seconds)` pushes `end_time` forward by `extra_time_seconds`, pulling the exact required deposit (`rate_per_second × extra_time_seconds`) from the sender in the same call. `top_up_and_extend(caller, amount, extra_time_seconds)` does the same end_time push alongside an independently-sized `amount` deposit, so a sender isn't forced to deposit exactly the rate-implied amount when extending. Neither works on an open-ended stream (`end_time == 0`) — use `top_up` alone in that case.
 
 ### DripGovernor
 

@@ -69,12 +69,23 @@ pub enum DataKey {
     RoleMembers(Role),
 }
 
+/// Configuration parameters for the TWAP oracle.
+///
+/// Defines the fixed-point decimal scaling, asset peg identifier, and
+/// maximum allowed price staleness.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OracleConfig {
-    pub oracle_address: Address,
+    /// Number of decimal places used in fixed-point price submissions (maximum 38).
+    ///
+    /// Fixed-point prices submitted via [`TwapOracle::submit_price`] are scaled
+    /// by `10^decimals`. Exceeding 38 causes [`TwapOracle::configure_oracle`] to
+    /// return `Err(Error::InvalidDecimals)`.
     pub decimals: u32,
+    /// Target asset peg identifier (e.g., currency/asset pairing representation).
     pub asset_peg: u32,
+    /// Maximum allowable age (in seconds) of a price submission before it is
+    /// treated as stale by [`TwapOracle::get_twap_price`] or [`TwapOracle::is_price_stale`].
     pub max_staleness: u64,
 }
 
@@ -107,6 +118,8 @@ pub enum Error {
     NotPaused = 1013,
     /// Refused to revoke the last `Admin`, which would freeze oracle governance.
     LastAdmin = 1014,
+    /// `max_staleness` was set to 0 (degenerate: causes all price submissions to be immediately stale).
+    InvalidMaxStaleness = 1015,
 }
 
 #[contract]
@@ -200,7 +213,26 @@ impl TwapOracle {
 
     // ── Reads ────────────────────────────────────────────────────────────
 
-    /// Reconfigure the oracle parameters. Admin-gated.
+    /// Reconfigures oracle parameters and pricing settings. Admin-gated.
+    ///
+    /// # Authorization
+    ///
+    /// Only an account holding the `Admin` role (`Role::Admin`) may call this.
+    /// The `caller` must authenticate the transaction via `caller.require_auth()`.
+    /// Reverts with [`Error::NotAuthorized`] if `caller` does not hold the `Admin` role.
+    ///
+    /// # Parameters
+    ///
+    /// - `env`: The Soroban environment.
+    /// - `caller`: Address of the admin invoking the configuration update (must authenticate).
+    /// - `config`: An [`OracleConfig`] struct carrying:
+    ///   - `decimals`: Fixed-point decimal precision for submitted prices (max 38).
+    ///     Reverts with [`Error::InvalidDecimals`] if `config.decimals > 38`.
+    ///   - `asset_peg`: Target asset peg identifier/format.
+    ///   - `max_staleness`: Maximum allowable age in seconds for price observations before
+    ///     they are deemed stale.
+    ///
+    /// # Price Cache Invalidation
     ///
     /// When `decimals` or `asset_peg` changes relative to the currently stored
     /// config, all existing price data (`DataKey::Price`, per-feeder
@@ -208,14 +240,22 @@ impl TwapOracle {
     /// cleared. This prevents stale prices submitted under the old config from
     /// being silently misinterpreted under the new parameters — the next
     /// `get_twap_price` call will return `NoPriceAvailable` until a fresh
-    /// `submit_price` is made. Changes to `max_staleness` or `oracle_address`
-    /// alone do not clear price data, as those do not affect price magnitude
-    /// interpretation.
+    /// `submit_price` is made. Changes to `max_staleness` alone do not clear
+    /// price data, as those do not affect price magnitude interpretation.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::NotAuthorized`]: `caller` is not an `Admin` or auth verification fails.
+    /// - [`Error::InvalidDecimals`]: `config.decimals` exceeds 38.
     pub fn configure_oracle(env: Env, caller: Address, config: OracleConfig) -> Result<(), Error> {
         require_role_or_admin(&env, &caller, Role::Admin)?;
 
         if config.decimals > 38 {
             return Err(Error::InvalidDecimals);
+        }
+
+        if config.max_staleness == 0 {
+            return Err(Error::InvalidMaxStaleness);
         }
 
         bump_instance(&env);
@@ -749,9 +789,7 @@ mod tests {
         let (env, client, admin) = setup();
         client.initialize(&admin);
 
-        let oracle_addr = Address::generate(&env);
         let config = OracleConfig {
-            oracle_address: oracle_addr,
             decimals: 8,
             asset_peg: 1,
             max_staleness: 300,
@@ -765,18 +803,30 @@ mod tests {
 
     #[test]
     fn configure_oracle_rejects_excessive_decimals() {
-        let (env, client, admin) = setup();
+        let (_env, client, admin) = setup();
         client.initialize(&admin);
 
-        let oracle_addr = Address::generate(&env);
         let config = OracleConfig {
-            oracle_address: oracle_addr,
             decimals: 39,
             asset_peg: 1,
             max_staleness: 300,
         };
         let result = client.try_configure_oracle(&admin, &config);
         assert_eq!(result, Err(Ok(Error::InvalidDecimals)));
+    }
+
+    #[test]
+    fn configure_oracle_rejects_zero_max_staleness() {
+        let (_env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let config = OracleConfig {
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 0,
+        };
+        let result = client.try_configure_oracle(&admin, &config);
+        assert_eq!(result, Err(Ok(Error::InvalidMaxStaleness)));
     }
 
     #[test]
@@ -842,12 +892,10 @@ mod tests {
 
     #[test]
     fn get_twap_price_requires_price_submission() {
-        let (env, client, admin) = setup();
+        let (_env, client, admin) = setup();
         client.initialize(&admin);
 
-        let oracle_addr = Address::generate(&env);
         let config = OracleConfig {
-            oracle_address: oracle_addr,
             decimals: 8,
             asset_peg: 1,
             max_staleness: 300,
@@ -863,9 +911,7 @@ mod tests {
         let (env, client, admin) = setup();
         client.initialize(&admin);
 
-        let oracle_addr = Address::generate(&env);
         let config = OracleConfig {
-            oracle_address: oracle_addr,
             decimals: 8,
             asset_peg: 1,
             max_staleness: 60,
@@ -891,12 +937,10 @@ mod tests {
 
     #[test]
     fn get_twap_price_returns_fresh_price() {
-        let (env, client, admin) = setup();
+        let (_env, client, admin) = setup();
         client.initialize(&admin);
 
-        let oracle_addr = Address::generate(&env);
         let config = OracleConfig {
-            oracle_address: oracle_addr,
             decimals: 8,
             asset_peg: 1,
             max_staleness: 300,
@@ -911,12 +955,10 @@ mod tests {
 
     #[test]
     fn calculate_fiat_stream_payout_works() {
-        let (env, client, admin) = setup();
+        let (_env, client, admin) = setup();
         client.initialize(&admin);
 
-        let oracle_addr = Address::generate(&env);
         let config = OracleConfig {
-            oracle_address: oracle_addr,
             decimals: 8,
             asset_peg: 1,
             max_staleness: 300,
@@ -931,12 +973,10 @@ mod tests {
 
     #[test]
     fn calculate_fiat_stream_payout_overflow() {
-        let (env, client, admin) = setup();
+        let (_env, client, admin) = setup();
         client.initialize(&admin);
 
-        let oracle_addr = Address::generate(&env);
         let config = OracleConfig {
-            oracle_address: oracle_addr,
             decimals: 0,
             asset_peg: 1,
             max_staleness: 300,
@@ -954,9 +994,7 @@ mod tests {
         let (env, client, admin) = setup();
         client.initialize(&admin);
 
-        let oracle_addr = Address::generate(&env);
         let config = OracleConfig {
-            oracle_address: oracle_addr,
             decimals: 8,
             asset_peg: 1,
             max_staleness: 300,
@@ -1039,12 +1077,10 @@ mod tests {
 
     #[test]
     fn pause_blocks_submit_price() {
-        let (env, client, admin) = setup();
+        let (_env, client, admin) = setup();
         client.initialize(&admin);
 
-        let oracle_addr = Address::generate(&env);
         let config = OracleConfig {
-            oracle_address: oracle_addr,
             decimals: 8,
             asset_peg: 1,
             max_staleness: 300,
@@ -1090,12 +1126,10 @@ mod tests {
 
     #[test]
     fn get_twap_price_works_while_paused() {
-        let (env, client, admin) = setup();
+        let (_env, client, admin) = setup();
         client.initialize(&admin);
 
-        let oracle_addr = Address::generate(&env);
         let config = OracleConfig {
-            oracle_address: oracle_addr,
             decimals: 8,
             asset_peg: 1,
             max_staleness: 300,
@@ -1306,9 +1340,7 @@ mod tests {
         let new_admin = Address::generate(&env);
         client.transfer_admin(&admin, &new_admin);
 
-        let oracle_addr = Address::generate(&env);
         let config = OracleConfig {
-            oracle_address: oracle_addr,
             decimals: 8,
             asset_peg: 1,
             max_staleness: 300,
@@ -1325,9 +1357,7 @@ mod tests {
         let (env, client, admin) = setup();
         client.initialize(&admin);
 
-        let oracle_addr = Address::generate(&env);
         let config = OracleConfig {
-            oracle_address: oracle_addr,
             decimals: 8,
             asset_peg: 1,
             max_staleness: 300,
@@ -1352,9 +1382,7 @@ mod tests {
         let (env, client, admin) = setup();
         client.initialize(&admin);
 
-        let oracle_addr = Address::generate(&env);
         let config = OracleConfig {
-            oracle_address: oracle_addr,
             decimals: 8,
             asset_peg: 1,
             max_staleness: 300,
@@ -1376,9 +1404,7 @@ mod tests {
         let (env, client, admin) = setup();
         client.initialize(&admin);
 
-        let oracle_addr = Address::generate(&env);
         let config = OracleConfig {
-            oracle_address: oracle_addr,
             decimals: 8,
             asset_peg: 1,
             max_staleness: 60,
@@ -1413,9 +1439,7 @@ mod tests {
         let (env, client, admin) = setup();
         client.initialize(&admin);
 
-        let oracle_addr = Address::generate(&env);
         let config = OracleConfig {
-            oracle_address: oracle_addr,
             decimals: 8,
             asset_peg: 1,
             max_staleness: 60,
@@ -1447,9 +1471,7 @@ mod tests {
         let (env, client, admin) = setup();
         client.initialize(&admin);
 
-        let oracle_addr = Address::generate(&env);
         let config = OracleConfig {
-            oracle_address: oracle_addr,
             decimals: 8,
             asset_peg: 1,
             max_staleness: 300,
@@ -1483,12 +1505,10 @@ mod tests {
 
     #[test]
     fn price_age_requires_price_submission() {
-        let (env, client, admin) = setup();
+        let (_env, client, admin) = setup();
         client.initialize(&admin);
 
-        let oracle_addr = Address::generate(&env);
         let config = OracleConfig {
-            oracle_address: oracle_addr,
             decimals: 8,
             asset_peg: 1,
             max_staleness: 300,
@@ -1504,9 +1524,7 @@ mod tests {
         let (env, client, admin) = setup();
         client.initialize(&admin);
 
-        let oracle_addr = Address::generate(&env);
         let config = OracleConfig {
-            oracle_address: oracle_addr,
             decimals: 8,
             asset_peg: 1,
             max_staleness: 60,
@@ -1547,9 +1565,7 @@ mod tests {
         let (env, client, admin) = setup();
         client.initialize(&admin);
 
-        let oracle_addr = Address::generate(&env);
         let config = OracleConfig {
-            oracle_address: oracle_addr,
             decimals: 8,
             asset_peg: 1,
             max_staleness: 300,
@@ -1574,12 +1590,10 @@ mod tests {
 
     #[test]
     fn configure_oracle_clears_price_when_decimals_change() {
-        let (env, client, admin) = setup();
+        let (_env, client, admin) = setup();
         client.initialize(&admin);
 
-        let oracle_addr = Address::generate(&env);
         let config = OracleConfig {
-            oracle_address: oracle_addr.clone(),
             decimals: 8,
             asset_peg: 1,
             max_staleness: 300,
@@ -1591,7 +1605,6 @@ mod tests {
         assert_eq!(price, 50_000_000);
 
         let new_config = OracleConfig {
-            oracle_address: oracle_addr.clone(),
             decimals: 6,
             asset_peg: 1,
             max_staleness: 300,
@@ -1604,12 +1617,10 @@ mod tests {
 
     #[test]
     fn configure_oracle_clears_price_when_asset_peg_changes() {
-        let (env, client, admin) = setup();
+        let (_env, client, admin) = setup();
         client.initialize(&admin);
 
-        let oracle_addr = Address::generate(&env);
         let config = OracleConfig {
-            oracle_address: oracle_addr.clone(),
             decimals: 8,
             asset_peg: 1,
             max_staleness: 300,
@@ -1621,7 +1632,6 @@ mod tests {
         assert_eq!(price, 50_000_000);
 
         let new_config = OracleConfig {
-            oracle_address: oracle_addr.clone(),
             decimals: 8,
             asset_peg: 2,
             max_staleness: 300,
@@ -1634,12 +1644,10 @@ mod tests {
 
     #[test]
     fn configure_oracle_preserves_price_when_only_staleness_changes() {
-        let (env, client, admin) = setup();
+        let (_env, client, admin) = setup();
         client.initialize(&admin);
 
-        let oracle_addr = Address::generate(&env);
         let config = OracleConfig {
-            oracle_address: oracle_addr.clone(),
             decimals: 8,
             asset_peg: 1,
             max_staleness: 300,
@@ -1651,7 +1659,6 @@ mod tests {
         assert_eq!(price, 50_000_000);
 
         let new_config = OracleConfig {
-            oracle_address: oracle_addr.clone(),
             decimals: 8,
             asset_peg: 1,
             max_staleness: 600,

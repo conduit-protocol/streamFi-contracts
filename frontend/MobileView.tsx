@@ -13,6 +13,7 @@ const SUBMIT_STREAM_REQUEST_MOBILE = gql`
 `;
 
 const FACTORY_ADDRESS = process.env.REACT_APP_FACTORY_ADDRESS ?? '';
+const MUTATION_TIMEOUT_MS = 10_000;
 
 export const MobileView: React.FC = () => {
   const [recipient, setRecipient] = useState('');
@@ -64,8 +65,17 @@ export const MobileView: React.FC = () => {
       return;
     }
 
+    // FIX for Bug #285: same underlying issue as StreamCreation (#150) and
+    // WalletConnection — if the GraphQL endpoint never responds, the loading
+    // state hangs indefinitely. Racing the mutation against a timeout
+    // guarantees loading always clears, either with a result or a clear
+    // timeout error.
+    const timeout = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('GraphQL endpoint timed out. Please try again.')), MUTATION_TIMEOUT_MS);
+    });
+
     try {
-      await submitStreamRequest({ variables: payload });
+      await Promise.race([submitStreamRequest({ variables: payload }), timeout]);
     } catch (e) {
       setValidationErrors([e instanceof Error ? e.message : 'Failed to submit stream request.']);
     }

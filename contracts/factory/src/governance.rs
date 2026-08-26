@@ -23,7 +23,7 @@ pub fn config(env: &Env, governor: &Address) -> Result<GovernorConfig, Error> {
 /// `rate_per_sec` and, for fixed-duration streams, the declared length must
 /// respect the protocol parameters DripGovernor holds.
 ///
-/// # Panics
+/// # Errors
 ///
 /// This function uses `checked_sub` to safely compute stream duration, ensuring
 /// it is robust against any call site — including future code paths that may

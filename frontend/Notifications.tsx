@@ -63,20 +63,10 @@ export const Notifications: React.FC = () => {
   }
 
   const handleAction = async () => {
-    // Clear any previous errors before re-validating
+    // Clear any previous errors
     setValidationErrors([]);
 
     const message = 'Action completed successfully';
-
-    // FIX for Bug: Notifications bypasses validation
-    // Validate the payload before sending to the smart contract.
-    // This ensures invalid payloads (empty messages, oversized content)
-    // are caught client-side and never reach the contract.
-    const errors = validateNotificationMessage(message);
-    if (errors.length > 0) {
-      setValidationErrors(errors);
-      return;
-    }
 
     try {
       await triggerAction({

@@ -28,7 +28,7 @@ pub enum Error {
     EmptyBatch = 16,
     /// `create_batch_streams` requests exceeded `MAX_BATCH_SIZE`.
     BatchTooLarge = 17,
-    /// The recipient is the all-zero Stellar account address.
+    /// The recipient is invalid (e.g. the all-zero Stellar account address, or identical to `sender`).
     InvalidRecipient = 22,
     /// Another `create_stream` call is already in progress (reentrancy guard).
     CreateLocked = 23,
@@ -40,4 +40,6 @@ pub enum Error {
     InvalidWasmHash = 26,
     /// Stream duration is invalid (end_time <= start_time).
     InvalidDuration = 27,
+    /// The token address is invalid (e.g. the all-zero Stellar account address).
+    InvalidToken = 28,
 }

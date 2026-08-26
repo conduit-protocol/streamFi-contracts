@@ -18,7 +18,6 @@ fn test_oracle_concurrency_locking() {
     client.initialize(&admin);
 
     let config = OracleConfig {
-        oracle_address: Address::generate(&env),
         decimals: 6,
         asset_peg: 0,
         max_staleness: 3600,
@@ -63,7 +62,6 @@ fn test_concurrent_stress_simulation() {
 
     client.initialize(&admin);
     let config = OracleConfig {
-        oracle_address: Address::generate(&env),
         decimals: 6,
         asset_peg: 0,
         max_staleness: 3600,
@@ -90,7 +88,6 @@ fn test_precision_safe_math() {
 
     client.initialize(&admin);
     let config = OracleConfig {
-        oracle_address: Address::generate(&env),
         decimals: 6,
         asset_peg: 0,
         max_staleness: 3600,
@@ -123,7 +120,6 @@ fn test_staleness_check() {
 
     client.initialize(&admin);
     let config = OracleConfig {
-        oracle_address: Address::generate(&env),
         decimals: 6,
         asset_peg: 0,
         max_staleness: 60, // 1 minute
