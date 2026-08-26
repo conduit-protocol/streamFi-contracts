@@ -14,4 +14,8 @@ pub enum Error {
     AlreadyPaused = 6,
     /// `unpause` was called while the vault was not paused.
     NotPaused = 7,
+    /// The vault has not been initialized yet.
+    NotInitialized = 8,
+    /// `initialize` was called on a vault that is already initialized.
+    AlreadyInitialized = 9,
 }
