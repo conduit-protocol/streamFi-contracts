@@ -95,10 +95,26 @@ fn create_stream(
 ) -> Result<u64, Error>    // returns stream_id
 
 fn stream_address(env: Env, stream_id: u64) -> Option<Address>
+fn stream_addresses(env: Env, ids: Vec<u64>) -> Result<Vec<Option<Address>>, Error>  // batch-resolve; unknown IDs -> None, not an error
 fn streams_by_sender(env: Env, sender: Address, offset: u32, limit: u32) -> Vec<u64>
 fn streams_by_recipient(env: Env, recipient: Address, offset: u32, limit: u32) -> Vec<u64>
 fn stream_count(env: Env) -> u64
+fn stream_count_by_sender(env: Env, sender: Address) -> u32
+fn stream_count_by_recipient(env: Env, recipient: Address) -> u32
 fn protocol_fee_bps(env: Env) -> u32   // basis points, e.g. 30 = 0.3%; reads live from DripGovernor
+fn factory_status(env: Env) -> FactoryStatus  // { is_paused, protocol_fee_bps } in one RPC call
+
+// Bulk creation/cancellation — up to MAX_BATCH_SIZE (100) per call, all
+// funded/authorized by the same `sender`. Atomic: any failed request in
+// the batch reverts the whole call (Soroban transactions are all-or-nothing),
+// so no partial-batch state is ever left behind.
+fn create_batch_streams(
+    env:       Env,
+    sender:    Address,
+    requests:  Vec<BatchStreamRequest>,  // { recipient, token, deposit, rate_per_sec, start_time, end_time }
+    clawback:  bool,
+) -> Result<Vec<u64>, Error>   // returns one stream_id per request, same order
+fn cancel_batch_streams(env: Env, sender: Address, stream_addresses: Vec<Address>) -> Result<(), Error>
 
 // Governor-only: point future create_stream calls at a new DripStream WASM version.
 // Existing streams are unaffected — each is an independently deployed contract.
@@ -126,6 +142,10 @@ All checks run before any state mutation (fail early — invalid calls neither t
 - `rate_per_sec <= DripGovernor::config().max_rate_per_second`
 - `end_time == 0 || (end_time - start_time) >= DripGovernor::config().min_duration_seconds`
 - Token must be a valid Stellar asset contract
+
+**Validation on batch functions:**
+
+`create_batch_streams`, `cancel_batch_streams`, and `stream_addresses` each cap their input at `MAX_BATCH_SIZE` (100), reverting with `BatchTooLarge` above that. `create_batch_streams`/`cancel_batch_streams` also revert with `EmptyBatch` on an empty input vector; `stream_addresses` allows an empty `ids` and simply returns an empty result.
 
 ---
 
@@ -216,6 +236,18 @@ not by number alone.
 | `8` | `RateExceedsMax` | `rate_per_sec` exceeds `DripGovernor::config().max_rate_per_second` |
 | `9` | `DurationTooShort` | `end_time - start_time` is below `DripGovernor::config().min_duration_seconds` |
 | `10` | `ArithmeticOverflow` | Integer overflow validating `rate_per_sec × duration` |
+| `11` | `ContractPaused` | The factory is under an emergency pause; new stream creation is halted |
+| `12` | `AlreadyPaused` | `pause` called while the factory was already paused |
+| `13` | `NotPaused` | `unpause` called while the factory was not paused |
+| `14` | `DurationExceedsMax` | `end_time - start_time` exceeds `DripGovernor::config().max_duration_seconds` |
+| `15` | `GovernorNotResponding` | The governor contract did not respond (archived, not initialized, or a host-level error during the cross-contract call) |
+| `16` | `EmptyBatch` | `create_batch_streams` called with an empty `requests` vector |
+| `17` | `BatchTooLarge` | `create_batch_streams` requests exceeded `MAX_BATCH_SIZE` |
+| `18`–`21` | *(reserved)* | Previously `InvalidSignature`/`NonceAlreadyUsed`/`NetworkMismatch`/`SignatureExpired`, for a signed-payload feature that was removed. Not reused, so RPC error codes stay stable for existing integrations. |
+| `22` | `InvalidRecipient` | The recipient is the all-zero Stellar account address |
+| `23` | `CreateLocked` | Another `create_stream` call is already in progress (reentrancy guard) |
+| `24` | `DepositTransferFailed` | The deposit transfer from `sender` to the factory did not arrive |
+| `25` | `StreamFundingFailed` | The deposit forward from the factory to the deployed stream did not arrive |
 | `26` | `InvalidWasmHash` | `upgrade_stream_wasm` called with zero WASM hash |
 | `27` | `InvalidDuration` | `end_time != 0 && end_time <= start_time` (stream duration is zero or negative) |
 
