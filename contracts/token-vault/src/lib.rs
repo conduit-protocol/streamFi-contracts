@@ -9,9 +9,8 @@ mod tests;
 use errors::Error;
 use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env};
 use storage::{
-    get_balance, get_max_limit, get_operator, get_owner, get_pending, get_token, is_paused,
-    remove_operator, set_balance, set_max_limit, set_operator, set_owner, set_paused, set_pending,
-    set_token,
+    get_balance, get_max_limit, get_operator, get_owner, get_token, is_paused, remove_operator,
+    set_balance, set_max_limit, set_operator, set_owner, set_paused, set_token,
 };
 
 #[contract]
@@ -60,7 +59,6 @@ impl TokenVault {
         set_token(&env, &token);
         set_max_limit(&env, &max_limit);
         set_balance(&env, &0_i128);
-        set_pending(&env, &None);
 
         events::initialized(&env, &owner, &token, max_limit);
     }
@@ -72,9 +70,6 @@ impl TokenVault {
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
-
-        // Cleanup any pending callbacks before state mutation
-        Self::cleanup_pending(&env);
 
         let _owner = get_owner(&env).ok_or(Error::NotInitialized)?;
         // Check current balance and max_limit safely
@@ -93,8 +88,6 @@ impl TokenVault {
         tk.transfer(&from, &env.current_contract_address(), &amount);
 
         set_balance(&env, &new_balance);
-        // clear pending after success
-        set_pending(&env, &None);
         events::deposited(&env, &from, amount, new_balance);
         Ok(())
     }
@@ -107,7 +100,6 @@ impl TokenVault {
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
-        Self::cleanup_pending(&env);
 
         let balance = get_balance(&env).unwrap_or(0_i128);
         let new_balance = balance
@@ -118,7 +110,6 @@ impl TokenVault {
         tk.transfer(&env.current_contract_address(), &to, &amount);
 
         set_balance(&env, &new_balance);
-        set_pending(&env, &None);
         events::withdrawn(&env, &caller, &to, amount, new_balance);
         Ok(())
     }
@@ -219,15 +210,5 @@ impl TokenVault {
     /// Read-only: whether the vault is currently under an emergency pause.
     pub fn is_paused(env: Env) -> bool {
         is_paused(&env)
-    }
-
-    // ── Internal helpers ────────────────────────────────────────────────────
-
-    // Exposed for tests: ensures any pending async callbacks are cleared.
-    pub fn cleanup_pending(env: &Env) {
-        // If there was a pending callback payload, drop it instead of processing
-        if let Some(Some(_v)) = get_pending(env) {
-            set_pending(env, &None);
-        }
     }
 }

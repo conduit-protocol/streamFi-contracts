@@ -124,7 +124,6 @@ fn seed_vault(
         storage::set_token(env, token_addr);
         storage::set_max_limit(env, &max_limit);
         storage::set_balance(env, &balance);
-        storage::set_pending(env, &None);
     });
 }
 
