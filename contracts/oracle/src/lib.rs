@@ -817,7 +817,7 @@ mod tests {
 
     #[test]
     fn configure_oracle_rejects_zero_max_staleness() {
-        let (env, client, admin) = setup();
+        let (_env, client, admin) = setup();
         client.initialize(&admin);
 
         let config = OracleConfig {
