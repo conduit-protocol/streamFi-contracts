@@ -10,6 +10,17 @@
 #   - stellar CLI installed and on PATH
 #   - Rust + wasm32-unknown-unknown target
 #   - For testnet/mainnet: funded identity set up with `stellar keys generate`
+#
+# Env vars (optional):
+#   TOKEN_ADDRESS      — SAC contract ID TokenVault should manage.
+#                         Defaults to the native XLM SAC for $NETWORK.
+#   TOKEN_VAULT_MAX_LIMIT — TokenVault's per-account deposit ceiling (stroops).
+#                         Defaults to 1_000_000_000_000 (100k XLM).
+#
+# Deploys all 6 contracts that produce a WASM (drip-common is a shared rlib,
+# not a deployable contract; DripStream is uploaded — not deployed as a
+# standalone instance — because DripFactory deploys new stream instances
+# per-user from its stored WASM hash) (#295).
 
 set -euo pipefail
 
@@ -56,6 +67,24 @@ GOVERNOR_WASM_HASH=$(stellar contract upload \
   --network "$NETWORK" $IDENTITY \
   --quiet)
 
+echo "📤  Uploading TwapOracle WASM…"
+ORACLE_WASM_HASH=$(stellar contract upload \
+  --wasm "$WASM_DIR/drip_oracle.wasm" \
+  --network "$NETWORK" $IDENTITY \
+  --quiet)
+
+echo "📤  Uploading BatchTransferProcessor WASM…"
+BATCH_PROCESSOR_WASM_HASH=$(stellar contract upload \
+  --wasm "$WASM_DIR/drip_batch_processor.wasm" \
+  --network "$NETWORK" $IDENTITY \
+  --quiet)
+
+echo "📤  Uploading TokenVault WASM…"
+TOKEN_VAULT_WASM_HASH=$(stellar contract upload \
+  --wasm "$WASM_DIR/token_vault.wasm" \
+  --network "$NETWORK" $IDENTITY \
+  --quiet)
+
 # ── Deploy contracts ──────────────────────────────────────────────────────────
 AUTHORITY=$(stellar keys address dev 2>/dev/null || stellar keys address alice)
 
@@ -68,6 +97,24 @@ GOVERNOR_ID=$(stellar contract deploy \
 echo "🚀  Deploying DripFactory…"
 FACTORY_ID=$(stellar contract deploy \
   --wasm-hash "$FACTORY_WASM_HASH" \
+  --network "$NETWORK" $IDENTITY \
+  --quiet)
+
+echo "🚀  Deploying TwapOracle…"
+ORACLE_ID=$(stellar contract deploy \
+  --wasm-hash "$ORACLE_WASM_HASH" \
+  --network "$NETWORK" $IDENTITY \
+  --quiet)
+
+echo "🚀  Deploying BatchTransferProcessor…"
+BATCH_PROCESSOR_ID=$(stellar contract deploy \
+  --wasm-hash "$BATCH_PROCESSOR_WASM_HASH" \
+  --network "$NETWORK" $IDENTITY \
+  --quiet)
+
+echo "🚀  Deploying TokenVault…"
+TOKEN_VAULT_ID=$(stellar contract deploy \
+  --wasm-hash "$TOKEN_VAULT_WASM_HASH" \
   --network "$NETWORK" $IDENTITY \
   --quiet)
 
@@ -89,13 +136,44 @@ stellar contract invoke \
   --stream_wasm_hash "$STREAM_WASM_HASH" \
   --governor "$GOVERNOR_ID"
 
+echo "⚙️   Initialising TwapOracle…"
+stellar contract invoke \
+  --id "$ORACLE_ID" \
+  --network "$NETWORK" $IDENTITY \
+  -- initialize \
+  --admin "$AUTHORITY"
+
+# BatchTransferProcessor is stateless — it has no `initialize` entry point,
+# so uploading + deploying is the whole setup.
+
+TOKEN_ADDRESS="${TOKEN_ADDRESS:-}"
+if [[ -z "$TOKEN_ADDRESS" ]]; then
+  echo "ℹ️   TOKEN_ADDRESS not set — resolving the native XLM SAC for $NETWORK…"
+  TOKEN_ADDRESS=$(stellar contract id asset --asset native --network "$NETWORK")
+fi
+TOKEN_VAULT_MAX_LIMIT="${TOKEN_VAULT_MAX_LIMIT:-1000000000000}"
+
+echo "⚙️   Initialising TokenVault…"
+stellar contract invoke \
+  --id "$TOKEN_VAULT_ID" \
+  --network "$NETWORK" $IDENTITY \
+  -- initialize \
+  --owner "$AUTHORITY" \
+  --token "$TOKEN_ADDRESS" \
+  --max_limit "$TOKEN_VAULT_MAX_LIMIT"
+
 # ── Write IDs ─────────────────────────────────────────────────────────────────
 cat > "$IDS_FILE" <<EOF
 {
-  "network":          "$NETWORK",
-  "factory":          "$FACTORY_ID",
-  "governor":         "$GOVERNOR_ID",
-  "streamWasmHash":   "$STREAM_WASM_HASH"
+  "network":              "$NETWORK",
+  "factory":              "$FACTORY_ID",
+  "governor":              "$GOVERNOR_ID",
+  "oracle":                "$ORACLE_ID",
+  "batchProcessor":        "$BATCH_PROCESSOR_ID",
+  "tokenVault":            "$TOKEN_VAULT_ID",
+  "streamWasmHash":        "$STREAM_WASM_HASH",
+  "tokenVaultToken":       "$TOKEN_ADDRESS",
+  "tokenVaultMaxLimit":    "$TOKEN_VAULT_MAX_LIMIT"
 }
 EOF
 
