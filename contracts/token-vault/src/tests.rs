@@ -365,3 +365,47 @@ fn operator_also_blocked_by_pause() {
     let result = s.client.try_withdraw(&op, &recipient, &100);
     assert_eq!(result, Err(Ok(Error::ContractPaused)));
 }
+
+// ── Uninitialized state tests ───────────────────────────────────────────────
+
+#[test]
+fn uninitialized_vault_returns_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let vault_id = env.register_contract(None, super::TokenVault);
+    let client = TokenVaultClient::new(&env, &vault_id);
+
+    let user = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let operator = Address::generate(&env);
+
+    assert_eq!(client.try_deposit(&user, &100), Err(Ok(Error::NotInitialized)));
+    assert_eq!(
+        client.try_withdraw(&user, &recipient, &100),
+        Err(Ok(Error::NotInitialized))
+    );
+    assert_eq!(client.try_set_limit(&user, &100), Err(Ok(Error::NotInitialized)));
+    assert_eq!(
+        client.try_set_operator(&user, &operator),
+        Err(Ok(Error::NotInitialized))
+    );
+    assert_eq!(
+        client.try_revoke_operator(&user),
+        Err(Ok(Error::NotInitialized))
+    );
+    assert_eq!(client.try_pause(&user), Err(Ok(Error::NotInitialized)));
+    assert_eq!(client.try_unpause(&user), Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #9)")]
+fn re_initializing_vault_panics() {
+    let s = Setup::new(1_000_000);
+    let another_owner = Address::generate(&s.env);
+    let token_admin = Address::generate(&s.env);
+    let token_addr = s
+        .env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+    s.client.initialize(&another_owner, &token_addr, &2_000_000);
+}

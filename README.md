@@ -125,7 +125,8 @@ All checks run before any state mutation (fail early — invalid calls neither t
 - `end_time == 0 || deposit >= rate_per_sec × (end_time - start_time)` (must fund the entire declared duration)
 - `rate_per_sec <= DripGovernor::config().max_rate_per_second`
 - `end_time == 0 || (end_time - start_time) >= DripGovernor::config().min_duration_seconds`
-- Token must be a valid Stellar asset contract
+- `recipient != sender` and `recipient` is not the all-zero account (else `InvalidRecipient`)
+- `token` is not the all-zero account (must be a valid Stellar asset contract address, else `InvalidToken`)
 
 ---
 

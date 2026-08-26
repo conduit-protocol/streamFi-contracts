@@ -99,8 +99,13 @@ impl DripFactory {
         }
 
         // ── Recipient validation ─────────────────────────────────────────
-        if is_zero_stellar_account(&env, &recipient) {
+        if is_zero_stellar_account(&env, &recipient) || recipient == sender {
             return Err(Error::InvalidRecipient);
+        }
+
+        // ── Token validation ─────────────────────────────────────────────
+        if is_zero_stellar_account(&env, &token) {
+            return Err(Error::InvalidToken);
         }
 
         // ── Validation ───────────────────────────────────────────────────

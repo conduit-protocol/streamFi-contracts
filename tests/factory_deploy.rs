@@ -247,6 +247,56 @@ fn create_stream_rejects_zero_stellar_recipient() {
 }
 
 #[test]
+fn create_stream_rejects_sender_as_recipient() {
+    let env = base_env();
+    let client = deploy_factory(&env);
+    let sender = Address::generate(&env);
+
+    let token = make_token(&env, &sender, 100_000);
+    let now = env.ledger().timestamp();
+
+    let result = client.try_create_stream(
+        &sender,
+        &sender, // sender is recipient
+        &token,
+        &100_000,
+        &100,
+        &(now + 100),
+        &(now + 3_700),
+        &false,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidRecipient)));
+}
+
+#[test]
+fn create_stream_rejects_zero_stellar_token() {
+    let env = base_env();
+    let client = deploy_factory(&env);
+    let sender = Address::generate(&env);
+    let recip = Address::generate(&env);
+
+    let zero_token = Address::from_string(&soroban_sdk::String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    let now = env.ledger().timestamp();
+
+    let result = client.try_create_stream(
+        &sender,
+        &recip,
+        &zero_token,
+        &100_000,
+        &100,
+        &(now + 100),
+        &(now + 3_700),
+        &false,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidToken)));
+}
+
+#[test]
 fn create_stream_rejects_zero_deposit() {
     let env = base_env();
     let client = deploy_factory(&env);
