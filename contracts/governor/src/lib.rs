@@ -165,7 +165,6 @@ impl DripGovernor {
         if is_paused(&env) {
             return Err(Error::AlreadyPaused);
         }
-        ttl::bump(&env);
         env.storage().instance().set(&DataKey::Paused, &true);
         events::paused(&env, &caller, env.ledger().timestamp());
         Ok(())
@@ -179,7 +178,6 @@ impl DripGovernor {
         if !is_paused(&env) {
             return Err(Error::NotPaused);
         }
-        ttl::bump(&env);
         env.storage().instance().set(&DataKey::Paused, &false);
         events::unpaused(&env, &caller, env.ledger().timestamp());
         Ok(())
@@ -261,7 +259,6 @@ impl DripGovernor {
         account: Address,
     ) -> Result<(), Error> {
         role::require_role(&env, &caller, Role::Admin)?;
-        ttl::bump(&env);
         if role::grant(&env, role, &account) {
             events::grant_role(&env, &caller, role, &account);
         }
@@ -281,7 +278,6 @@ impl DripGovernor {
         account: Address,
     ) -> Result<(), Error> {
         role::require_role(&env, &caller, Role::Admin)?;
-        ttl::bump(&env);
         if role::revoke(&env, role, &account)? {
             events::revoke_role(&env, &caller, role, &account);
         }
@@ -304,8 +300,12 @@ impl DripGovernor {
         caller: Address,
         new_authority: Address,
     ) -> Result<(), Error> {
+        if is_zero_stellar_account(&env, &new_authority)
+            || role::has_role(&env, Role::Admin, &new_authority)
+        {
+            return Err(Error::InvalidParam);
+        }
         role::require_role(&env, &caller, Role::Admin)?;
-        ttl::bump(&env);
         role::grant(&env, Role::Admin, &new_authority);
         role::revoke(&env, Role::Admin, &caller)?;
         events::transfer_authority(&env, &caller, &new_authority);
@@ -323,8 +323,12 @@ impl DripGovernor {
         caller: Address,
         new_authority: Address,
     ) -> Result<(), Error> {
+        if is_zero_stellar_account(&env, &new_authority)
+            || role::has_role(&env, Role::Admin, &new_authority)
+        {
+            return Err(Error::InvalidParam);
+        }
         role::require_role(&env, &caller, Role::Admin)?;
-        ttl::bump(&env);
         env.storage()
             .instance()
             .set(&DataKey::PendingAuthority, &new_authority);
@@ -406,26 +410,23 @@ impl DripGovernor {
     /// 0 and 10,000 basis points (0% to 100%); values above 10,000 revert with
     /// `Error::InvalidParam`.
     pub fn set_fee_bps(env: Env, caller: Address, fee_bps: u32) -> Result<(), Error> {
-        assert_not_paused(&env)?;
-        role::require_role_or_admin(&env, &caller, Role::FeeManager)?;
-        ttl::bump(&env);
         if fee_bps > 10_000 {
             return Err(Error::InvalidParam);
         }
+        assert_not_paused(&env)?;
+        role::require_role_or_admin(&env, &caller, Role::FeeManager)?;
         let old_fee_bps: u32 = env.storage().instance().get(&DataKey::FeeBps).unwrap_or(30);
         env.storage().instance().set(&DataKey::FeeBps, &fee_bps);
         events::set_fee_bps(&env, &caller, old_fee_bps, fee_bps);
         Ok(())
     }
 
-    /// Sets the fee recipient address. Only a `FeeManager` (or `Admin`) may call this.
     pub fn set_fee_recipient(env: Env, caller: Address, recipient: Address) -> Result<(), Error> {
-        assert_not_paused(&env)?;
-        role::require_role_or_admin(&env, &caller, Role::FeeManager)?;
         if is_zero_stellar_account(&env, &recipient) {
             return Err(Error::InvalidParam);
         }
-        ttl::bump(&env);
+        assert_not_paused(&env)?;
+        role::require_role_or_admin(&env, &caller, Role::FeeManager)?;
         let old_recipient: Address = env
             .storage()
             .instance()
@@ -439,12 +440,11 @@ impl DripGovernor {
     }
 
     pub fn set_min_duration(env: Env, caller: Address, seconds: u64) -> Result<(), Error> {
-        assert_not_paused(&env)?;
-        role::require_role_or_admin(&env, &caller, Role::RateManager)?;
-        ttl::bump(&env);
         if seconds == 0 {
             return Err(Error::InvalidParam);
         }
+        assert_not_paused(&env)?;
+        role::require_role_or_admin(&env, &caller, Role::RateManager)?;
         let max_duration: u64 = env
             .storage()
             .instance()
@@ -453,12 +453,6 @@ impl DripGovernor {
         if seconds > max_duration {
             return Err(Error::InvalidParam);
         }
-        // Cross-check against current `MaxRatePerSecond`: the product
-        // `max_rate * min_duration` is the upper bound on stream principal a
-        // caller may commit, and capacity math (in `DripFactory::create_stream`)
-        // relies on it fitting in a single `i128` (which has
-        // ~10^38 capacity). Reject up-front instead of letting valid-looking
-        // parameters fail at create_stream with `ArithmeticOverflow`.
         let max_rate: i128 = env
             .storage()
             .instance()
@@ -474,15 +468,11 @@ impl DripGovernor {
     }
 
     pub fn set_max_rate(env: Env, caller: Address, max_rate: i128) -> Result<(), Error> {
-        assert_not_paused(&env)?;
-        role::require_role_or_admin(&env, &caller, Role::RateManager)?;
-        ttl::bump(&env);
         if max_rate <= 0 {
             return Err(Error::InvalidParam);
         }
-        // Mirror cross-check on the `min_duration_seconds` side (see
-        // `set_min_duration`). Both setters read the counterpart from storage,
-        // so whichever order the two settings arrive in is safe.
+        assert_not_paused(&env)?;
+        role::require_role_or_admin(&env, &caller, Role::RateManager)?;
         let min_duration: u64 = env
             .storage()
             .instance()
@@ -498,12 +488,11 @@ impl DripGovernor {
     }
 
     pub fn set_max_duration(env: Env, caller: Address, seconds: u64) -> Result<(), Error> {
-        assert_not_paused(&env)?;
-        role::require_role_or_admin(&env, &caller, Role::RateManager)?;
-        ttl::bump(&env);
         if seconds == 0 {
             return Err(Error::InvalidParam);
         }
+        assert_not_paused(&env)?;
+        role::require_role_or_admin(&env, &caller, Role::RateManager)?;
         let min_duration: u64 = env
             .storage()
             .instance()

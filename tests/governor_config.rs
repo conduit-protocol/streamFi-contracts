@@ -457,3 +457,56 @@ fn non_fee_manager_cannot_set_fee_recipient() {
     let result = client.try_set_fee_recipient(&non_fee_manager, &new_recipient);
     assert!(result.is_err());
 }
+
+#[test]
+fn set_fee_bps_validates_param_early() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _authority, _) = deploy_governor(&env);
+    let unauthorized = Address::generate(&env);
+
+    // Out-of-bounds fee (>10,000) fails early with InvalidParam
+    let result = client.try_set_fee_bps(&unauthorized, &15_000);
+    assert_eq!(result, Err(Ok(Error::InvalidParam)));
+}
+
+#[test]
+fn propose_authority_rejects_zero_address_and_existing_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _) = deploy_governor(&env);
+    let zero_account = Address::from_string(&soroban_sdk::String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+
+    // Zero address proposal rejected
+    let res_zero = client.try_propose_authority(&authority, &zero_account);
+    assert_eq!(res_zero, Err(Ok(Error::InvalidParam)));
+
+    // Existing admin proposal rejected
+    let res_existing = client.try_propose_authority(&authority, &authority);
+    assert_eq!(res_existing, Err(Ok(Error::InvalidParam)));
+}
+
+#[test]
+fn transfer_authority_rejects_zero_address_and_existing_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _) = deploy_governor(&env);
+    let zero_account = Address::from_string(&soroban_sdk::String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+
+    // Zero address transfer rejected
+    let res_zero = client.try_transfer_authority(&authority, &zero_account);
+    assert_eq!(res_zero, Err(Ok(Error::InvalidParam)));
+
+    // Self/existing admin transfer rejected
+    let res_existing = client.try_transfer_authority(&authority, &authority);
+    assert_eq!(res_existing, Err(Ok(Error::InvalidParam)));
+}
