@@ -70,7 +70,16 @@ pub struct BatchStreamRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FactoryStatus {
     pub is_paused: bool,
-    pub protocol_fee_bps: u32,
+    /// Current protocol fee, or `None` when it could not be read.
+    ///
+    /// `None` means the governor is unreachable or the factory is not
+    /// initialised — deliberately distinct from `Some(30)`, which means the
+    /// governor is genuinely configured at 30 bps. Previously both collapsed
+    /// to a bare `30`, so a caller could not tell a real fee from a fallback.
+    ///
+    /// Optional rather than making the whole call fallible so that a governor
+    /// outage does not also hide `is_paused`, which this view exists to report.
+    pub protocol_fee_bps: Option<u32>,
 }
 
 /// Storage keys for the DripFactory contract.

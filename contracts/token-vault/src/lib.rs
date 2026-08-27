@@ -7,7 +7,7 @@ mod storage;
 mod tests;
 
 use errors::Error;
-use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env};
+use soroban_sdk::{contract, contractimpl, token, Address, Env};
 use storage::{
     get_balance, get_max_limit, get_operator, get_owner, get_token, is_paused, remove_operator,
     set_balance, set_max_limit, set_operator, set_owner, set_paused, set_token,
@@ -46,13 +46,31 @@ fn assert_not_paused(env: &Env) -> Result<(), Error> {
 
 #[contractimpl]
 impl TokenVault {
-    pub fn initialize(env: Env, owner: Address, token: Address, max_limit: i128) {
+    /// Initialise the vault.
+    ///
+    /// # Errors
+    ///
+    /// - `InvalidAmount` — `max_limit` is not positive.
+    /// - `AlreadyInitialized` — the vault already has an owner.
+    ///
+    /// Returns `Result` rather than panicking so the typed error reaches the
+    /// caller through `try_initialize`. A `panic_with_error!` surfaces only as
+    /// an untyped host error, which means a caller cannot distinguish
+    /// `AlreadyInitialized` from any other trap without matching on a raw
+    /// numeric code. `DripOracle::initialize` already returns `Result` for the
+    /// same reason.
+    pub fn initialize(
+        env: Env,
+        owner: Address,
+        token: Address,
+        max_limit: i128,
+    ) -> Result<(), Error> {
         if max_limit <= 0 {
-            panic_with_error!(&env, Error::InvalidAmount);
+            return Err(Error::InvalidAmount);
         }
 
         if get_owner(&env).is_some() {
-            panic_with_error!(&env, Error::AlreadyInitialized);
+            return Err(Error::AlreadyInitialized);
         }
 
         set_owner(&env, &owner);
@@ -61,6 +79,7 @@ impl TokenVault {
         set_balance(&env, &0_i128);
 
         events::initialized(&env, &owner, &token, max_limit);
+        Ok(())
     }
 
     pub fn deposit(env: Env, from: Address, amount: i128) -> Result<(), Error> {

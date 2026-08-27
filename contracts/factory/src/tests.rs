@@ -59,15 +59,19 @@ fn pause_then_unpause_flips_state() {
 
 #[test]
 fn factory_status_returns_combined_pause_and_fee_status() {
+    // The governor in this setup is a bare address with no contract behind it,
+    // so the fee is genuinely unreadable and reports None. This previously
+    // asserted `30` — the hardcoded fallback — which meant the test encoded
+    // the very ambiguity the fee read is now able to signal.
     let s = Setup::new();
     let status = s.client.factory_status();
     assert!(!status.is_paused);
-    assert_eq!(status.protocol_fee_bps, 30);
+    assert_eq!(status.protocol_fee_bps, None);
 
     s.client.pause();
     let status_paused = s.client.factory_status();
     assert!(status_paused.is_paused);
-    assert_eq!(status_paused.protocol_fee_bps, 30);
+    assert_eq!(status_paused.protocol_fee_bps, None);
 }
 
 #[test]
@@ -203,7 +207,10 @@ fn upgrade_passes_auth_and_zero_hash_check() {
     let s = Setup::new();
     // Zero hash is rejected before reaching the host-level WASM swap.
     let zero_hash = BytesN::from_array(&s.env, &[0u8; 32]);
-    assert_eq!(s.client.try_upgrade(&zero_hash), Err(Ok(Error::InvalidWasmHash)));
+    assert_eq!(
+        s.client.try_upgrade(&zero_hash),
+        Err(Ok(Error::InvalidWasmHash))
+    );
     // A non-zero hash passes validation; the host-level WASM swap
     // (update_current_contract_wasm) is a Soroban VM operation that cannot
     // be exercised in the unit-test VM without a compatible WASM binary,
@@ -224,12 +231,18 @@ fn upgrade_blocked_while_paused_then_allowed_after_unpause() {
     let s = Setup::new();
     s.client.pause();
     let valid_hash = BytesN::from_array(&s.env, &[2u8; 32]);
-    assert_eq!(s.client.try_upgrade(&valid_hash), Err(Ok(Error::ContractPaused)));
+    assert_eq!(
+        s.client.try_upgrade(&valid_hash),
+        Err(Ok(Error::ContractPaused))
+    );
 
     s.client.unpause();
     // After unpausing, zero-hash validation still rejects.
     let zero_hash = BytesN::from_array(&s.env, &[0u8; 32]);
-    assert_eq!(s.client.try_upgrade(&zero_hash), Err(Ok(Error::InvalidWasmHash)));
+    assert_eq!(
+        s.client.try_upgrade(&zero_hash),
+        Err(Ok(Error::InvalidWasmHash))
+    );
 }
 
 // ── Issue #204: cancel_batch_streams ─────────────────────────────────────────
@@ -254,4 +267,74 @@ fn cancel_batch_rejects_oversized_list() {
     }
     let result = s.client.try_cancel_batch_streams(&sender, &addresses);
     assert_eq!(result, Err(Ok(Error::BatchTooLarge)));
+}
+
+// ── protocol_fee_bps distinguishes "fee is 30" from "couldn't read it" (#339)
+
+#[test]
+fn protocol_fee_bps_reports_not_initialized_before_setup() {
+    // An uninitialised factory has no governor address to read a fee from.
+    // Previously this returned a confident `30`, which a caller could not tell
+    // apart from a governor genuinely configured at 30 bps.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, DripFactory);
+    let client = DripFactoryClient::new(&env, &contract_id);
+
+    assert_eq!(
+        client.try_protocol_fee_bps(),
+        Err(Ok(Error::NotInitialized))
+    );
+}
+
+#[test]
+fn protocol_fee_bps_reports_governor_not_responding() {
+    // The setup governor is a bare generated address with no contract behind
+    // it, so the cross-contract call fails — the "governor archived / not
+    // initialised / host error" case from the issue. `create_stream` already
+    // fails loudly here; this now does too, instead of quoting 30 bps.
+    let s = Setup::new();
+
+    assert_eq!(
+        s.client.try_protocol_fee_bps(),
+        Err(Ok(Error::GovernorNotResponding))
+    );
+}
+
+#[test]
+fn protocol_fee_bps_or_default_still_offers_a_lenient_read() {
+    // The lenient behaviour remains available, but the caller supplies the
+    // fallback and is therefore choosing it deliberately.
+    let s = Setup::new();
+
+    assert_eq!(s.client.protocol_fee_bps_or_default(&30), 30);
+    // And it is genuinely the caller's value, not a constant baked into the
+    // factory — which is what made the old return value ambiguous.
+    assert_eq!(s.client.protocol_fee_bps_or_default(&77), 77);
+}
+
+#[test]
+fn factory_status_reports_an_unreadable_fee_as_none() {
+    // The combined view still succeeds so `is_paused` stays readable during a
+    // governor outage — but the fee is None rather than a plausible-looking 30.
+    let s = Setup::new();
+
+    let status = s.client.factory_status();
+
+    assert_eq!(status.protocol_fee_bps, None);
+    assert!(!status.is_paused);
+}
+
+#[test]
+fn factory_status_still_reports_pause_state_when_the_fee_is_unreadable() {
+    // The reason the fee is optional rather than the whole call being
+    // fallible: an operator checking whether the protocol is paused must not
+    // be blocked by an unrelated governor problem.
+    let s = Setup::new();
+    s.client.pause();
+
+    let status = s.client.factory_status();
+
+    assert!(status.is_paused);
+    assert_eq!(status.protocol_fee_bps, None);
 }

@@ -63,16 +63,39 @@ fn factory_starts_unpaused() {
 
 #[test]
 fn factory_status_reflects_pause_state_and_protocol_fee() {
+    // A real governor is deployed and initialised here, so 30 bps is the fee
+    // it actually holds — `Some(30)`, not the old ambiguous bare `30`.
     let env = base_env();
     let client = deploy_factory(&env);
     let status = client.factory_status();
     assert!(!status.is_paused);
-    assert_eq!(status.protocol_fee_bps, 30);
+    assert_eq!(status.protocol_fee_bps, Some(30));
 
     client.pause();
     let status_paused = client.factory_status();
     assert!(status_paused.is_paused);
-    assert_eq!(status_paused.protocol_fee_bps, 30);
+    assert_eq!(status_paused.protocol_fee_bps, Some(30));
+}
+
+#[test]
+fn a_real_fee_of_30_is_distinguishable_from_an_unreadable_one() {
+    // The point of issue #339, end to end. Both factories would previously have
+    // reported a bare `30`; only one of them was telling the truth.
+    let env = base_env();
+
+    // Governor deployed and reachable — 30 bps is a real, configured value.
+    let with_governor = deploy_factory(&env);
+    assert_eq!(with_governor.protocol_fee_bps(), 30);
+    assert_eq!(with_governor.factory_status().protocol_fee_bps, Some(30));
+
+    // Governor address points at nothing — the fee cannot be read at all.
+    let orphan_id = env.register_contract(None, DripFactory);
+    let orphan = DripFactoryClient::new(&env, &orphan_id);
+    let dummy_hash = BytesN::from_array(&env, &[0u8; 32]);
+    orphan.initialize(&dummy_hash, &Address::generate(&env));
+
+    assert_eq!(orphan.factory_status().protocol_fee_bps, None);
+    assert!(orphan.try_protocol_fee_bps().is_err());
 }
 
 // ── Pause / unpause lifecycle ──────────────────────────────────────────────────

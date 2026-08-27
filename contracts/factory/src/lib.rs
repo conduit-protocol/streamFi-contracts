@@ -113,7 +113,11 @@ impl DripFactory {
         if deposit < rate_per_sec {
             return Err(Error::InsufficientDeposit);
         }
-        if start_time < env.ledger().timestamp() {
+        // Read the ledger clock once: the backdated check and the
+        // start-offset bound below must agree on "now", and two reads could
+        // straddle a ledger close.
+        let now = env.ledger().timestamp();
+        if start_time < now {
             return Err(Error::BackdatedStream);
         }
         // A fixed-duration stream must be funded for its entire declared
@@ -136,7 +140,7 @@ impl DripFactory {
             .get(&DataKey::GovernorAddress)
             .ok_or(Error::NotInitialized)?;
         let config = governance::config(&env, &governor)?;
-        governance::enforce_bounds(&config, rate_per_sec, start_time, end_time)?;
+        governance::enforce_bounds(&config, rate_per_sec, start_time, end_time, now)?;
 
         // ── Reentrancy guard ─────────────────────────────────────────────
         // `token` is caller-supplied and may not be a well-behaved SEP-41
@@ -447,17 +451,36 @@ impl DripFactory {
 
     /// Read-only: current protocol fee in basis points.
     ///
-    /// Reads live from DripGovernor. Falls back to the protocol default (30
-    /// bps) if the factory hasn't been initialized yet — there is no
-    /// governor address to call in that state.
-    pub fn protocol_fee_bps(env: Env) -> u32 {
+    /// Reads live from DripGovernor.
+    ///
+    /// # Errors
+    ///
+    /// - `NotInitialized` — the factory has no governor address yet, so there
+    ///   is nothing to read a fee from.
+    /// - `GovernorNotResponding` — the governor is archived, uninitialised, or
+    ///   the cross-contract call failed.
+    ///
+    /// Both cases previously returned a hardcoded `30`, which a caller could
+    /// not distinguish from a governor genuinely configured at 30 bps. That is
+    /// the same situation in which `create_stream` fails loudly with
+    /// `GovernorNotResponding`, so a UI quoting a fee and a transaction
+    /// charging one could disagree without anything appearing to go wrong.
+    /// Callers that want the old lenient behaviour should use
+    /// [`Self::protocol_fee_bps_or_default`].
+    pub fn protocol_fee_bps(env: Env) -> Result<u32, Error> {
         let governor: Option<Address> = env.storage().instance().get(&DataKey::GovernorAddress);
-        match governor {
-            Some(governor) => governance::config(&env, &governor)
-                .map(|c| c.fee_bps)
-                .unwrap_or(30),
-            None => 30,
-        }
+        let governor = governor.ok_or(Error::NotInitialized)?;
+        governance::config(&env, &governor).map(|c| c.fee_bps)
+    }
+
+    /// Read-only: current protocol fee, falling back to `default_bps` when it
+    /// cannot be read.
+    ///
+    /// For callers that would rather display an approximate fee than nothing —
+    /// but which are choosing that tradeoff explicitly, and supply the fallback
+    /// themselves rather than inheriting a constant buried in the factory.
+    pub fn protocol_fee_bps_or_default(env: Env, default_bps: u32) -> u32 {
+        Self::protocol_fee_bps(env).unwrap_or(default_bps)
     }
 
     /// Update the stored stream WASM hash.
@@ -606,10 +629,14 @@ impl DripFactory {
     ///
     /// Combines `is_paused` and `protocol_fee_bps` into a single view call
     /// to save a round-trip for UI/indexer health checks.
+    ///
+    /// `protocol_fee_bps` is `None` when the fee could not be read. The call
+    /// still succeeds in that case, because the pause state is independently
+    /// useful and a governor outage should not hide it.
     pub fn factory_status(env: Env) -> FactoryStatus {
         FactoryStatus {
             is_paused: Self::is_paused(env.clone()),
-            protocol_fee_bps: Self::protocol_fee_bps(env),
+            protocol_fee_bps: Self::protocol_fee_bps(env).ok(),
         }
     }
 

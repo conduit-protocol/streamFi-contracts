@@ -569,12 +569,18 @@ fn uninitialized_vault_returns_not_initialized() {
     let recipient = Address::generate(&env);
     let operator = Address::generate(&env);
 
-    assert_eq!(client.try_deposit(&user, &100), Err(Ok(Error::NotInitialized)));
+    assert_eq!(
+        client.try_deposit(&user, &100),
+        Err(Ok(Error::NotInitialized))
+    );
     assert_eq!(
         client.try_withdraw(&user, &recipient, &100),
         Err(Ok(Error::NotInitialized))
     );
-    assert_eq!(client.try_set_limit(&user, &100), Err(Ok(Error::NotInitialized)));
+    assert_eq!(
+        client.try_set_limit(&user, &100),
+        Err(Ok(Error::NotInitialized))
+    );
     assert_eq!(
         client.try_set_operator(&user, &operator),
         Err(Ok(Error::NotInitialized))
@@ -588,8 +594,11 @@ fn uninitialized_vault_returns_not_initialized() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #9)")]
-fn re_initializing_vault_panics() {
+fn re_initializing_vault_reports_already_initialized() {
+    // Asserted against the named variant rather than `Error(Contract, #9)`.
+    // A numeric assertion keeps passing if the enum is ever reordered, which
+    // is precisely the "caller gets the wrong error code" failure this check
+    // exists to catch.
     let s = Setup::new(1_000_000);
     let another_owner = Address::generate(&s.env);
     let token_admin = Address::generate(&s.env);
@@ -597,5 +606,31 @@ fn re_initializing_vault_panics() {
         .env
         .register_stellar_asset_contract_v2(token_admin)
         .address();
-    s.client.initialize(&another_owner, &token_addr, &2_000_000);
+
+    let result = s
+        .client
+        .try_initialize(&another_owner, &token_addr, &2_000_000);
+
+    assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
+}
+
+#[test]
+fn failed_re_initialization_leaves_the_original_owner_in_place() {
+    // The error code matters, but so does the state: a rejected re-init must
+    // not have partially overwritten the vault's owner or limit.
+    let s = Setup::new(1_000_000);
+    let attacker = Address::generate(&s.env);
+    let token_admin = Address::generate(&s.env);
+    let token_addr = s
+        .env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    let _ = s.client.try_initialize(&attacker, &token_addr, &2_000_000);
+
+    let vault_id = s.client.address.clone();
+    s.env.as_contract(&vault_id, || {
+        assert_eq!(storage::get_owner(&s.env), Some(s.owner.clone()));
+        assert_eq!(storage::get_max_limit(&s.env), Some(1_000_000));
+    });
 }

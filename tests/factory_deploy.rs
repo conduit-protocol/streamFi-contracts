@@ -560,11 +560,31 @@ fn protocol_fee_bps_reflects_live_governor_value() {
 }
 
 #[test]
-fn protocol_fee_bps_defaults_to_30_when_uninitialized() {
+fn protocol_fee_bps_reports_not_initialized_rather_than_guessing_30() {
+    // Previously this asserted a bare `30` for a factory that has no governor
+    // to read a fee from — indistinguishable from a governor genuinely
+    // configured at 30 bps, which is the ambiguity issue #339 describes.
     let env = base_env();
     let id = env.register_contract(None, DripFactory);
     let client = DripFactoryClient::new(&env, &id);
-    assert_eq!(client.protocol_fee_bps(), 30);
+
+    assert_eq!(
+        client.try_protocol_fee_bps(),
+        Err(Ok(drip_factory::Error::NotInitialized))
+    );
+}
+
+#[test]
+fn protocol_fee_bps_or_default_preserves_the_lenient_read() {
+    // Callers that would rather show an approximate fee than nothing can still
+    // do so — but they pass the fallback in, so the choice is visible at the
+    // call site instead of hidden inside the factory.
+    let env = base_env();
+    let id = env.register_contract(None, DripFactory);
+    let client = DripFactoryClient::new(&env, &id);
+
+    assert_eq!(client.protocol_fee_bps_or_default(&30), 30);
+    assert_eq!(client.protocol_fee_bps_or_default(&0), 0);
 }
 
 // ── Reentrancy guard ────────────────────────────────────────────────────────
