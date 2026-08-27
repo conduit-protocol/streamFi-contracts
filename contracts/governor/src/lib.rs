@@ -89,6 +89,7 @@ impl DripGovernor {
         role::grant(&env, Role::Admin, &authority);
         role::grant(&env, Role::FeeManager, &authority);
         role::grant(&env, Role::RateManager, &authority);
+        role::grant(&env, Role::Pauser, &authority);
         events::initialized(&env, &authority, &fee_recipient, &factory_address);
     }
 

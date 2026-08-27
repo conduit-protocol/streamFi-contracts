@@ -186,6 +186,17 @@ fn resume_unpaused_panics() {
     assert_eq!(result, Err(Ok(Error::NotPaused)));
 }
 
+#[test]
+fn pause_before_start_rejected() {
+    let s = Setup::new(100, 3600, false);
+    let mut ledger = s.env.ledger().get();
+    ledger.timestamp -= 1;
+    s.env.ledger().set(ledger);
+
+    let result = s.client.try_pause(&s.sender);
+    assert_eq!(result, Err(Ok(Error::StreamNotStarted)));
+}
+
 // ── Cancel ────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -1087,14 +1098,15 @@ fn set_operator_rejects_on_cancelled_stream() {
 }
 
 #[test]
-fn set_operator_replaces_previous() {
+fn set_operator_requires_revoke_before_replacement() {
     let s = Setup::new(100, 3600, false);
     let op1 = Address::generate(&s.env);
     let op2 = Address::generate(&s.env);
     s.client.set_operator(&s.sender, &op1);
     assert_eq!(s.client.operator(), Some(op1.clone()));
-    s.client.set_operator(&s.sender, &op2);
-    assert_eq!(s.client.operator(), Some(op2));
+    let result = s.client.try_set_operator(&s.sender, &op2);
+    assert_eq!(result, Err(Ok(Error::OperatorAlreadySet)));
+    assert_eq!(s.client.operator(), Some(op1));
 }
 
 #[test]

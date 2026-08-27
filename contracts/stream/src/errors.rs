@@ -20,4 +20,5 @@ pub enum Error {
     AlreadyInitialized = 14,
     InvalidAmount = 15,
     ReentrancyForbidden = 16,
+    OperatorAlreadySet = 17,
 }

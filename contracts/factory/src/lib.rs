@@ -1,6 +1,7 @@
 #![no_std]
 
 mod deploy;
+mod index;
 mod errors;
 mod events;
 mod governance;
@@ -251,40 +252,14 @@ impl DripFactory {
         //          XDR serialization: [discriminant: u32][sender: XDR Address]
         //   Value: Vec<u64> (ordered list of stream IDs this sender has created)
         //          XDR serialization: XDR-encoded Vec of u64 elements
-        let mut by_sender: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::BySender(sender.clone()))
-            .unwrap_or(Vec::new(&env));
-        by_sender.push_back(stream_id);
-        env.storage()
-            .persistent()
-            .set(&DataKey::BySender(sender.clone()), &by_sender);
-        env.storage().persistent().extend_ttl(
-            &DataKey::BySender(sender),
-            ttl::THRESHOLD,
-            ttl::EXTEND_TO,
-        );
+        index::append_sender_index(&env, &sender, stream_id);
 
         // Persistent storage entry 3 — ByRecipient:
-        //   Key:   DataKey::ByRecipient(recipient)
-        //          XDR serialization: [discriminant: u32][recipient: XDR Address]
+        //   Key:   DataKey::ByRecipientPage(recipient, page)
+        //          XDR serialization: [discriminant: u32][recipient: XDR Address][page: u32]
         //   Value: Vec<u64> (ordered list of stream IDs where this address is recipient)
         //          XDR serialization: XDR-encoded Vec of u64 elements
-        let mut by_recipient: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::ByRecipient(recipient.clone()))
-            .unwrap_or(Vec::new(&env));
-        by_recipient.push_back(stream_id);
-        env.storage()
-            .persistent()
-            .set(&DataKey::ByRecipient(recipient.clone()), &by_recipient);
-        env.storage().persistent().extend_ttl(
-            &DataKey::ByRecipient(recipient),
-            ttl::THRESHOLD,
-            ttl::EXTEND_TO,
-        );
+        index::append_recipient_index(&env, &recipient, stream_id);
 
         env.storage().instance().set(&DataKey::CreateLock, &false);
         Ok(stream_id)
@@ -404,12 +379,7 @@ impl DripFactory {
     /// `offset` exceeds the total count an empty vector is returned (no
     /// error).
     pub fn streams_by_sender(env: Env, sender: Address, offset: u32, limit: u32) -> Vec<u64> {
-        let all: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::BySender(sender))
-            .unwrap_or(Vec::new(&env));
-        query::paginate(&env, all, offset, limit)
+        index::streams_by_sender(&env, sender, offset, limit)
     }
 
     /// Paginated list of stream IDs where `recipient` is the beneficiary.
@@ -419,12 +389,7 @@ impl DripFactory {
     /// `offset` exceeds the total count an empty vector is returned (no
     /// error).
     pub fn streams_by_recipient(env: Env, recipient: Address, offset: u32, limit: u32) -> Vec<u64> {
-        let all: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::ByRecipient(recipient))
-            .unwrap_or(Vec::new(&env));
-        query::paginate(&env, all, offset, limit)
+        index::streams_by_recipient(&env, recipient, offset, limit)
     }
 
     /// Total number of streams created by `sender`.
@@ -432,22 +397,12 @@ impl DripFactory {
     /// Mirrors the global `stream_count` but scoped to one sender, so clients
     /// can size pagination UI without walking pages to discover the total.
     pub fn stream_count_by_sender(env: Env, sender: Address) -> u32 {
-        let all: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::BySender(sender))
-            .unwrap_or(Vec::new(&env));
-        all.len()
+        index::stream_count_by_sender(&env, sender)
     }
 
     /// Total number of streams where `recipient` is the beneficiary.
     pub fn stream_count_by_recipient(env: Env, recipient: Address) -> u32 {
-        let all: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::ByRecipient(recipient))
-            .unwrap_or(Vec::new(&env));
-        all.len()
+        index::stream_count_by_recipient(&env, recipient)
     }
 
     /// Total number of streams ever created by this factory.
