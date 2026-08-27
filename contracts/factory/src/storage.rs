@@ -130,26 +130,6 @@ pub enum DataKey {
     /// Note: Legacy pre-paged index; kept for backward-compatible reads and migration
     ByRecipient(Address),
 
-    /// **Persistent storage.** Paged sender index for bounded reads.
-    /// Key: `DataKey::BySenderPage(Address, u32)` — sender plus zero-based page number
-    /// Value: `Vec<u64>` — up to `query::MAX_PAGE_SIZE` stream IDs in creation order
-    BySenderPage(Address, u32),
-
-    /// **Persistent storage.** Paged recipient index for bounded reads.
-    /// Key: `DataKey::ByRecipientPage(Address, u32)` — recipient plus zero-based page number
-    /// Value: `Vec<u64>` — up to `query::MAX_PAGE_SIZE` stream IDs in creation order
-    ByRecipientPage(Address, u32),
-
-    /// **Persistent storage.** Total number of sender-indexed streams.
-    /// Key: `DataKey::BySenderCount(Address)` — sender address
-    /// Value: `u32` — total count used to derive page boundaries
-    BySenderCount(Address),
-
-    /// **Persistent storage.** Total number of recipient-indexed streams.
-    /// Key: `DataKey::ByRecipientCount(Address)` — recipient address
-    /// Value: `u32` — total count used to derive page boundaries
-    ByRecipientCount(Address),
-
     /// **Instance storage.** WASM hash of the DripStream contract (for deployment).
     /// Key: `DataKey::StreamWasmHash` (no inner type, discriminant only)
     /// Value: `BytesN<32>` — SHA-256 hash of the stream contract WASM
@@ -188,4 +168,24 @@ pub enum DataKey {
     /// what should be a single atomic creation. A missing entry is treated
     /// as `false`/unlocked.
     CreateLock,
+
+    /// **Persistent storage.** Paged sender index for bounded reads.
+    /// Key: `DataKey::BySenderPage(Address, u32)` — sender plus zero-based page number
+    /// Value: `Vec<u64>` — up to `query::MAX_PAGE_SIZE` stream IDs in creation order
+    BySenderPage(Address, u32),
+
+    /// **Persistent storage.** Paged recipient index for bounded reads.
+    /// Key: `DataKey::ByRecipientPage(Address, u32)` — recipient plus zero-based page number
+    /// Value: `Vec<u64>` — up to `query::MAX_PAGE_SIZE` stream IDs in creation order
+    ByRecipientPage(Address, u32),
+
+    /// **Persistent storage.** Total number of sender-indexed streams.
+    /// Key: `DataKey::BySenderCount(Address)` — sender address
+    /// Value: `u32` — total count used to derive page boundaries
+    BySenderCount(Address),
+
+    /// **Persistent storage.** Total number of recipient-indexed streams.
+    /// Key: `DataKey::ByRecipientCount(Address)` — recipient address
+    /// Value: `u32` — total count used to derive page boundaries
+    ByRecipientCount(Address),
 }

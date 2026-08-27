@@ -247,14 +247,14 @@ impl DripFactory {
             .instance()
             .set(&DataKey::StreamCount, &(stream_count + 1));
 
-        // Persistent storage entry 2 — BySender:
-        //   Key:   DataKey::BySender(sender)
-        //          XDR serialization: [discriminant: u32][sender: XDR Address]
+        // Persistent storage entry 2 — BySender (paged):
+        //   Key:   DataKey::BySenderPage(sender, page)
+        //          XDR serialization: [discriminant: u32][sender: XDR Address][page: u32]
         //   Value: Vec<u64> (ordered list of stream IDs this sender has created)
         //          XDR serialization: XDR-encoded Vec of u64 elements
         index::append_sender_index(&env, &sender, stream_id);
 
-        // Persistent storage entry 3 — ByRecipient:
+        // Persistent storage entry 3 — ByRecipient (paged):
         //   Key:   DataKey::ByRecipientPage(recipient, page)
         //          XDR serialization: [discriminant: u32][recipient: XDR Address][page: u32]
         //   Value: Vec<u64> (ordered list of stream IDs where this address is recipient)

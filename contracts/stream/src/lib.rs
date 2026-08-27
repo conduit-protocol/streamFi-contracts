@@ -609,6 +609,7 @@ impl DripStream {
             return Err(Error::NotAuthorized);
         }
         caller.require_auth();
+        ttl::bump(&env);
 
         if let Some(existing) = env.storage().instance().get::<_, Address>(&DataKey::Operator) {
             if existing != operator {
@@ -616,8 +617,6 @@ impl DripStream {
             }
             return Ok(());
         }
-
-        ttl::bump(&env);
 
         env.storage().instance().set(&DataKey::Operator, &operator);
         events::operator_set(&env, &caller, &operator);
