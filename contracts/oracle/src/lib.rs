@@ -1911,7 +1911,10 @@ mod tests {
 
         // Revoke
         client.revoke_role(&admin, &Role::PriceFeeder, &f1);
-        assert_eq!(client.try_get_twap_price(), Err(Ok(Error::NoPriceAvailable)));
+        assert_eq!(
+            client.try_get_twap_price(),
+            Err(Ok(Error::NoPriceAvailable))
+        );
 
         // Re-grant and submit
         client.grant_role(&admin, &Role::PriceFeeder, &f1);

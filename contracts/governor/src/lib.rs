@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(deprecated)]
 
 //! DripGovernor is the protocol's immutable parameter store.
 //!
