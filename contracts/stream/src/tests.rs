@@ -1139,6 +1139,41 @@ fn revoke_operator_rejects_on_cancelled_stream() {
     assert_eq!(result, Err(Ok(Error::StreamCancelled)));
 }
 
+#[test]
+fn operator_events_emit_correct_topic_shape_and_sequence() {
+    let s = Setup::new(100, 3600, false);
+    let operator = Address::generate(&s.env);
+
+    s.client.set_operator(&s.sender, &operator);
+    s.client.revoke_operator(&s.sender);
+
+    assert_eq!(s.client.event_sequence(), 3);
+
+    let all_events = s.env.events().all();
+    let stream_events: std::vec::Vec<_> = all_events
+        .iter()
+        .filter(|(contract, _, _)| contract == &s.client.address)
+        .collect();
+
+    assert_eq!(stream_events.len(), 3);
+
+    // Event 1: set_op
+    assert_eq!(
+        stream_events[1].1,
+        (symbol_short!("set_op"), s.sender.clone(), 2_u64).into_val(&s.env)
+    );
+    let set_op_data: Address = stream_events[1].2.try_into_val(&s.env).unwrap();
+    assert_eq!(set_op_data, operator);
+
+    // Event 2: rm_op with ((rm_op, sender, 3), ())
+    assert_eq!(
+        stream_events[2].1,
+        (symbol_short!("rm_op"), s.sender.clone(), 3_u64).into_val(&s.env)
+    );
+    let rm_op_data: () = stream_events[2].2.try_into_val(&s.env).unwrap();
+    assert_eq!(rm_op_data, ());
+}
+
 // ── Operator exercises sender-gated functions ──────────────────────────────
 
 #[test]

@@ -6,6 +6,7 @@ mod storage;
 #[cfg(test)]
 mod tests;
 
+use drip_common::{TTL_EXTEND_TO, TTL_THRESHOLD};
 use errors::Error;
 use soroban_sdk::{contract, contractimpl, token, Address, Env};
 use storage::{
@@ -15,6 +16,15 @@ use storage::{
 
 #[contract]
 pub struct TokenVault;
+
+/// Extends the instance storage TTL to ensure vault state remains active and
+/// does not archive during idle periods. Matches the TTL management pattern
+/// across sibling contracts (DripFactory, DripGovernor, TwapOracle).
+fn bump_instance(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+}
 
 /// Checks that `caller` is either the vault owner or the currently delegated
 /// operator, then consumes the caller's auth. Returns `NotAuthorized` if
@@ -73,6 +83,7 @@ impl TokenVault {
             return Err(Error::AlreadyInitialized);
         }
 
+        bump_instance(&env);
         set_owner(&env, &owner);
         set_token(&env, &token);
         set_max_limit(&env, &max_limit);
@@ -106,6 +117,7 @@ impl TokenVault {
         let tk = token::Client::new(&env, &get_token(&env).ok_or(Error::NotInitialized)?);
         tk.transfer(&from, &env.current_contract_address(), &amount);
 
+        bump_instance(&env);
         set_balance(&env, &new_balance);
         events::deposited(&env, &from, amount, new_balance);
         Ok(())
@@ -128,6 +140,7 @@ impl TokenVault {
         let tk = token::Client::new(&env, &get_token(&env).ok_or(Error::NotInitialized)?);
         tk.transfer(&env.current_contract_address(), &to, &amount);
 
+        bump_instance(&env);
         set_balance(&env, &new_balance);
         events::withdrawn(&env, &caller, &to, amount, new_balance);
         Ok(())
@@ -146,6 +159,7 @@ impl TokenVault {
             return Err(Error::LimitExceeded);
         }
         let old_limit = get_max_limit(&env).ok_or(Error::ArithmeticOverflow)?;
+        bump_instance(&env);
         set_max_limit(&env, &new_limit);
         events::limit_set(&env, &caller, old_limit, new_limit);
         Ok(())
@@ -165,6 +179,7 @@ impl TokenVault {
             return Err(Error::NotAuthorized);
         }
         caller.require_auth();
+        bump_instance(&env);
         set_operator(&env, &operator);
         events::operator_set(&env, &caller, &operator);
         Ok(())
@@ -179,6 +194,7 @@ impl TokenVault {
             return Err(Error::NotAuthorized);
         }
         caller.require_auth();
+        bump_instance(&env);
         remove_operator(&env);
         events::operator_revoked(&env, &caller);
         Ok(())
@@ -206,6 +222,7 @@ impl TokenVault {
         if is_paused(&env) {
             return Err(Error::AlreadyPaused);
         }
+        bump_instance(&env);
         set_paused(&env, true);
         events::paused(&env, &caller, env.ledger().timestamp());
         Ok(())
@@ -221,6 +238,7 @@ impl TokenVault {
         if !is_paused(&env) {
             return Err(Error::NotPaused);
         }
+        bump_instance(&env);
         set_paused(&env, false);
         events::unpaused(&env, &caller, env.ledger().timestamp());
         Ok(())

@@ -23,6 +23,14 @@ pub fn config(env: &Env, governor: &Address) -> Result<GovernorConfig, Error> {
 /// `rate_per_sec` and, for fixed-duration streams, the declared length must
 /// respect the protocol parameters DripGovernor holds.
 ///
+/// # Design Note: Creation vs Extension Bounds
+///
+/// This duration bound is enforced at stream creation time to cap initial upfront
+/// commitment and scheduling horizons. Post-creation lifetime extensions via
+/// `DripStream::extend_duration` and `DripStream::top_up_and_extend` are
+/// intentionally unbounded by this initial creation cap, allowing ongoing streams
+/// (e.g. payroll, recurring subscriptions) to continue without redeploying per ADR-001.
+///
 /// # Errors
 ///
 /// This function uses `checked_sub` to safely compute stream duration, ensuring

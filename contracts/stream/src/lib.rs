@@ -347,6 +347,16 @@ impl DripStream {
     ///
     /// Transfers the exact required deposit (rate_per_second × extra_time_seconds)
     /// from the sender into the contract and updates `end_time`.
+    ///
+    /// # Governance Duration Bounds Design Note
+    ///
+    /// `GovernorConfig.max_duration_seconds` is enforced by `DripFactory::create_stream`
+    /// at creation time to bound initial upfront deposits and scheduling horizons.
+    /// Post-creation extensions (`extend_duration` and `top_up_and_extend`) are
+    /// intentionally unbounded by the governor's initial duration cap, allowing
+    /// active streams (e.g. payroll, continuous subscriptions) to be extended
+    /// indefinitely without requiring redeployment, while keeping `DripStream`
+    /// instances fully independent per ADR-001 without cross-contract calls.
     pub fn extend_duration(
         env: Env,
         caller: Address,
@@ -413,6 +423,12 @@ impl DripStream {
     /// `amount` is deposited into the stream and `extra_time_seconds` is added
     /// to `end_time`. Both must be non-zero. Open-ended streams (`end_time == 0`)
     /// cannot be extended — use `top_up` alone instead.
+    ///
+    /// # Governance Duration Bounds Design Note
+    ///
+    /// As with [`extend_duration`](Self::extend_duration), post-creation extension
+    /// is intentionally unbounded by `GovernorConfig.max_duration_seconds` to allow
+    /// ongoing stream continuation without redeployment.
     pub fn top_up_and_extend(
         env: Env,
         caller: Address,

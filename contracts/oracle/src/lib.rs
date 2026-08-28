@@ -204,6 +204,9 @@ impl TwapOracle {
     /// Revokes `role` from `account`. Only an `Admin` may call this.
     ///
     /// Rejected with `LastAdmin` if it would remove the final `Admin`.
+    /// When revoking `PriceFeeder`, any active submission for `account` is deleted
+    /// and `account` is dropped from `Submitters` immediately so that revoked feeders
+    /// do not continue to influence TWAP median aggregation.
     pub fn revoke_role(
         env: Env,
         caller: Address,
@@ -215,6 +218,15 @@ impl TwapOracle {
         if revoke_role_inner(&env, role, &account)? {
             events::revoke_role(&env, &caller, role, &account);
         }
+        Ok(())
+    }
+
+    /// Explicitly purges a feeder's submission data and removes them from the
+    /// submitters set. Only an `Admin` may call this.
+    pub fn purge_submitter(env: Env, caller: Address, feeder: Address) -> Result<(), Error> {
+        require_role_or_admin(&env, &caller, Role::Admin)?;
+        bump_instance(&env);
+        remove_submitter(&env, &feeder);
         Ok(())
     }
 
@@ -636,6 +648,11 @@ fn revoke_role_inner(env: &Env, role: Role, account: &Address) -> Result<bool, E
     env.storage()
         .instance()
         .set(&DataKey::RoleMembers(role), &updated);
+
+    if role == Role::PriceFeeder {
+        remove_submitter(env, account);
+    }
+
     Ok(true)
 }
 
@@ -681,6 +698,67 @@ fn add_submitter(env: &Env, account: &Address) -> Result<(), Error> {
         .persistent()
         .extend_ttl(&DataKey::Submitters, THRESHOLD, EXTEND_TO);
     Ok(())
+}
+
+/// Removes `account` from `Submitters` and deletes `DataKey::Submission(account)`.
+/// Also refreshes or removes the legacy `DataKey::Price` if needed.
+fn remove_submitter(env: &Env, account: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::Submission(account.clone()));
+
+    let submitters: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Submitters)
+        .unwrap_or(Vec::new(env));
+
+    let mut found = false;
+    let mut updated: Vec<Address> = Vec::new(env);
+    for s in submitters.iter() {
+        if s == *account {
+            found = true;
+        } else {
+            updated.push_back(s);
+        }
+    }
+
+    if found {
+        if updated.is_empty() {
+            env.storage().persistent().remove(&DataKey::Submitters);
+            env.storage().instance().remove(&DataKey::Price);
+        } else {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Submitters, &updated);
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::Submitters, THRESHOLD, EXTEND_TO);
+
+            // Refresh legacy single-value price slot to the most recent remaining submission
+            let mut latest: Option<PriceData> = None;
+            for feeder in updated.iter() {
+                if let Some(sub) = env
+                    .storage()
+                    .persistent()
+                    .get::<_, PriceData>(&DataKey::Submission(feeder))
+                {
+                    if let Some(ref cur) = latest {
+                        if sub.updated_at > cur.updated_at {
+                            latest = Some(sub);
+                        }
+                    } else {
+                        latest = Some(sub);
+                    }
+                }
+            }
+            if let Some(latest_price) = latest {
+                env.storage().instance().set(&DataKey::Price, &latest_price);
+            } else {
+                env.storage().instance().remove(&DataKey::Price);
+            }
+        }
+    }
 }
 
 /// Median of `prices` (average of the two middle values for an even-length
@@ -1716,5 +1794,128 @@ mod tests {
 
         let price_after = client.get_twap_price();
         assert_eq!(price_after, 50_000_000);
+    }
+
+    // ── PriceFeeder revocation / purge cleanup tests ───────────────────────
+
+    #[test]
+    fn feeder_revocation_immediately_removes_submission_from_twap_median() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let config = OracleConfig {
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 300,
+        };
+        client.configure_oracle(&admin, &config);
+
+        let f1 = Address::generate(&env);
+        let f2 = Address::generate(&env);
+        let f3 = Address::generate(&env);
+
+        client.grant_role(&admin, &Role::PriceFeeder, &f1);
+        client.grant_role(&admin, &Role::PriceFeeder, &f2);
+        client.grant_role(&admin, &Role::PriceFeeder, &f3);
+
+        client.submit_price(&f1, &100_000_000);
+        client.submit_price(&f2, &200_000_000);
+        client.submit_price(&f3, &300_000_000);
+
+        // Median of [100, 200, 300] = 200
+        assert_eq!(client.get_twap_price(), 200_000_000);
+
+        // Revoke f3 — should immediately drop f3's submission from aggregation
+        client.revoke_role(&admin, &Role::PriceFeeder, &f3);
+
+        // Median of [100, 200] = (100 + 200) / 2 = 150
+        assert_eq!(client.get_twap_price(), 150_000_000);
+
+        // Revoke f1 — now only f2 remains
+        client.revoke_role(&admin, &Role::PriceFeeder, &f1);
+        assert_eq!(client.get_twap_price(), 200_000_000);
+    }
+
+    #[test]
+    fn revoking_sole_feeder_leaves_no_price_available() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let config = OracleConfig {
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 300,
+        };
+        client.configure_oracle(&admin, &config);
+
+        let f1 = Address::generate(&env);
+        client.grant_role(&admin, &Role::PriceFeeder, &f1);
+        client.submit_price(&f1, &100_000_000);
+
+        assert_eq!(client.get_twap_price(), 100_000_000);
+
+        client.revoke_role(&admin, &Role::PriceFeeder, &f1);
+        let result = client.try_get_twap_price();
+        assert_eq!(result, Err(Ok(Error::NoPriceAvailable)));
+    }
+
+    #[test]
+    fn purge_submitter_removes_feeder_submission_and_requires_admin() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let config = OracleConfig {
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 300,
+        };
+        client.configure_oracle(&admin, &config);
+
+        let f1 = Address::generate(&env);
+        let f2 = Address::generate(&env);
+        client.grant_role(&admin, &Role::PriceFeeder, &f1);
+        client.grant_role(&admin, &Role::PriceFeeder, &f2);
+
+        client.submit_price(&f1, &100_000_000);
+        client.submit_price(&f2, &200_000_000);
+
+        // Median of [100, 200] = 150
+        assert_eq!(client.get_twap_price(), 150_000_000);
+
+        // Stranger cannot purge
+        let stranger = Address::generate(&env);
+        let res = client.try_purge_submitter(&stranger, &f1);
+        assert_eq!(res, Err(Ok(Error::NotAuthorized)));
+
+        // Admin purges f1
+        client.purge_submitter(&admin, &f1);
+        assert_eq!(client.get_twap_price(), 200_000_000);
+    }
+
+    #[test]
+    fn revoked_feeder_re_granted_can_submit_fresh_price() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let config = OracleConfig {
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 300,
+        };
+        client.configure_oracle(&admin, &config);
+
+        let f1 = Address::generate(&env);
+        client.grant_role(&admin, &Role::PriceFeeder, &f1);
+        client.submit_price(&f1, &100_000_000);
+        assert_eq!(client.get_twap_price(), 100_000_000);
+
+        // Revoke
+        client.revoke_role(&admin, &Role::PriceFeeder, &f1);
+        assert_eq!(client.try_get_twap_price(), Err(Ok(Error::NoPriceAvailable)));
+
+        // Re-grant and submit
+        client.grant_role(&admin, &Role::PriceFeeder, &f1);
+        client.submit_price(&f1, &250_000_000);
+        assert_eq!(client.get_twap_price(), 250_000_000);
     }
 }

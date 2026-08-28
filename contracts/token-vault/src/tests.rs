@@ -4,7 +4,7 @@ extern crate std;
 
 use soroban_sdk::{
     symbol_short,
-    testutils::{Address as _, Events as _},
+    testutils::{storage::Instance as _, Address as _, Events as _},
     token, Address, Env, IntoVal, TryIntoVal,
 };
 
@@ -633,4 +633,77 @@ fn failed_re_initialization_leaves_the_original_owner_in_place() {
         assert_eq!(storage::get_owner(&s.env), Some(s.owner.clone()));
         assert_eq!(storage::get_max_limit(&s.env), Some(1_000_000));
     });
+}
+
+// ── TTL extension tests ───────────────────────────────────────────────────
+
+#[test]
+fn initialize_extends_instance_ttl() {
+    let s = Setup::new(1_000_000);
+    let ttl = s
+        .env
+        .as_contract(&s.client.address, || s.env.storage().instance().get_ttl());
+    assert!(ttl >= 100_000, "instance TTL after initialize: {ttl}");
+}
+
+#[test]
+fn deposit_extends_instance_ttl() {
+    let s = Setup::new(1_000_000);
+    s.client.deposit(&s.user, &100);
+    let ttl = s
+        .env
+        .as_contract(&s.client.address, || s.env.storage().instance().get_ttl());
+    assert!(ttl >= 100_000, "instance TTL after deposit: {ttl}");
+}
+
+#[test]
+fn withdraw_extends_instance_ttl() {
+    let s = Setup::new(1_000_000);
+    s.client.deposit(&s.user, &100);
+    let recipient = Address::generate(&s.env);
+    s.client.withdraw(&s.owner, &recipient, &50);
+    let ttl = s
+        .env
+        .as_contract(&s.client.address, || s.env.storage().instance().get_ttl());
+    assert!(ttl >= 100_000, "instance TTL after withdraw: {ttl}");
+}
+
+#[test]
+fn set_limit_extends_instance_ttl() {
+    let s = Setup::new(1_000_000);
+    s.client.set_limit(&s.owner, &2_000_000);
+    let ttl = s
+        .env
+        .as_contract(&s.client.address, || s.env.storage().instance().get_ttl());
+    assert!(ttl >= 100_000, "instance TTL after set_limit: {ttl}");
+}
+
+#[test]
+fn operator_and_pause_mutations_extend_instance_ttl() {
+    let s = Setup::new(1_000_000);
+    let operator = Address::generate(&s.env);
+
+    s.client.set_operator(&s.owner, &operator);
+    let ttl = s
+        .env
+        .as_contract(&s.client.address, || s.env.storage().instance().get_ttl());
+    assert!(ttl >= 100_000, "instance TTL after set_operator: {ttl}");
+
+    s.client.revoke_operator(&s.owner);
+    let ttl = s
+        .env
+        .as_contract(&s.client.address, || s.env.storage().instance().get_ttl());
+    assert!(ttl >= 100_000, "instance TTL after revoke_operator: {ttl}");
+
+    s.client.pause(&s.owner);
+    let ttl = s
+        .env
+        .as_contract(&s.client.address, || s.env.storage().instance().get_ttl());
+    assert!(ttl >= 100_000, "instance TTL after pause: {ttl}");
+
+    s.client.unpause(&s.owner);
+    let ttl = s
+        .env
+        .as_contract(&s.client.address, || s.env.storage().instance().get_ttl());
+    assert!(ttl >= 100_000, "instance TTL after unpause: {ttl}");
 }
