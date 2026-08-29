@@ -258,6 +258,7 @@ fn admin_can_be_revoked_once_a_second_admin_exists() {
 // ── transfer_authority ─────────────────────────────────────────────────────────
 
 #[test]
+#[allow(deprecated)]
 fn transfer_authority_moves_admin() {
     let env = Env::default();
     env.mock_all_auths();

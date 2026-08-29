@@ -288,6 +288,7 @@ fn max_duration_matches_config() {
 // ── Transfer authority ───────────────────────────────────────────────────────
 
 #[test]
+#[allow(deprecated)]
 fn authority_transfers_correctly() {
     let env = Env::default();
     env.mock_all_auths();
@@ -335,6 +336,7 @@ fn revoke_role_extends_instance_ttl() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn transfer_authority_extends_instance_ttl() {
     let env = Env::default();
     env.mock_all_auths();
@@ -492,6 +494,7 @@ fn propose_authority_rejects_zero_address_and_existing_admin() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn transfer_authority_rejects_zero_address_and_existing_admin() {
     let env = Env::default();
     env.mock_all_auths();

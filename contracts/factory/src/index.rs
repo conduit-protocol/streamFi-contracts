@@ -43,7 +43,7 @@ fn migrate_legacy_index(
         }
     }
 
-    if page.len() > 0 {
+    if !page.is_empty() {
         write_page(env, make_page_key(page_index), &page);
     }
 
