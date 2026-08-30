@@ -224,6 +224,29 @@ fn cancel_halfway_splits_correctly() {
 }
 
 #[test]
+fn cancel_advances_withdrawn_by_the_payout() {
+    let s = Setup::new(100, 3600, false);
+    s.advance_secs(1800); // halfway → 180_000 earned, none pulled via withdraw()
+    s.client.cancel(&s.sender);
+
+    // `cancel` paid the recipient 180_000 directly. Post-cancel `withdrawn`
+    // must reflect what the recipient received, not just withdraw() pulls.
+    assert_eq!(s.client.info().withdrawn, 180_000);
+}
+
+#[test]
+fn cancel_advances_withdrawn_on_top_of_prior_withdrawals() {
+    let s = Setup::new(100, 3600, false);
+    s.advance_secs(1800); // 180_000 earned
+    let pulled = s.client.withdraw(&50_000);
+    assert_eq!(pulled, 50_000);
+    s.client.cancel(&s.sender);
+
+    // 50_000 via withdraw() + 130_000 paid out by cancel = 180_000 total.
+    assert_eq!(s.client.info().withdrawn, 180_000);
+}
+
+#[test]
 fn cancel_then_cancel_panics() {
     let s = Setup::new(100, 3600, false);
     s.client.cancel(&s.sender);
@@ -909,6 +932,8 @@ fn force_cancel_commits_state_and_drains_balance() {
     // Only the 1_000s streamed before the pause is owed to the recipient.
     assert_eq!(paid_to_recipient, 100_000);
     assert_eq!(paid_to_sender + paid_to_recipient, escrowed);
+    // `withdrawn` reflects the tokens the recipient received in force_cancel.
+    assert_eq!(s.client.info().withdrawn, 100_000);
 }
 
 /// Every value-moving entry point must reject an already-cancelled stream.

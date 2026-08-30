@@ -210,11 +210,23 @@ impl DripStream {
         let owed_to_recipient = (streamed - info.withdrawn).max(0).min(balance);
         let refund_to_sender = (balance - owed_to_recipient).max(0);
 
-        // Mark cancelled before any transfers to prevent re-entrancy
-        // (Soroban's execution model already prevents re-entrancy, but this
-        // is still the correct ordering for state-machine correctness).
+        // Commit the cancelled state before any transfers (state-machine
+        // correctness; Soroban already prevents re-entrancy on its own).
+        //
+        // `withdrawn` is advanced by the amount `cancel` pays the recipient
+        // here, so `info().withdrawn` after cancellation reflects every token
+        // the recipient actually received — not just the ones they pulled via
+        // `withdraw`. Without this, a stream cancelled at the halfway mark
+        // reports `withdrawn == 0` even though the recipient was just paid
+        // half the deposit.
+        let total_withdrawn = info
+            .withdrawn
+            .checked_add(owed_to_recipient)
+            .ok_or(Error::ArithmeticOverflow)?;
+
         let mut cancelled_info = info.clone();
         cancelled_info.flags |= FLAG_CANCELLED;
+        cancelled_info.withdrawn = total_withdrawn;
         state::save(env, &cancelled_info);
 
         // Pay the recipient their earned-but-unwithdrawn portion.
@@ -227,7 +239,7 @@ impl DripStream {
             tk.transfer(&contract_addr, &info.sender, &refund_to_sender);
         }
 
-        events::cancelled(env, &info.sender, refund_to_sender, info.withdrawn);
+        events::cancelled(env, &info.sender, refund_to_sender, total_withdrawn);
         Ok(())
     }
 
@@ -575,8 +587,16 @@ impl DripStream {
         let owed_to_recipient = (streamed - info.withdrawn).max(0).min(balance);
         let refund_to_sender = (balance - owed_to_recipient).max(0);
 
+        // Advance `withdrawn` by the amount paid out here so post-cancel reads
+        // reflect what the recipient actually received (see `_cancel`).
+        let total_withdrawn = info
+            .withdrawn
+            .checked_add(owed_to_recipient)
+            .ok_or(Error::ArithmeticOverflow)?;
+
         let mut cancelled_info = info.clone();
         cancelled_info.flags |= FLAG_CANCELLED;
+        cancelled_info.withdrawn = total_withdrawn;
         state::save(env, &cancelled_info);
 
         if owed_to_recipient > 0 {
@@ -586,7 +606,7 @@ impl DripStream {
             tk.transfer(&contract_addr, &info.sender, &refund_to_sender);
         }
 
-        events::force_cancelled(env, &info.sender, refund_to_sender, info.withdrawn);
+        events::force_cancelled(env, &info.sender, refund_to_sender, total_withdrawn);
         Ok(())
     }
 
