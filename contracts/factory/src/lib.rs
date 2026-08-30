@@ -17,7 +17,7 @@ use soroban_sdk::{
     contract, contractimpl, panic_with_error, token as tok, Address, BytesN, Env, IntoVal, Vec,
 };
 
-use drip_common::is_zero_stellar_account;
+use drip_common::is_zero_address;
 
 pub use errors::Error;
 use storage::DataKey;
@@ -98,12 +98,12 @@ impl DripFactory {
         }
 
         // ── Recipient validation ─────────────────────────────────────────
-        if is_zero_stellar_account(&env, &recipient) || recipient == sender {
+        if is_zero_address(&env, &recipient) || recipient == sender {
             return Err(Error::InvalidRecipient);
         }
 
         // ── Token validation ─────────────────────────────────────────────
-        if is_zero_stellar_account(&env, &token) {
+        if is_zero_address(&env, &token) {
             return Err(Error::InvalidToken);
         }
 

@@ -195,6 +195,26 @@ fn create_batch_streams_rejects_zero_stellar_token() {
     assert_eq!(result, Err(Ok(Error::InvalidToken)));
 }
 
+#[test]
+fn create_batch_streams_rejects_zero_contract_token() {
+    let env = base_env();
+    let client = deploy_factory(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let now = env.ledger().timestamp();
+
+    let zero_token = Address::from_string(&soroban_sdk::String::from_str(
+        &env,
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    ));
+    let bad = valid_request(&recipient, &zero_token, now);
+    let mut requests: Vec<BatchStreamRequest> = Vec::new(&env);
+    requests.push_back(bad);
+
+    let result = client.try_create_batch_streams(&sender, &requests, &false);
+    assert_eq!(result, Err(Ok(Error::InvalidToken)));
+}
+
 // -- Gas benchmark (requires a built stream WASM) ----------------------------
 //
 // A full successful create_batch_streams call deploys a real DripStream

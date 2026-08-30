@@ -25,7 +25,7 @@ mod ttl;
 
 use soroban_sdk::{contract, contractimpl, panic_with_error, Address, BytesN, Env, Symbol, Vec};
 
-use drip_common::is_zero_stellar_account;
+use drip_common::is_zero_address;
 
 pub use config::GovernorConfig;
 pub use errors::Error;
@@ -302,7 +302,7 @@ impl DripGovernor {
         caller: Address,
         new_authority: Address,
     ) -> Result<(), Error> {
-        if is_zero_stellar_account(&env, &new_authority)
+        if is_zero_address(&env, &new_authority)
             || role::has_role(&env, Role::Admin, &new_authority)
         {
             return Err(Error::InvalidParam);
@@ -325,7 +325,7 @@ impl DripGovernor {
         caller: Address,
         new_authority: Address,
     ) -> Result<(), Error> {
-        if is_zero_stellar_account(&env, &new_authority)
+        if is_zero_address(&env, &new_authority)
             || role::has_role(&env, Role::Admin, &new_authority)
         {
             return Err(Error::InvalidParam);
@@ -423,7 +423,7 @@ impl DripGovernor {
     }
 
     pub fn set_fee_recipient(env: Env, caller: Address, recipient: Address) -> Result<(), Error> {
-        if is_zero_stellar_account(&env, &recipient) {
+        if is_zero_address(&env, &recipient) {
             return Err(Error::InvalidParam);
         }
         assert_not_paused(&env)?;
