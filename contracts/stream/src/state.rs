@@ -1,4 +1,4 @@
-use soroban_sdk::Env;
+use soroban_sdk::{panic_with_error, Env};
 
 use crate::storage::{DataKey, StreamInfo, FLAG_CANCELLED, FLAG_CLAWBACK_ENABLED};
 use crate::Error;
@@ -9,13 +9,13 @@ use crate::Error;
 /// `initialize()` calls). Falls back to reading each field individually
 /// for streams that were initialized before this optimisation landed —
 /// this keeps older on-chain instances readable without a migration.
-pub fn load(env: &Env) -> StreamInfo {
+pub fn try_load(env: &Env) -> Result<StreamInfo, Error> {
     let s = env.storage().instance();
 
     // Fast path: stream was initialized with the consolidated key.
     if s.has(&DataKey::Config) {
         if let Some(info) = s.get::<_, StreamInfo>(&DataKey::Config) {
-            return info;
+            return Ok(info);
         }
     }
 
@@ -31,16 +31,25 @@ pub fn load(env: &Env) -> StreamInfo {
         flags |= FLAG_CANCELLED;
     }
 
-    StreamInfo {
-        sender: s.get(&DataKey::Sender).unwrap(),
-        recipient: s.get(&DataKey::Recipient).unwrap(),
-        token: s.get(&DataKey::Token).unwrap(),
-        rate_per_second: s.get(&DataKey::RatePerSecond).unwrap(),
-        start_time: s.get(&DataKey::StartTime).unwrap(),
-        end_time: s.get(&DataKey::EndTime).unwrap(),
+    Ok(StreamInfo {
+        sender: s.get(&DataKey::Sender).ok_or(Error::NotInitialized)?,
+        recipient: s.get(&DataKey::Recipient).ok_or(Error::NotInitialized)?,
+        token: s.get(&DataKey::Token).ok_or(Error::NotInitialized)?,
+        rate_per_second: s
+            .get(&DataKey::RatePerSecond)
+            .ok_or(Error::NotInitialized)?,
+        start_time: s.get(&DataKey::StartTime).ok_or(Error::NotInitialized)?,
+        end_time: s.get(&DataKey::EndTime).ok_or(Error::NotInitialized)?,
         withdrawn: s.get(&DataKey::Withdrawn).unwrap_or(0),
         paused_at: s.get(&DataKey::PausedAt).unwrap_or(0),
         flags,
+    })
+}
+
+pub fn load(env: &Env) -> StreamInfo {
+    match try_load(env) {
+        Ok(info) => info,
+        Err(err) => panic_with_error!(env, err),
     }
 }
 

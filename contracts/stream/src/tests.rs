@@ -617,6 +617,52 @@ fn info_reflects_pause_state() {
     assert!(inf.paused_at > 0);
 }
 
+#[test]
+#[should_panic(expected = "Error(Contract, #17)")]
+fn uninitialized_stream_info_returns_not_initialized() {
+    let env = Env::default();
+
+    let stream_id = env.register_contract(None, DripStream);
+    let client = DripStreamClient::new(&env, &stream_id);
+
+    client.info();
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #17)")]
+fn uninitialized_stream_withdrawable_returns_not_initialized() {
+    let env = Env::default();
+
+    let stream_id = env.register_contract(None, DripStream);
+    let client = DripStreamClient::new(&env, &stream_id);
+
+    client.withdrawable();
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #17)")]
+fn uninitialized_stream_streamed_total_returns_not_initialized() {
+    let env = Env::default();
+
+    let stream_id = env.register_contract(None, DripStream);
+    let client = DripStreamClient::new(&env, &stream_id);
+
+    client.streamed_total();
+}
+
+#[test]
+fn uninitialized_stream_mutations_return_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let stream_id = env.register_contract(None, DripStream);
+    let client = DripStreamClient::new(&env, &stream_id);
+    let caller = Address::generate(&env);
+
+    assert_eq!(client.try_withdraw(&1), Err(Ok(Error::NotInitialized)));
+    assert_eq!(client.try_cancel(&caller), Err(Ok(Error::NotInitialized)));
+}
+
 // ── Edge cases ────────────────────────────────────────────────────────────────
 
 #[test]
