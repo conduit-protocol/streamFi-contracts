@@ -10,6 +10,18 @@ use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, 
 const THRESHOLD: u32 = 100_000;
 const EXTEND_TO: u32 = 200_000;
 
+/// Maximum number of distinct price feeders the oracle will track. Caps the
+/// `DataKey::Submitters` list and the per-feeder `Submission` loop in
+/// `get_twap_price` (one storage `get` per entry). Without a cap the list
+/// grows once per unique feeder for the life of the contract and
+/// `get_twap_price` pays linear CPU. `persistent()` is used for these
+/// entries (see `storage.rs` rule: unbounded per-entity data belongs in
+/// `persistent()`, not `instance()`), but even persistent growth must be
+/// bounded to keep aggregation within the transaction budget. 32 feeders is
+/// ample for a TWAP median and keeps `get_twap_price` well under budget
+/// (32 gets + insertion sort).
+const MAX_SUBMITTERS: u32 = 32;
+
 fn bump_instance(env: &Env) {
     env.storage().instance().extend_ttl(THRESHOLD, EXTEND_TO);
 }
@@ -52,12 +64,17 @@ pub enum DataKey {
     Role(RoleKey),
     AdminCount,
     Paused,
-    /// Most recent submission from a single feeder, keyed by feeder address.
-    /// Aggregated (median) across every address in `Submitters` by
-    /// `get_twap_price`, so no single feeder's price is trusted alone.
+    /// **Persistent storage.** Most recent submission from a single feeder,
+    /// keyed by feeder address. Stored in `persistent()` (not `instance()`)
+    /// per the `storage.rs` rule: unbounded per-entity data belongs in
+    /// `persistent()` to avoid instance bloat. Aggregated (median) across
+    /// every address in `Submitters` by `get_twap_price`, so no single
+    /// feeder's price is trusted alone. TTL extended on each `submit_price`.
     Submission(Address),
-    /// Every address that has ever called `submit_price`, iterated by
-    /// `get_twap_price` to build the aggregation set.
+    /// **Persistent storage.** Every address that has called `submit_price`,
+    /// iterated by `get_twap_price` to build the aggregation set. Stored in
+    /// `persistent()` with TTL extension; capped at [`MAX_SUBMITTERS`] so
+    /// aggregation stays bounded (one `get` per entry).
     Submitters,
     /// Index of all accounts currently holding a given role.
     ///
@@ -76,11 +93,16 @@ pub enum DataKey {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OracleConfig {
-    /// Number of decimal places used in fixed-point price submissions (maximum 38).
+    /// Number of decimal places used in fixed-point price submissions (maximum 19
+    /// when `price` is `u64`; see `TwapOracle::submit_price`).
     ///
     /// Fixed-point prices submitted via [`TwapOracle::submit_price`] are scaled
-    /// by `10^decimals`. Exceeding 38 causes [`TwapOracle::configure_oracle`] to
-    /// return `Err(Error::InvalidDecimals)`.
+    /// by `10^decimals`. With `price: u64`, `10^20 > u64::MAX (≈1.84e19)` so
+    /// any `decimals >= 20` makes real-world prices unrepresentable. Capped at
+    /// 19 to keep `10^decimals <= u64::MAX`; exceeding 19 causes
+    /// [`TwapOracle::configure_oracle`] to return `Err(Error::InvalidDecimals)`.
+    /// To support `decimals > 19`, widen `PriceData::price` / `submit_price`
+    /// to `u128`/`i128` and update the aggregation.
     pub decimals: u32,
     /// Target asset peg identifier (e.g., currency/asset pairing representation).
     pub asset_peg: u32,
@@ -120,6 +142,8 @@ pub enum Error {
     LastAdmin = 1014,
     /// `max_staleness` was set to 0 (degenerate: causes all price submissions to be immediately stale).
     InvalidMaxStaleness = 1015,
+    /// `Submitters` already holds `MAX_SUBMITTERS` distinct feeders.
+    TooManySubmitters = 1016,
 }
 
 #[contract]
@@ -226,8 +250,10 @@ impl TwapOracle {
     /// - `env`: The Soroban environment.
     /// - `caller`: Address of the admin invoking the configuration update (must authenticate).
     /// - `config`: An [`OracleConfig`] struct carrying:
-    ///   - `decimals`: Fixed-point decimal precision for submitted prices (max 38).
-    ///     Reverts with [`Error::InvalidDecimals`] if `config.decimals > 38`.
+    ///   - `decimals`: Fixed-point decimal precision for submitted prices (max 19
+    ///     for `price: u64`; `10^20 > u64::MAX`). Reverts with
+    ///     [`Error::InvalidDecimals`] if `config.decimals > 19`. To use
+    ///     `decimals > 19`, widen `PriceData::price` to `u128`.
     ///   - `asset_peg`: Target asset peg identifier/format.
     ///   - `max_staleness`: Maximum allowable age in seconds for price observations before
     ///     they are deemed stale.
@@ -246,11 +272,11 @@ impl TwapOracle {
     /// # Errors
     ///
     /// - [`Error::NotAuthorized`]: `caller` is not an `Admin` or auth verification fails.
-    /// - [`Error::InvalidDecimals`]: `config.decimals` exceeds 38.
+    /// - [`Error::InvalidDecimals`]: `config.decimals` exceeds 19 (u64 price limit).
     pub fn configure_oracle(env: Env, caller: Address, config: OracleConfig) -> Result<(), Error> {
         require_role_or_admin(&env, &caller, Role::Admin)?;
 
-        if config.decimals > 38 {
+        if config.decimals > 19 {
             return Err(Error::InvalidDecimals);
         }
 
@@ -269,17 +295,19 @@ impl TwapOracle {
                 env.storage().instance().remove(&DataKey::Price);
 
                 // Clear every per-feeder submission and the submitter list itself.
+                // Submissions live in persistent() (see DataKey docs) so clears
+                // must target persistent storage and respect the cap.
                 let submitters: Vec<Address> = env
                     .storage()
-                    .instance()
+                    .persistent()
                     .get(&DataKey::Submitters)
                     .unwrap_or(Vec::new(&env));
                 for feeder in submitters.iter() {
                     env.storage()
-                        .instance()
+                        .persistent()
                         .remove(&DataKey::Submission(feeder));
                 }
-                env.storage().instance().remove(&DataKey::Submitters);
+                env.storage().persistent().remove(&DataKey::Submitters);
             }
         }
 
@@ -292,20 +320,22 @@ impl TwapOracle {
     ///
     /// `price` is a fixed-point integer scaled by `10^decimals`, where
     /// `decimals` comes from the oracle's stored `OracleConfig` (set via
-    /// `configure_oracle`, max 38). For example, with `decimals: 8`, a
-    /// real-world price of `100.0` is submitted as `100_00000000`.
-    /// `calculate_fiat_stream_payout` divides by `10^decimals` when
-    /// converting a submission back to a real value, so submissions must
-    /// use the same scale as the currently configured `decimals` or
-    /// downstream payouts will be wrong by that scale factor.
+    /// `configure_oracle`, max 19 for `u64` — `10^20 > u64::MAX`). For
+    /// example, with `decimals: 8`, a real-world price of `100.0` is
+    /// submitted as `100_00000000`. `calculate_fiat_stream_payout` divides
+    /// by `10^decimals` when converting a submission back to a real value,
+    /// so submissions must use the same scale as the currently configured
+    /// `decimals` or downstream payouts will be wrong by that scale factor.
     ///
     /// There is no fixed time-bucketed TWAP window. Instead, every
     /// feeder's most recent submission is kept independently
-    /// (`DataKey::Submission`) and `get_twap_price` aggregates the median
-    /// (or the average of the two middle values, on an even count) across
-    /// every submission still within `max_staleness` seconds of the
-    /// current ledger time — see `get_twap_price` for the aggregation
-    /// logic and `OracleConfig::max_staleness` for the staleness window.
+    /// (`DataKey::Submission` in `persistent()`) and `get_twap_price`
+    /// aggregates the median (or the average of the two middle values, on an
+    /// even count) across every submission still within `max_staleness`
+    /// seconds of the current ledger time — see `get_twap_price` for the
+    /// aggregation logic and `OracleConfig::max_staleness` for the staleness
+    /// window. `Submitters` is capped at [`MAX_SUBMITTERS`] so aggregation
+    /// stays bounded.
     ///
     /// Blocked while the oracle is under an emergency pause. Each feeder's
     /// submission is tracked independently (`DataKey::Submission`) and
@@ -333,10 +363,18 @@ impl TwapOracle {
         // to see the most recent submission.
         env.storage().instance().set(&DataKey::Price, &data);
 
+        // Per-feeder submissions are in persistent() per the storage-tier rule
+        // (unbounded per-entity data → persistent), with TTL extension. Capped
+        // via add_submitter.
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::Submission(caller.clone()), &data);
-        add_submitter(&env, &caller);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Submission(caller.clone()),
+            THRESHOLD,
+            EXTEND_TO,
+        );
+        add_submitter(&env, &caller)?;
 
         events::price_submitted(&env, &caller, price, now);
         Ok(())
@@ -366,7 +404,7 @@ impl TwapOracle {
 
             let submitters: Vec<Address> = env
                 .storage()
-                .instance()
+                .persistent()
                 .get(&DataKey::Submitters)
                 .unwrap_or(Vec::new(&env));
 
@@ -376,7 +414,7 @@ impl TwapOracle {
 
             for feeder in submitters.iter() {
                 let submission: Option<PriceData> =
-                    env.storage().instance().get(&DataKey::Submission(feeder));
+                    env.storage().persistent().get(&DataKey::Submission(feeder));
                 if let Some(data) = submission {
                     saw_any_submission = true;
                     let age = now.saturating_sub(data.updated_at);
@@ -614,24 +652,35 @@ fn require_role_or_admin(env: &Env, caller: &Address, role: Role) -> Result<(), 
 
 /// Records `account` in the `Submitters` set the first time it submits a
 /// price, so `get_twap_price` knows which `DataKey::Submission` entries to
-/// aggregate. No-op if already recorded.
-fn add_submitter(env: &Env, account: &Address) {
+/// aggregate. No-op if already recorded. Caps at [`MAX_SUBMITTERS`] and
+/// returns `TooManySubmitters` if a new feeder would exceed the cap.
+/// Stored in `persistent()` per the factory `storage.rs` rule (unbounded
+/// per-entity data → persistent, not instance).
+fn add_submitter(env: &Env, account: &Address) -> Result<(), Error> {
     let mut submitters: Vec<Address> = env
         .storage()
-        .instance()
+        .persistent()
         .get(&DataKey::Submitters)
         .unwrap_or(Vec::new(env));
 
     for existing in submitters.iter() {
         if existing == *account {
-            return;
+            return Ok(());
         }
+    }
+
+    if submitters.len() >= MAX_SUBMITTERS {
+        return Err(Error::TooManySubmitters);
     }
 
     submitters.push_back(account.clone());
     env.storage()
-        .instance()
+        .persistent()
         .set(&DataKey::Submitters, &submitters);
+    env.storage()
+        .persistent()
+        .extend_ttl(&DataKey::Submitters, THRESHOLD, EXTEND_TO);
+    Ok(())
 }
 
 /// Median of `prices` (average of the two middle values for an even-length

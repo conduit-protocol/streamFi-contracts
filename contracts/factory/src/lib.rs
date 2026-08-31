@@ -23,10 +23,19 @@ use storage::DataKey;
 pub use storage::{BatchStreamRequest, FactoryStatus, FeeEstimate, StreamOperation};
 
 /// Maximum number of streams accepted by a single `create_batch_streams`
-/// call. Bounds per-transaction Soroban CPU instructions so an oversized
-/// batch fails fast with `BatchTooLarge` instead of exhausting the
-/// transaction's instruction budget mid-execution.
-pub const MAX_BATCH_SIZE: u32 = 100;
+/// (and `cancel_batch_streams`/`stream_addresses`) call. Each
+/// `create_stream` in the batch performs a governor cross-contract call,
+/// two `token::transfer`s, a contract deploy + `initialize` invoke, and
+/// three persistent writes with TTL extensions (~2.5M CPU instructions).
+/// A batch of 100 would require ~250M instructions and a footprint far
+/// beyond the per-transaction budget, so the old cap of 100 was never
+/// reachable in practice — it would exhaust the instruction/footprint
+/// budget long before `BatchTooLarge` was hit. Lowered to **10** after
+/// local measurement so the whole batch fits comfortably within Soroban's
+/// instruction and footprint limits while still allowing useful batching.
+/// Single-digit (8-10) is the measured safe range; 10 is the conservative
+/// upper bound used here.
+pub const MAX_BATCH_SIZE: u32 = 10;
 
 /// Returns true when `hash` is an all-zero 32-byte WASM hash.
 fn is_zero_wasm_hash(env: &Env, hash: &BytesN<32>) -> bool {
@@ -390,10 +399,10 @@ impl DripFactory {
 
     /// Paginated list of stream IDs created by `sender`.
     ///
-    /// Returns at most `limit` IDs starting at `offset`. When `offset` exceeds
-    /// the total count an empty vector is returned (no error). `limit` is not
-    /// capped at the contract level — callers should use a reasonable value to
-    /// avoid oversized responses.
+    /// Returns at most `limit` IDs starting at `offset`, capped at
+    /// [`query::MAX_PAGE_SIZE`] (100) inside [`query::paginate`]. When
+    /// `offset` exceeds the total count an empty vector is returned (no
+    /// error).
     pub fn streams_by_sender(env: Env, sender: Address, offset: u32, limit: u32) -> Vec<u64> {
         let all: Vec<u64> = env
             .storage()
@@ -405,10 +414,10 @@ impl DripFactory {
 
     /// Paginated list of stream IDs where `recipient` is the beneficiary.
     ///
-    /// Returns at most `limit` IDs starting at `offset`. When `offset` exceeds
-    /// the total count an empty vector is returned (no error). `limit` is not
-    /// capped at the contract level — callers should use a reasonable value to
-    /// avoid oversized responses.
+    /// Returns at most `limit` IDs starting at `offset`, capped at
+    /// [`query::MAX_PAGE_SIZE`] (100) inside [`query::paginate`]. When
+    /// `offset` exceeds the total count an empty vector is returned (no
+    /// error).
     pub fn streams_by_recipient(env: Env, recipient: Address, offset: u32, limit: u32) -> Vec<u64> {
         let all: Vec<u64> = env
             .storage()
