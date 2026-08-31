@@ -5,6 +5,15 @@ use soroban_sdk::{Env, Vec};
 /// sender's entire history in a single view call.
 pub const MAX_PAGE_SIZE: u32 = 100;
 
+/// Hard cap for batch-resolving stream IDs to addresses.
+///
+/// Sized to match [`MAX_PAGE_SIZE`] so that a full page returned by
+/// `streams_by_sender` / `streams_by_recipient` (up to 100 IDs) can be
+/// resolved in a single `stream_addresses` call. This is a read-only
+/// operation (`persistent().get()` per ID) with no deployment or token
+/// transfer, so the write-path [`MAX_BATCH_SIZE`] does not apply here.
+pub const MAX_RESOLVE_SIZE: u32 = 100;
+
 /// Returns a paginated slice of `v` starting at `offset` with at most `limit`
 /// elements.
 ///
