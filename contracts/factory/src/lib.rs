@@ -1,10 +1,10 @@
 #![no_std]
 
 mod deploy;
-mod index;
 mod errors;
 mod events;
 mod governance;
+mod index;
 mod pause;
 mod query;
 pub mod storage;

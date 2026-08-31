@@ -611,7 +611,11 @@ impl DripStream {
         caller.require_auth();
         ttl::bump(&env);
 
-        if let Some(existing) = env.storage().instance().get::<_, Address>(&DataKey::Operator) {
+        if let Some(existing) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::Operator)
+        {
             if existing != operator {
                 return Err(Error::OperatorAlreadySet);
             }
