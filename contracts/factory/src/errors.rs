@@ -50,4 +50,6 @@ pub enum Error {
     /// is disabled there is no way to recover the funds before the stream
     /// starts.
     StartTimeTooFarInFuture = 29,
+    /// `stream_addresses` was called with more IDs than `MAX_RESOLVE_SIZE`.
+    ResolveTooLarge = 30,
 }

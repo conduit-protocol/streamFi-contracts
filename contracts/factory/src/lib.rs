@@ -24,7 +24,7 @@ use storage::DataKey;
 pub use storage::{BatchStreamRequest, FactoryStatus, FeeEstimate, StreamOperation, StreamPage};
 
 /// Maximum number of streams accepted by a single `create_batch_streams`
-/// (and `cancel_batch_streams`/`stream_addresses`) call. Each
+/// (and `cancel_batch_streams`) call. Each
 /// `create_stream` in the batch performs a governor cross-contract call,
 /// two `token::transfer`s, a contract deploy + `initialize` invoke, and
 /// three persistent writes with TTL extensions (~2.5M CPU instructions).
@@ -367,15 +367,18 @@ impl DripFactory {
 
     /// Batch-resolve stream IDs to their deployed contract addresses.
     ///
-    /// Pairs with `streams_by_sender`/`streams_by_recipient`: a page of IDs
-    /// from either can be resolved to addresses in one call instead of one
-    /// `stream_address` round-trip per ID. Unknown IDs resolve to `None` in
-    /// their slot, matching `stream_address`'s per-ID behavior, rather than
-    /// failing the whole batch. Capped at `MAX_BATCH_SIZE`, mirroring
-    /// `create_batch_streams`.
+    /// Pairs with `streams_by_sender`/`streams_by_recipient`: a full page of
+    /// IDs from either (up to [`query::MAX_PAGE_SIZE`]) can be resolved to
+    /// addresses in one call instead of one `stream_address` round-trip per
+    /// ID. Unknown IDs resolve to `None` in their slot, matching
+    /// `stream_address`'s per-ID behavior, rather than failing the whole
+    /// batch. Capped at [`query::MAX_RESOLVE_SIZE`] (100), sized for the
+    /// read path — this function only performs `persistent().get()` lookups
+    /// and never deploys contracts or transfers tokens, so the write-path
+    /// [`MAX_BATCH_SIZE`] does not apply.
     pub fn stream_addresses(env: Env, ids: Vec<u64>) -> Result<Vec<Option<Address>>, Error> {
-        if ids.len() > MAX_BATCH_SIZE {
-            return Err(Error::BatchTooLarge);
+        if ids.len() > query::MAX_RESOLVE_SIZE {
+            return Err(Error::ResolveTooLarge);
         }
         let mut out = Vec::new(&env);
         for id in ids.iter() {
