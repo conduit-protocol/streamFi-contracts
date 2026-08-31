@@ -156,5 +156,5 @@ pub fn operator_set(env: &Env, sender: &Address, operator: &Address) {
 pub fn operator_revoked(env: &Env, sender: &Address) {
     let sequence = next_sequence(env);
     env.events()
-        .publish((symbol_short!("rm_op"), sender.clone()), sequence);
+        .publish((symbol_short!("rm_op"), sender.clone(), sequence), ());
 }
