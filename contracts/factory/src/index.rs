@@ -170,31 +170,51 @@ fn count_index(env: &Env, count_key: &DataKey, legacy_key: &DataKey) -> u32 {
 pub fn append_sender_index(env: &Env, sender: &Address, stream_id: u64) {
     let count_key = DataKey::BySenderCount(sender.clone());
     let legacy_key = DataKey::BySender(sender.clone());
-    append_index_entry(env, &count_key, &legacy_key, |page| {
-        DataKey::BySenderPage(sender.clone(), page)
-    }, stream_id);
+    append_index_entry(
+        env,
+        &count_key,
+        &legacy_key,
+        |page| DataKey::BySenderPage(sender.clone(), page),
+        stream_id,
+    );
 }
 
 pub fn append_recipient_index(env: &Env, recipient: &Address, stream_id: u64) {
     let count_key = DataKey::ByRecipientCount(recipient.clone());
     let legacy_key = DataKey::ByRecipient(recipient.clone());
-    append_index_entry(env, &count_key, &legacy_key, |page| {
-        DataKey::ByRecipientPage(recipient.clone(), page)
-    }, stream_id);
+    append_index_entry(
+        env,
+        &count_key,
+        &legacy_key,
+        |page| DataKey::ByRecipientPage(recipient.clone(), page),
+        stream_id,
+    );
 }
 
 pub fn streams_by_sender(env: &Env, sender: Address, offset: u32, limit: u32) -> Vec<u64> {
     let count_key = DataKey::BySenderCount(sender.clone());
     let legacy_key = DataKey::BySender(sender.clone());
-    read_index(env, &count_key, &legacy_key, |page| DataKey::BySenderPage(sender.clone(), page), offset, limit)
+    read_index(
+        env,
+        &count_key,
+        &legacy_key,
+        |page| DataKey::BySenderPage(sender.clone(), page),
+        offset,
+        limit,
+    )
 }
 
 pub fn streams_by_recipient(env: &Env, recipient: Address, offset: u32, limit: u32) -> Vec<u64> {
     let count_key = DataKey::ByRecipientCount(recipient.clone());
     let legacy_key = DataKey::ByRecipient(recipient.clone());
-    read_index(env, &count_key, &legacy_key, |page| {
-        DataKey::ByRecipientPage(recipient.clone(), page)
-    }, offset, limit)
+    read_index(
+        env,
+        &count_key,
+        &legacy_key,
+        |page| DataKey::ByRecipientPage(recipient.clone(), page),
+        offset,
+        limit,
+    )
 }
 
 pub fn stream_count_by_sender(env: &Env, sender: Address) -> u32 {
