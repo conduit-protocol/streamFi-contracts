@@ -329,6 +329,9 @@ impl DripStream {
         if now < info.start_time {
             return Err(Error::StreamNotStarted);
         }
+        if info.end_time > 0 && now >= info.end_time {
+            return Err(Error::StreamEnded);
+        }
         let w = math::withdrawable(env, &info)?;
 
         // Single consolidated save — no separate `state::set_paused()` call
