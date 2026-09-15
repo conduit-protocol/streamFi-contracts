@@ -475,6 +475,7 @@ impl TwapOracle {
                     .get::<_, PriceData>(&DataKey::Submission(caller.clone()))
                 {
                     if now.saturating_sub(last.updated_at) < config.min_submit_interval {
+                        events::price_rejected(&env, &caller, price, symbol_short!("stale"));
                         return Err(Error::SubmitTooSoon);
                     }
                 }
