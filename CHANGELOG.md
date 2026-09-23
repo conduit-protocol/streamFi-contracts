@@ -4,6 +4,10 @@ All notable changes are documented here. Format based on [Keep a Changelog](http
 
 ## [Unreleased]
 
+### Added
+- Extended `scripts/query.sh` with configurable source identities and factory/governor read modes.
+- Added ADR-007 documenting the scope of `BatchTransferProcessor` and updated the architecture overview for supporting contracts and applications.
+
 ### Fixed
 - Settings page crash on load — created `app/settings/page.tsx` with properly guarded state initialization (conduit-protocol/streamFi-app#270, closes #156)
 - Token selector stale Apollo cache — added `onRefreshNeeded` callback for parent cache invalidation (conduit-protocol/streamFi-app#270, closes #153)

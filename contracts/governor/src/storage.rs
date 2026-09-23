@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Vec as SorobanVec};
+use soroban_sdk::{contracttype, Address};
 
 use crate::role::Role;
 

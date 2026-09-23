@@ -1,6 +1,7 @@
 # Architecture
 
-A technical walkthrough of how the three Conduit contracts fit together.
+A technical walkthrough of how the core Conduit contracts and supporting
+components fit together.
 
 ---
 
@@ -52,6 +53,35 @@ A technical walkthrough of how the three Conduit contracts fit together.
 ---
 
 ## Contract Responsibilities
+
+### Supporting protocol contracts and applications
+
+The original stream architecture is extended by supporting components that
+have deliberately narrower responsibilities:
+
+- **BatchTransferProcessor** provides a bounded, guarded execution boundary
+  for batch transfer work. It owns batch limits, checked aggregation, state
+  versioning, and stale-callback invalidation; it does not own stream registry
+  or deployment state. See [ADR-007](./adr/007-batch-transfer-processor-scope.md).
+- **TwapOracle** supplies aggregated, staleness-aware price observations for
+  integrations that need oracle data. It is independent of stream settlement
+  and does not hold stream funds.
+- **TokenVault** is the token custody boundary for integrations that need
+  pooled or separately managed token balances. It sits beside the factory and
+  stream contracts rather than changing the per-stream escrow model.
+- **Indexer** consumes factory and stream events and read APIs to build a
+  searchable off-chain view of streams, transfers, and protocol activity. It
+  is not part of transaction authorization or settlement.
+- **`frontend/`** is the application scaffold that connects wallets to the
+  factory and stream contracts and presents indexed protocol state. It is a
+  client of the on-chain contracts and indexer, not an additional trust
+  boundary.
+
+Together, these components sit around the original flow: the factory deploys
+and registers streams, each stream escrows and settles its own funds, the
+governor supplies protocol configuration, and the supporting contracts and
+applications provide optional batch execution, price data, custody, discovery,
+and user interaction.
 
 ### DripFactory
 
