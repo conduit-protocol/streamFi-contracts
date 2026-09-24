@@ -20,20 +20,15 @@ pub const CURRENT_STORAGE_VERSION: u32 = 1;
 
 #[contracttype]
 pub enum DataKey {
-    Sender,
-    Recipient,
-    Token,
-    RatePerSecond,
-    StartTime,
-    EndTime,
-    Withdrawn,
-    PausedAt,
-    Flags,
-    ClawbackEnabled,
-    Cancelled,
     /// Single-key representation of all stream fields.
-    /// Replaces the 11 individual keys above for new writes — loaded in one
-    /// storage read instead of eleven.
+    /// Supersedes the per-field keys (`Sender`, `Recipient`, `Token`,
+    /// `RatePerSecond`, `StartTime`, `EndTime`, `Withdrawn`, `PausedAt`,
+    /// `Flags`, `ClawbackEnabled`, `Cancelled`) that older streams still hold:
+    /// those variants were removed after the migration window, and `save()`
+    /// reclaims the entries they left behind via [`crate::state::LEGACY_KEYS`].
+    /// Keys encode as `Vec([Symbol("<VariantName>")])`, so a stored
+    /// `Config` key is unaffected by removing its neighbours — see the
+    /// `#[contracttype]` enum derivation in `soroban-sdk-macros`.
     Config,
     /// Legacy standalone copy of the current event sequence value.
     ///

@@ -11,6 +11,7 @@ use soroban_sdk::{
     token, Address, Env, IntoVal, TryIntoVal,
 };
 
+use crate::state::LegacyKey;
 use crate::{
     storage::{DataKey, StreamInfo, FLAG_CANCELLED, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED},
     DripStream, DripStreamClient, Error,
@@ -802,15 +803,15 @@ fn malformed_time_range_would_lock_funds() {
     // so this reproduces exactly what a pre-fix `initialize()` would persist.
     env.as_contract(&stream_id, || {
         let storage = env.storage().instance();
-        storage.set(&DataKey::Sender, &sender);
-        storage.set(&DataKey::Recipient, &recipient);
-        storage.set(&DataKey::Token, &token_addr);
-        storage.set(&DataKey::RatePerSecond, &100_i128);
-        storage.set(&DataKey::StartTime, &start_time);
-        storage.set(&DataKey::EndTime, &end_time);
-        storage.set(&DataKey::Withdrawn, &0_i128);
-        storage.set(&DataKey::PausedAt, &0_u64);
-        storage.set(&DataKey::Flags, &0_u32);
+        storage.set(&LegacyKey::Sender, &sender);
+        storage.set(&LegacyKey::Recipient, &recipient);
+        storage.set(&LegacyKey::Token, &token_addr);
+        storage.set(&LegacyKey::RatePerSecond, &100_i128);
+        storage.set(&LegacyKey::StartTime, &start_time);
+        storage.set(&LegacyKey::EndTime, &end_time);
+        storage.set(&LegacyKey::Withdrawn, &0_i128);
+        storage.set(&LegacyKey::PausedAt, &0_u64);
+        storage.set(&LegacyKey::Flags, &0_u32);
     });
 
     // Advance ledger past start_time so the release math actually runs.
@@ -1153,15 +1154,15 @@ fn legacy_storage_layout_still_loads_and_tracks_state() {
 
     env.as_contract(&stream_id, || {
         let storage = env.storage().instance();
-        storage.set(&DataKey::Sender, &sender);
-        storage.set(&DataKey::Recipient, &recipient);
-        storage.set(&DataKey::Token, &token_addr);
-        storage.set(&DataKey::RatePerSecond, &100_i128);
-        storage.set(&DataKey::StartTime, &now);
-        storage.set(&DataKey::EndTime, &(now + 3_600));
-        storage.set(&DataKey::Withdrawn, &0_i128);
-        storage.set(&DataKey::PausedAt, &0_u64);
-        storage.set(&DataKey::Flags, &0_u32);
+        storage.set(&LegacyKey::Sender, &sender);
+        storage.set(&LegacyKey::Recipient, &recipient);
+        storage.set(&LegacyKey::Token, &token_addr);
+        storage.set(&LegacyKey::RatePerSecond, &100_i128);
+        storage.set(&LegacyKey::StartTime, &now);
+        storage.set(&LegacyKey::EndTime, &(now + 3_600));
+        storage.set(&LegacyKey::Withdrawn, &0_i128);
+        storage.set(&LegacyKey::PausedAt, &0_u64);
+        storage.set(&LegacyKey::Flags, &0_u32);
     });
 
     let info = env.as_contract(&stream_id, || crate::state::load(&env));
@@ -1902,9 +1903,9 @@ fn initialize_writes_only_config_and_not_legacy_keys() {
             let storage = s.env.storage().instance();
             (
                 storage.has(&DataKey::Config),
-                storage.has(&DataKey::Sender),
-                storage.has(&DataKey::Withdrawn),
-                storage.has(&DataKey::Flags),
+                storage.has(&LegacyKey::Sender),
+                storage.has(&LegacyKey::Withdrawn),
+                storage.has(&LegacyKey::Flags),
             )
         });
 
@@ -1968,8 +1969,8 @@ fn state_mutation_writes_only_config_not_legacy_keys() {
         let storage = s.env.storage().instance();
         (
             storage.has(&DataKey::Config),
-            storage.has(&DataKey::Sender),
-            storage.has(&DataKey::Withdrawn),
+            storage.has(&LegacyKey::Sender),
+            storage.has(&LegacyKey::Withdrawn),
         )
     });
     assert!(has_config, "Config must be present after a mutation");
@@ -2004,15 +2005,15 @@ fn save_migrates_legacy_keys_to_config_once() {
     // Simulate a pre-consolidation stream: only the per-field keys exist.
     env.as_contract(&stream_id, || {
         let storage = env.storage().instance();
-        storage.set(&DataKey::Sender, &sender);
-        storage.set(&DataKey::Recipient, &recipient);
-        storage.set(&DataKey::Token, &token_addr);
-        storage.set(&DataKey::RatePerSecond, &100_i128);
-        storage.set(&DataKey::StartTime, &1_000_000_u64);
-        storage.set(&DataKey::EndTime, &1_003_600_u64);
-        storage.set(&DataKey::Withdrawn, &0_i128);
-        storage.set(&DataKey::PausedAt, &0_u64);
-        storage.set(&DataKey::Flags, &0_u32);
+        storage.set(&LegacyKey::Sender, &sender);
+        storage.set(&LegacyKey::Recipient, &recipient);
+        storage.set(&LegacyKey::Token, &token_addr);
+        storage.set(&LegacyKey::RatePerSecond, &100_i128);
+        storage.set(&LegacyKey::StartTime, &1_000_000_u64);
+        storage.set(&LegacyKey::EndTime, &1_003_600_u64);
+        storage.set(&LegacyKey::Withdrawn, &0_i128);
+        storage.set(&LegacyKey::PausedAt, &0_u64);
+        storage.set(&LegacyKey::Flags, &0_u32);
         assert!(!storage.has(&DataKey::Config));
     });
 
@@ -2039,10 +2040,10 @@ fn save_migrates_legacy_keys_to_config_once() {
     env.as_contract(&stream_id, || {
         let storage = env.storage().instance();
         assert!(storage.has(&DataKey::Config));
-        assert!(!storage.has(&DataKey::Sender));
-        assert!(!storage.has(&DataKey::Recipient));
-        assert!(!storage.has(&DataKey::Withdrawn));
-        assert!(!storage.has(&DataKey::Flags));
+        assert!(!storage.has(&LegacyKey::Sender));
+        assert!(!storage.has(&LegacyKey::Recipient));
+        assert!(!storage.has(&LegacyKey::Withdrawn));
+        assert!(!storage.has(&LegacyKey::Flags));
 
         let info = crate::state::load(&env);
         assert_eq!(info.rate_per_second, 100);
@@ -2066,15 +2067,15 @@ fn save_migrates_legacy_per_field_keys_to_config() {
     env.as_contract(&id, || {
         let instance = env.storage().instance();
         instance.remove(&DataKey::Config);
-        instance.set(&DataKey::Sender, &info.sender);
-        instance.set(&DataKey::Recipient, &info.recipient);
-        instance.set(&DataKey::Token, &info.token);
-        instance.set(&DataKey::RatePerSecond, &info.rate_per_second);
-        instance.set(&DataKey::StartTime, &info.start_time);
-        instance.set(&DataKey::EndTime, &info.end_time);
-        instance.set(&DataKey::Withdrawn, &info.withdrawn);
-        instance.set(&DataKey::PausedAt, &info.paused_at);
-        instance.set(&DataKey::Flags, &info.flags);
+        instance.set(&LegacyKey::Sender, &info.sender);
+        instance.set(&LegacyKey::Recipient, &info.recipient);
+        instance.set(&LegacyKey::Token, &info.token);
+        instance.set(&LegacyKey::RatePerSecond, &info.rate_per_second);
+        instance.set(&LegacyKey::StartTime, &info.start_time);
+        instance.set(&LegacyKey::EndTime, &info.end_time);
+        instance.set(&LegacyKey::Withdrawn, &info.withdrawn);
+        instance.set(&LegacyKey::PausedAt, &info.paused_at);
+        instance.set(&LegacyKey::Flags, &info.flags);
         instance.set(&DataKey::EventSequence, &info.event_sequence);
     });
 
@@ -2086,18 +2087,18 @@ fn save_migrates_legacy_per_field_keys_to_config() {
         // After migration, Config must exist...
         assert!(instance.has(&DataKey::Config));
         // ...and every legacy key must be gone.
-        assert!(!instance.has(&DataKey::Sender));
-        assert!(!instance.has(&DataKey::Recipient));
-        assert!(!instance.has(&DataKey::Token));
-        assert!(!instance.has(&DataKey::RatePerSecond));
-        assert!(!instance.has(&DataKey::StartTime));
-        assert!(!instance.has(&DataKey::EndTime));
-        assert!(!instance.has(&DataKey::Withdrawn));
-        assert!(!instance.has(&DataKey::PausedAt));
-        assert!(!instance.has(&DataKey::Flags));
+        assert!(!instance.has(&LegacyKey::Sender));
+        assert!(!instance.has(&LegacyKey::Recipient));
+        assert!(!instance.has(&LegacyKey::Token));
+        assert!(!instance.has(&LegacyKey::RatePerSecond));
+        assert!(!instance.has(&LegacyKey::StartTime));
+        assert!(!instance.has(&LegacyKey::EndTime));
+        assert!(!instance.has(&LegacyKey::Withdrawn));
+        assert!(!instance.has(&LegacyKey::PausedAt));
+        assert!(!instance.has(&LegacyKey::Flags));
         assert!(!instance.has(&DataKey::EventSequence));
-        assert!(!instance.has(&DataKey::ClawbackEnabled));
-        assert!(!instance.has(&DataKey::Cancelled));
+        assert!(!instance.has(&LegacyKey::ClawbackEnabled));
+        assert!(!instance.has(&LegacyKey::Cancelled));
     });
 
     // The migrated state should still be readable and correctly paused.

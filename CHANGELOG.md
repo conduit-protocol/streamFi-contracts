@@ -23,6 +23,9 @@ All notable changes are documented here. Format based on [Keep a Changelog](http
 - Removed an unused `FLAG_PAUSED` import in `contracts/stream/src/state.rs` that failed `cargo clippy --all-targets -- -D warnings`.
 - Scoped the WASM clippy CI step (`cargo clippy --target wasm32-unknown-unknown`) to exclude `conduit-integration-tests` — that package is a native `std`-based test harness, not a contract, and conflicts with `soroban_sdk`'s WASM `panic_impl` when compiled for `wasm32-unknown-unknown`. Matches the existing `build-wasm` CI job, which already only builds the three real contract crates.
 
+### Removed
+- **Legacy per-field `DataKey` variants.** `Sender`, `Recipient`, `Token`, `RatePerSecond`, `StartTime`, `EndTime`, `Withdrawn`, `PausedAt`, `Flags`, `ClawbackEnabled` and `Cancelled` are gone from `DataKey` now that the migration window has passed (#436). Keys are addressed by variant *name* — a `#[contracttype]` unit variant encodes as `Vec([Symbol("<VariantName>")])`, never as a positional discriminant — so deleting them cannot shift `Config`, `Guard`, `StorageVersion` or `EventSequence` for streams already on chain. Entries that older streams left behind are still reachable: the legacy read path in `state::try_load` and the reclaim pass in `state::save` now use `state::LegacyKey`, a `#[contracttype]` enum declaring the same variant names, which encodes to the identical key.
+
 ### Added
 - Emergency pause on `DripFactory` — governor-gated `pause()`/`unpause()` halt all new `create_stream` calls during a protocol emergency; `is_paused()` view exposes the flag so the stream contract and off-chain infra can also gate withdrawals. Adds `ContractPaused` (11), `AlreadyPaused` (12), and `NotPaused` (13) error codes and a `Paused` instance-storage key
 - `force_cancel()` on `DripStream` — recipient can settle atomically after sender leaves stream paused for more than 30 days (`PauseThresholdNotMet` error returned if threshold not met)

@@ -1,4 +1,4 @@
-use soroban_sdk::{panic_with_error, Env};
+use soroban_sdk::{contracttype, panic_with_error, Env};
 
 use crate::storage::{DataKey, StreamInfo, FLAG_CANCELLED, FLAG_CLAWBACK_ENABLED};
 use crate::Error;
@@ -23,25 +23,25 @@ pub fn try_load(env: &Env) -> Result<StreamInfo, Error> {
     // Reconstructs the packed `flags` bitfield from the old dedicated
     // ClawbackEnabled/Cancelled keys plus the existing Flags key (which
     // already held the Paused bit before the single-key consolidation).
-    let mut flags: u32 = s.get(&DataKey::Flags).unwrap_or(0);
-    if s.get(&DataKey::ClawbackEnabled).unwrap_or(false) {
+    let mut flags: u32 = s.get(&LegacyKey::Flags).unwrap_or(0);
+    if s.get(&LegacyKey::ClawbackEnabled).unwrap_or(false) {
         flags |= FLAG_CLAWBACK_ENABLED;
     }
-    if s.get(&DataKey::Cancelled).unwrap_or(false) {
+    if s.get(&LegacyKey::Cancelled).unwrap_or(false) {
         flags |= FLAG_CANCELLED;
     }
 
     Ok(StreamInfo {
-        sender: s.get(&DataKey::Sender).ok_or(Error::NotInitialized)?,
-        recipient: s.get(&DataKey::Recipient).ok_or(Error::NotInitialized)?,
-        token: s.get(&DataKey::Token).ok_or(Error::NotInitialized)?,
+        sender: s.get(&LegacyKey::Sender).ok_or(Error::NotInitialized)?,
+        recipient: s.get(&LegacyKey::Recipient).ok_or(Error::NotInitialized)?,
+        token: s.get(&LegacyKey::Token).ok_or(Error::NotInitialized)?,
         rate_per_second: s
-            .get(&DataKey::RatePerSecond)
+            .get(&LegacyKey::RatePerSecond)
             .ok_or(Error::NotInitialized)?,
-        start_time: s.get(&DataKey::StartTime).ok_or(Error::NotInitialized)?,
-        end_time: s.get(&DataKey::EndTime).ok_or(Error::NotInitialized)?,
-        withdrawn: s.get(&DataKey::Withdrawn).unwrap_or(0),
-        paused_at: s.get(&DataKey::PausedAt).unwrap_or(0),
+        start_time: s.get(&LegacyKey::StartTime).ok_or(Error::NotInitialized)?,
+        end_time: s.get(&LegacyKey::EndTime).ok_or(Error::NotInitialized)?,
+        withdrawn: s.get(&LegacyKey::Withdrawn).unwrap_or(0),
+        paused_at: s.get(&LegacyKey::PausedAt).unwrap_or(0),
         flags,
         event_sequence: s.get(&DataKey::EventSequence).unwrap_or(0),
     })
@@ -63,19 +63,46 @@ pub fn load(env: &Env) -> StreamInfo {
 /// (`withdraw`/`pause`/`resume`/`cancel`/`top_up`/`extend_duration`) for data
 /// no code path reads. They are removed once, on the first `save()` of a
 /// pre-consolidation stream, after which `save()` writes only `Config`.
-const LEGACY_STATE_KEYS: [DataKey; 12] = [
-    DataKey::Sender,
-    DataKey::Recipient,
-    DataKey::Token,
-    DataKey::RatePerSecond,
-    DataKey::StartTime,
-    DataKey::EndTime,
-    DataKey::Withdrawn,
-    DataKey::PausedAt,
-    DataKey::Flags,
-    DataKey::ClawbackEnabled,
-    DataKey::Cancelled,
-    DataKey::EventSequence,
+///
+/// The per-field variants are gone from [`DataKey`], so the keys are declared
+/// here instead. A `#[contracttype]` unit variant encodes as
+/// `Vec([Symbol("<VariantName>")])` (`soroban-sdk-macros`, `derive_enum.rs`),
+/// which means `LegacyKey::Sender` addresses exactly the entry an older
+/// contract wrote as `DataKey::Sender`. That is what lets both the legacy read
+/// path in [`try_load`] and the reclaim pass in [`save`] keep working after the
+/// variants were deleted, and it is also why removing them from `DataKey`
+/// cannot shift any other key: storage identity is the variant *name*, never a
+/// positional discriminant.
+#[contracttype]
+pub enum LegacyKey {
+    Sender,
+    Recipient,
+    Token,
+    RatePerSecond,
+    StartTime,
+    EndTime,
+    Withdrawn,
+    PausedAt,
+    Flags,
+    ClawbackEnabled,
+    Cancelled,
+    EventSequence,
+}
+
+/// Every key a pre-consolidation stream may still hold.
+const LEGACY_KEYS: [LegacyKey; 12] = [
+    LegacyKey::Sender,
+    LegacyKey::Recipient,
+    LegacyKey::Token,
+    LegacyKey::RatePerSecond,
+    LegacyKey::StartTime,
+    LegacyKey::EndTime,
+    LegacyKey::Withdrawn,
+    LegacyKey::PausedAt,
+    LegacyKey::Flags,
+    LegacyKey::ClawbackEnabled,
+    LegacyKey::Cancelled,
+    LegacyKey::EventSequence,
 ];
 
 /// Persist the entire stream state in a single storage write.
@@ -91,7 +118,7 @@ const LEGACY_STATE_KEYS: [DataKey; 12] = [
 pub fn save(env: &Env, info: &StreamInfo) {
     let s = env.storage().instance();
     if !s.has(&DataKey::Config) {
-        for legacy in LEGACY_STATE_KEYS.iter() {
+        for legacy in LEGACY_KEYS.iter() {
             if s.has(legacy) {
                 s.remove(legacy);
             }
