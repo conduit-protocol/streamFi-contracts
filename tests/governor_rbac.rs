@@ -258,6 +258,7 @@ fn admin_can_be_revoked_once_a_second_admin_exists() {
 // ── transfer_authority ─────────────────────────────────────────────────────────
 
 #[test]
+#[allow(deprecated)]
 fn transfer_authority_moves_admin() {
     let env = Env::default();
     env.mock_all_auths();
@@ -332,14 +333,20 @@ fn upgrade_requires_admin_auth() {
     // A non-admin is rejected before reaching the host-level WASM swap.
     let stranger = Address::generate(&env);
     let hash = BytesN::from_array(&env, &[1u8; 32]);
-    assert_eq!(client.try_upgrade(&stranger, &hash), Err(Ok(Error::NotAuthorized)));
+    assert_eq!(
+        client.try_upgrade(&stranger, &hash),
+        Err(Ok(Error::NotAuthorized))
+    );
 
     // An admin passes auth + validation; the host-level WASM swap
     // (update_current_contract_wasm) is a Soroban VM operation that cannot
     // be exercised in the unit-test VM without a compatible WASM binary,
     // but the authorization gate is verified above.
     let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
-    assert_eq!(client.try_upgrade(&authority, &zero_hash), Err(Ok(Error::InvalidWasmHash)));
+    assert_eq!(
+        client.try_upgrade(&authority, &zero_hash),
+        Err(Ok(Error::InvalidWasmHash))
+    );
 }
 
 #[test]
@@ -376,11 +383,17 @@ fn upgrade_blocked_while_paused_then_allowed_after_unpause() {
     client.governor_pause(&authority);
 
     let hash = BytesN::from_array(&env, &[1u8; 32]);
-    assert_eq!(client.try_upgrade(&authority, &hash), Err(Ok(Error::ContractPaused)));
+    assert_eq!(
+        client.try_upgrade(&authority, &hash),
+        Err(Ok(Error::ContractPaused))
+    );
 
     client.governor_unpause(&authority);
     // After unpausing, auth + zero-hash validation pass; the host-level
     // WASM swap is a Soroban VM operation not exercisable in test VM.
     let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
-    assert_eq!(client.try_upgrade(&authority, &zero_hash), Err(Ok(Error::InvalidWasmHash)));
+    assert_eq!(
+        client.try_upgrade(&authority, &zero_hash),
+        Err(Ok(Error::InvalidWasmHash))
+    );
 }

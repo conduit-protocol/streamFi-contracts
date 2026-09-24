@@ -1,6 +1,7 @@
 # Architecture
 
-A technical walkthrough of how the three Conduit contracts fit together.
+A technical walkthrough of how the core Conduit contracts and supporting
+components fit together.
 
 ---
 
@@ -62,6 +63,35 @@ A technical walkthrough of how the three Conduit contracts fit together.
 
 ## Contract Responsibilities
 
+### Supporting protocol contracts and applications
+
+The original stream architecture is extended by supporting components that
+have deliberately narrower responsibilities:
+
+- **BatchTransferProcessor** provides a bounded, guarded execution boundary
+  for batch transfer work. It owns batch limits, checked aggregation, state
+  versioning, and stale-callback invalidation; it does not own stream registry
+  or deployment state. See [ADR-007](./adr/007-batch-transfer-processor-scope.md).
+- **TwapOracle** supplies aggregated, staleness-aware price observations for
+  integrations that need oracle data. It is independent of stream settlement
+  and does not hold stream funds.
+- **TokenVault** is the token custody boundary for integrations that need
+  pooled or separately managed token balances. It sits beside the factory and
+  stream contracts rather than changing the per-stream escrow model.
+- **Indexer** consumes factory and stream events and read APIs to build a
+  searchable off-chain view of streams, transfers, and protocol activity. It
+  is not part of transaction authorization or settlement.
+- **`frontend/`** is the application scaffold that connects wallets to the
+  factory and stream contracts and presents indexed protocol state. It is a
+  client of the on-chain contracts and indexer, not an additional trust
+  boundary.
+
+Together, these components sit around the original flow: the factory deploys
+and registers streams, each stream escrows and settles its own funds, the
+governor supplies protocol configuration, and the supporting contracts and
+applications provide optional batch execution, price data, custody, discovery,
+and user interaction.
+
 ### DripFactory
 
 The factory is a singleton deployed once per network. It owns no token balance for longer than one transaction — funds enter from the sender, then immediately forward to the new stream contract.
@@ -115,13 +145,39 @@ The operator has no power over `withdraw` (recipient-only, unaffected by this me
 
 `extend_duration(caller, extra_time_seconds)` pushes `end_time` forward by `extra_time_seconds`, pulling the exact required deposit (`rate_per_second × extra_time_seconds`) from the sender in the same call. `top_up_and_extend(caller, amount, extra_time_seconds)` does the same end_time push alongside an independently-sized `amount` deposit, so a sender isn't forced to deposit exactly the rate-implied amount when extending. Neither works on an open-ended stream (`end_time == 0`) — use `top_up` alone in that case.
 
+*Governance duration bounds:* `GovernorConfig.max_duration_seconds` is enforced at stream creation time (`DripFactory::create_stream`) to bound upfront capital commitments and scheduling horizons. Post-creation extensions (`extend_duration` / `top_up_and_extend`) are intentionally unbounded by the governor's initial duration cap. This allows ongoing payment relationships (such as payroll or rolling subscriptions) to be extended continuously without requiring redeployment, preserving the standalone per-stream architecture (ADR-001) without cross-contract governor calls on each extension.
+
 ### DripGovernor
 
 The governor holds mutable protocol parameters. In the current version it is controlled by a single `authority` address (intended to be a multisig). In a future release, governance will transition to on-chain token voting.
 
 The governor does not hold any token balance.
 
-`DripFactory::create_stream` cross-contract-calls `DripGovernor::config()` to enforce `max_rate_per_second`, `min_duration_seconds`, and `max_duration_seconds` (for fixed-duration streams), and `DripFactory::protocol_fee_bps()` reads `fee_bps` live from the governor — falling back to the 30bps default only if the factory itself hasn't been initialized yet.
+`DripFactory::create_stream` cross-contract-calls `DripGovernor::config()` to enforce `max_rate_per_second`, `min_duration_seconds`, and `max_duration_seconds` (for fixed-duration streams), and `DripFactory::protocol_fee_bps()` reads `fee_bps` live from the governor — falling back to the 30bps default only if the factory itself hasn't been initialized yet. Post-creation stream extensions on deployed `DripStream` instances are intentionally self-contained and not constrained by the initial `max_duration_seconds` creation limit.
+
+### TokenVault
+
+**Status: not part of the streaming protocol.** `DripStream`, `DripFactory` and
+`DripGovernor` never reference it, and no protocol call path reaches it.
+
+It is a standalone, owner-controlled token vault: deposit, withdraw, a
+configurable `max_limit`, an optional operator address, and a pause switch. It
+holds its own balance and has no notion of streams, rates, or schedules.
+
+It remains a workspace member so it continues to build and its tests continue to
+run, but it should be read as an **independent contract that happens to live in
+this repository**, not as a component of the streaming protocol. In particular:
+
+- Nothing in the protocol escrows through it. Stream deposits go
+  sender → factory → stream contract, as shown in the Overview above.
+- A security review scoped to the streaming protocol can exclude it; a review
+  scoped to *everything deployed from this repository* cannot.
+- `deploy.sh` does deploy it, so a deployed instance may exist on a network even
+  though no protocol contract will ever call it.
+
+If it is intended as a future escrow backend, that intent is not recorded
+anywhere and no interface currently anticipates it. See
+[ADR-004](adr/004-token-vault-scope.md).
 
 ---
 

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { validateStreamPayload } from './lib/validateStreamPayload';
-import { estimateFee, FeeEstimate, StreamOperation } from './lib/estimateFee';
+import { estimateFee, FeeEstimate } from './lib/estimateFee';
+import { StreamOperation } from './lib/estimateFee';
 
 const RPC_TIMEOUT_MS = 10_000;
 const FEE_DEBOUNCE_MS = 500;

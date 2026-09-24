@@ -4,6 +4,15 @@
 # Usage:
 #   ./scripts/upgrade.sh testnet factory
 #   ./scripts/upgrade.sh testnet governor
+#
+# oracle, batch-processor, and token-vault are deployed by deploy.sh (#295)
+# but are NOT supported here: none of their contracts currently expose an
+# `upgrade` entry point (only DripFactory and DripGovernor do — see
+# `pub fn upgrade` in contracts/factory/src/lib.rs and
+# contracts/governor/src/lib.rs). Adding upgrade support for them means
+# adding an admin-gated upgrade() function to each contract first, which is
+# a contract-logic change, not a scripting one — tracked separately rather
+# than faked here.
 
 set -euo pipefail
 
@@ -50,6 +59,11 @@ elif [[ "$CONTRACT" == "governor" ]]; then
     --network "$NETWORK" --source dev \
     -- upgrade --new_wasm_hash "$NEW_HASH"
   echo "✅  DripGovernor upgraded."
+
+elif [[ "$CONTRACT" == "oracle" || "$CONTRACT" == "batch-processor" || "$CONTRACT" == "token-vault" ]]; then
+  echo "❌  '$CONTRACT' has no on-chain 'upgrade' entry point yet — only 'factory' and 'governor' do." >&2
+  echo "    See the note at the top of this script." >&2
+  exit 1
 
 else
   echo "❌  Unknown contract '$CONTRACT'. Use 'factory' or 'governor'." >&2

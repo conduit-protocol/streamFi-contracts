@@ -35,3 +35,4 @@ Deploy a new `DripStream` contract instance for every stream. Each stream is ful
 - **Factory required.** Without a factory, users would need to manage WASM hashes manually. The factory abstracts this.
 - **No cross-stream atomics.** You cannot atomically split a stream into two or merge two streams in a single transaction. Accepted for v1.
 - **Index lives in factory.** Because each stream is independent, the factory must maintain `BySender` / `ByRecipient` indices. These are the only piece of shared mutable state in the protocol.
+- **Standalone stream lifecycle.** Each stream instance manages its own lifecycle (withdraw, pause, cancel, top_up, extend_duration) independently. Initial duration limits are enforced by `DripFactory` at stream creation, while post-creation duration extensions on deployed instances remain self-contained without requiring cross-contract calls back to the governor.

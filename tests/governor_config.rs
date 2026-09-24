@@ -151,6 +151,29 @@ fn min_duration_view_matches_config() {
     assert_eq!(client.min_duration(), 7_200);
 }
 
+/// `min_duration()` must error the same way `max_duration()`/`max_rate()`/
+/// `config()` do for an uninitialised governor, rather than silently
+/// returning a hardcoded default (#424) — otherwise a caller cannot tell
+/// "governor says 3600" from "governor doesn't exist yet".
+#[test]
+fn min_duration_errors_when_uninitialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let id = env.register_contract(None, DripGovernor);
+    let client = DripGovernorClient::new(&env, &id);
+
+    assert_eq!(client.try_min_duration(), Err(Ok(Error::NotInitialized)));
+    assert_eq!(
+        client.try_min_duration().is_err(),
+        client.try_max_duration().is_err()
+    );
+    assert_eq!(
+        client.try_min_duration().is_err(),
+        client.try_max_rate().is_err()
+    );
+}
+
 #[test]
 fn zero_min_duration_is_rejected() {
     let env = Env::default();
@@ -288,6 +311,7 @@ fn max_duration_matches_config() {
 // ── Transfer authority ───────────────────────────────────────────────────────
 
 #[test]
+#[allow(deprecated)]
 fn authority_transfers_correctly() {
     let env = Env::default();
     env.mock_all_auths();
@@ -335,6 +359,7 @@ fn revoke_role_extends_instance_ttl() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn transfer_authority_extends_instance_ttl() {
     let env = Env::default();
     env.mock_all_auths();
@@ -370,6 +395,24 @@ fn set_fee_recipient_rejects_zero_address() {
     ));
 
     let result = client.try_set_fee_recipient(&authority, &zero_account);
+    assert_eq!(result, Err(Ok(Error::InvalidParam)));
+
+    // The rejected call must not have mutated state.
+    assert_eq!(client.config().fee_recipient, fee_recipient);
+}
+
+#[test]
+fn set_fee_recipient_rejects_zero_contract_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, fee_recipient) = deploy_governor(&env);
+    let zero_contract = Address::from_string(&soroban_sdk::String::from_str(
+        &env,
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    ));
+
+    let result = client.try_set_fee_recipient(&authority, &zero_contract);
     assert_eq!(result, Err(Ok(Error::InvalidParam)));
 
     // The rejected call must not have mutated state.
@@ -456,4 +499,89 @@ fn non_fee_manager_cannot_set_fee_recipient() {
     let new_recipient = Address::generate(&env);
     let result = client.try_set_fee_recipient(&non_fee_manager, &new_recipient);
     assert!(result.is_err());
+}
+
+#[test]
+fn set_fee_bps_validates_param_early() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _authority, _) = deploy_governor(&env);
+    let unauthorized = Address::generate(&env);
+
+    // Out-of-bounds fee (>10,000) fails early with InvalidParam
+    let result = client.try_set_fee_bps(&unauthorized, &15_000);
+    assert_eq!(result, Err(Ok(Error::InvalidParam)));
+}
+
+#[test]
+fn propose_authority_rejects_zero_address_and_existing_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _) = deploy_governor(&env);
+    let zero_account = Address::from_string(&soroban_sdk::String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+
+    // Zero address proposal rejected
+    let res_zero = client.try_propose_authority(&authority, &zero_account);
+    assert_eq!(res_zero, Err(Ok(Error::InvalidParam)));
+
+    // Existing admin proposal rejected
+    let res_existing = client.try_propose_authority(&authority, &authority);
+    assert_eq!(res_existing, Err(Ok(Error::InvalidParam)));
+}
+
+#[test]
+fn propose_authority_rejects_zero_contract_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _) = deploy_governor(&env);
+    let zero_contract = Address::from_string(&soroban_sdk::String::from_str(
+        &env,
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    ));
+
+    let result = client.try_propose_authority(&authority, &zero_contract);
+    assert_eq!(result, Err(Ok(Error::InvalidParam)));
+}
+
+#[test]
+#[allow(deprecated)]
+fn transfer_authority_rejects_zero_address_and_existing_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _) = deploy_governor(&env);
+    let zero_account = Address::from_string(&soroban_sdk::String::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+
+    // Zero address transfer rejected
+    let res_zero = client.try_transfer_authority(&authority, &zero_account);
+    assert_eq!(res_zero, Err(Ok(Error::InvalidParam)));
+
+    // Self/existing admin transfer rejected
+    let res_existing = client.try_transfer_authority(&authority, &authority);
+    assert_eq!(res_existing, Err(Ok(Error::InvalidParam)));
+}
+
+#[test]
+#[allow(deprecated)]
+fn transfer_authority_rejects_zero_contract_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, authority, _) = deploy_governor(&env);
+    let zero_contract = Address::from_string(&soroban_sdk::String::from_str(
+        &env,
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    ));
+
+    let result = client.try_transfer_authority(&authority, &zero_contract);
+    assert_eq!(result, Err(Ok(Error::InvalidParam)));
 }

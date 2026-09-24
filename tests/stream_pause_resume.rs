@@ -51,6 +51,7 @@ fn deploy_stream<'a>(
         &now,
         &(now + duration),
         &false,
+        &2_592_000_u64,
     );
 
     (client, token_addr)
@@ -142,6 +143,20 @@ fn resume_on_running_stream_is_rejected() {
     assert_eq!(result, Err(Ok(Error::NotPaused)));
 }
 
+#[test]
+fn resume_after_safe_pause_window_is_rejected() {
+    let env = base_env();
+    let sender = Address::generate(&env);
+    let recip = Address::generate(&env);
+    let (client, _) = deploy_stream(&env, &sender, &recip, 100, 3_600);
+
+    client.pause(&sender);
+    advance(&env, 2_592_001);
+
+    let result = client.try_resume(&sender);
+    assert_eq!(result, Err(Ok(Error::PauseThresholdNotMet)));
+}
+
 // ── Recipient can withdraw while paused ──────────────────────────────────────
 
 #[test]
@@ -206,20 +221,20 @@ fn withdraw_at_same_timestamp_as_resume() {
     advance(&env, 300); // 300_000 streamed
     client.pause(&sender);
     advance(&env, 1_000); // 1000s paused (should not count)
-    
+
     // Resume the stream
     client.resume(&sender);
-    
+
     // Immediately withdraw at the same timestamp as resume
     // This should only withdraw the 300_000 from before the pause
     // with zero newly-streamed tokens since resume
     let withdrawable_at_resume = client.withdrawable();
     assert_eq!(withdrawable_at_resume, 300_000);
-    
+
     let withdrawn = client.withdraw(&300_000);
     assert_eq!(withdrawn, 300_000);
     assert_eq!(tok.balance(&recipient), 300_000);
-    
+
     // Nothing more should be withdrawable (zero elapsed since resume)
     assert_eq!(client.withdrawable(), 0);
 }

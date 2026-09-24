@@ -11,6 +11,21 @@ export interface FeeEstimate {
   ledger_entries: number;
 }
 
+export type StreamOperation = 
+  | 'CreateStream' 
+  | 'CancelStream' 
+  | 'Withdraw' 
+  | 'PauseStream' 
+  | 'ResumeStream'
+  | 'SetOperator'
+  | 'RevokeOperator'
+  | 'ExtendDuration'
+  | 'TopUp'
+  | 'TopUpAndExtend'
+  | 'Clawback'
+  | 'ForceCancel'
+  | 'TransferRecipient';
+
 /**
  * Estimate the Soroban network fee for a stream operation by simulating
  * the transaction against the Soroban RPC endpoint.
@@ -28,7 +43,7 @@ export async function estimateFee(
   rpcUrl: string,
   factoryId: string,
   source: string,
-  operation: 'CreateStream' | 'CancelStream' | 'Withdraw' | 'PauseStream' | 'ResumeStream',
+  operation: StreamOperation,
 ): Promise<FeeEstimate> {
   const server = new SorobanRpc(rpcUrl);
 
@@ -106,6 +121,14 @@ function operationToDiscriminant(op: string): number {
     Withdraw: 2,
     PauseStream: 3,
     ResumeStream: 4,
+    SetOperator: 5,
+    RevokeOperator: 6,
+    ExtendDuration: 7,
+    TopUp: 8,
+    TopUpAndExtend: 9,
+    Clawback: 10,
+    ForceCancel: 11,
+    TransferRecipient: 12,
   };
   return map[op] ?? 0;
 }

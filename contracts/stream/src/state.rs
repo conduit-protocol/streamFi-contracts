@@ -1,4 +1,4 @@
-use soroban_sdk::Env;
+use soroban_sdk::{panic_with_error, Env};
 
 use crate::storage::{DataKey, StreamInfo, FLAG_CANCELLED, FLAG_CLAWBACK_ENABLED};
 use crate::Error;
@@ -9,13 +9,13 @@ use crate::Error;
 /// `initialize()` calls). Falls back to reading each field individually
 /// for streams that were initialized before this optimisation landed —
 /// this keeps older on-chain instances readable without a migration.
-pub fn load(env: &Env) -> StreamInfo {
+pub fn try_load(env: &Env) -> Result<StreamInfo, Error> {
     let s = env.storage().instance();
 
     // Fast path: stream was initialized with the consolidated key.
     if s.has(&DataKey::Config) {
         if let Some(info) = s.get::<_, StreamInfo>(&DataKey::Config) {
-            return info;
+            return Ok(info);
         }
     }
 
@@ -31,32 +31,73 @@ pub fn load(env: &Env) -> StreamInfo {
         flags |= FLAG_CANCELLED;
     }
 
-    StreamInfo {
-        sender: s.get(&DataKey::Sender).unwrap(),
-        recipient: s.get(&DataKey::Recipient).unwrap(),
-        token: s.get(&DataKey::Token).unwrap(),
-        rate_per_second: s.get(&DataKey::RatePerSecond).unwrap(),
-        start_time: s.get(&DataKey::StartTime).unwrap(),
-        end_time: s.get(&DataKey::EndTime).unwrap(),
+    Ok(StreamInfo {
+        sender: s.get(&DataKey::Sender).ok_or(Error::NotInitialized)?,
+        recipient: s.get(&DataKey::Recipient).ok_or(Error::NotInitialized)?,
+        token: s.get(&DataKey::Token).ok_or(Error::NotInitialized)?,
+        rate_per_second: s
+            .get(&DataKey::RatePerSecond)
+            .ok_or(Error::NotInitialized)?,
+        start_time: s.get(&DataKey::StartTime).ok_or(Error::NotInitialized)?,
+        end_time: s.get(&DataKey::EndTime).ok_or(Error::NotInitialized)?,
         withdrawn: s.get(&DataKey::Withdrawn).unwrap_or(0),
         paused_at: s.get(&DataKey::PausedAt).unwrap_or(0),
         flags,
+        event_sequence: s.get(&DataKey::EventSequence).unwrap_or(0),
+    })
+}
+
+pub fn load(env: &Env) -> StreamInfo {
+    match try_load(env) {
+        Ok(info) => info,
+        Err(err) => panic_with_error!(env, err),
     }
 }
 
-/// Persist the entire stream state and keep the legacy individual keys in sync.
+/// Pre-consolidation per-field storage keys.
+///
+/// Before the single-key `Config` representation, each `StreamInfo` field was
+/// stored under its own key. `save()` used to mirror them alongside `Config`,
+/// but `load()` reads only `Config` on its fast path, so those mirrors were
+/// write-only dead weight — ~10 `instance().set()` calls on every mutation
+/// (`withdraw`/`pause`/`resume`/`cancel`/`top_up`/`extend_duration`) for data
+/// no code path reads. They are removed once, on the first `save()` of a
+/// pre-consolidation stream, after which `save()` writes only `Config`.
+const LEGACY_STATE_KEYS: [DataKey; 12] = [
+    DataKey::Sender,
+    DataKey::Recipient,
+    DataKey::Token,
+    DataKey::RatePerSecond,
+    DataKey::StartTime,
+    DataKey::EndTime,
+    DataKey::Withdrawn,
+    DataKey::PausedAt,
+    DataKey::Flags,
+    DataKey::ClawbackEnabled,
+    DataKey::Cancelled,
+    DataKey::EventSequence,
+];
+
+/// Persist the entire stream state in a single storage write.
+///
+/// Writes only the consolidated `Config` key. `load()` reads `Config` on its
+/// fast path, so the legacy per-field keys are never read once `Config` exists
+/// (and every stream `initialize()`d since the consolidation has `Config`).
+///
+/// One-time legacy migration: the first `save()` on a pre-consolidation stream
+/// (per-field keys present, no `Config`) supersedes them, so we remove them —
+/// reclaiming the entries/rent they occupy — then write `Config`. Subsequent
+/// saves see `Config` present and skip straight to the single write.
 pub fn save(env: &Env, info: &StreamInfo) {
     let s = env.storage().instance();
+    if !s.has(&DataKey::Config) {
+        for legacy in LEGACY_STATE_KEYS.iter() {
+            if s.has(legacy) {
+                s.remove(legacy);
+            }
+        }
+    }
     s.set(&DataKey::Config, info);
-    s.set(&DataKey::Sender, &info.sender);
-    s.set(&DataKey::Recipient, &info.recipient);
-    s.set(&DataKey::Token, &info.token);
-    s.set(&DataKey::RatePerSecond, &info.rate_per_second);
-    s.set(&DataKey::StartTime, &info.start_time);
-    s.set(&DataKey::EndTime, &info.end_time);
-    s.set(&DataKey::Withdrawn, &info.withdrawn);
-    s.set(&DataKey::PausedAt, &info.paused_at);
-    s.set(&DataKey::Flags, &info.flags);
 }
 
 pub fn assert_not_cancelled(info: &StreamInfo) -> Result<(), Error> {

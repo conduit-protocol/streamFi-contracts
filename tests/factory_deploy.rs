@@ -9,7 +9,7 @@ use drip_factory::{DripFactory, DripFactoryClient, Error};
 use drip_governor::{DripGovernor, DripGovernorClient};
 use soroban_sdk::{
     testutils::{storage::Instance as _, Address as _, Ledger, LedgerInfo},
-    token, Address, BytesN, Env,
+    token, Address, BytesN, Env, TryIntoVal,
 };
 
 fn base_env() -> Env {
@@ -43,7 +43,7 @@ fn deploy_factory(env: &Env) -> DripFactoryClient<'_> {
     governor_client.initialize(&authority, &fee_recipient, &factory_id);
 
     let client = DripFactoryClient::new(env, &factory_id);
-    let dummy_hash = BytesN::from_array(env, &[0u8; 32]);
+    let dummy_hash = BytesN::from_array(env, &[1u8; 32]);
     client.initialize(&dummy_hash, &governor_id);
     client
 }
@@ -64,7 +64,7 @@ fn deploy_factory_with_governor<'a>(
     governor_client.initialize(&authority, &fee_recipient, &factory_id);
 
     let factory_client = DripFactoryClient::new(env, &factory_id);
-    let dummy_hash = BytesN::from_array(env, &[0u8; 32]);
+    let dummy_hash = BytesN::from_array(env, &[1u8; 32]);
     factory_client.initialize(&dummy_hash, &governor_id);
 
     (factory_client, governor_client, authority)
@@ -93,7 +93,8 @@ fn streams_by_sender_returns_empty_for_unknown_address() {
     let client = deploy_factory(&env);
     let sender = Address::generate(&env);
     let result = client.streams_by_sender(&sender, &0, &10);
-    assert_eq!(result.len(), 0);
+    assert_eq!(result.ids.len(), 0);
+    assert_eq!(result.total, 0);
 }
 
 #[test]
@@ -104,7 +105,7 @@ fn pagination_does_not_panic_when_offset_plus_limit_overflows_u32() {
     // offset + limit would overflow u32 with raw addition; must not panic
     // and must simply return no results since the index is empty.
     let result = client.streams_by_sender(&sender, &u32::MAX, &u32::MAX);
-    assert_eq!(result.len(), 0);
+    assert_eq!(result.ids.len(), 0);
 }
 
 #[test]
@@ -137,13 +138,15 @@ fn pagination_clamps_offset_near_u32_max_against_populated_index() {
     // would overflow u32 with raw addition, so this must clamp to an empty
     // result rather than panicking.
     let by_sender = client.streams_by_sender(&sender, &(u32::MAX - 1), &10);
-    assert_eq!(by_sender.len(), 0);
+    assert_eq!(by_sender.ids.len(), 0);
+    assert_eq!(by_sender.total, 3);
     let by_recipient = client.streams_by_recipient(&recip, &(u32::MAX - 1), &10);
-    assert_eq!(by_recipient.len(), 0);
+    assert_eq!(by_recipient.ids.len(), 0);
+    assert_eq!(by_recipient.total, 3);
 
     // A valid in-range offset combined with a limit near u32::MAX must still
     // clamp to the index's actual length instead of overflowing.
-    let tail = client.streams_by_sender(&sender, &1, &u32::MAX);
+    let tail = client.streams_by_sender(&sender, &1, &u32::MAX).ids;
     assert_eq!(tail.len(), 2);
     assert_eq!(tail.get(0), Some(2));
     assert_eq!(tail.get(1), Some(3));
@@ -155,7 +158,8 @@ fn streams_by_recipient_returns_empty_for_unknown_address() {
     let client = deploy_factory(&env);
     let recip = Address::generate(&env);
     let result = client.streams_by_recipient(&recip, &0, &10);
-    assert_eq!(result.len(), 0);
+    assert_eq!(result.ids.len(), 0);
+    assert_eq!(result.total, 0);
 }
 
 #[test]
@@ -247,6 +251,34 @@ fn create_stream_rejects_zero_stellar_recipient() {
 }
 
 #[test]
+fn create_stream_rejects_zero_contract_recipient() {
+    let env = base_env();
+    let client = deploy_factory(&env);
+    let sender = Address::generate(&env);
+
+    let zero_recipient = Address::from_string(&soroban_sdk::String::from_str(
+        &env,
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    ));
+
+    let token = make_token(&env, &sender, 100_000);
+    let now = env.ledger().timestamp();
+
+    let result = client.try_create_stream(
+        &sender,
+        &zero_recipient,
+        &token,
+        &100_000,
+        &100,
+        &(now + 100),
+        &(now + 3_700),
+        &false,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidRecipient)));
+}
+
+#[test]
 fn create_stream_rejects_sender_as_recipient() {
     let env = base_env();
     let client = deploy_factory(&env);
@@ -279,6 +311,33 @@ fn create_stream_rejects_zero_stellar_token() {
     let zero_token = Address::from_string(&soroban_sdk::String::from_str(
         &env,
         "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    let now = env.ledger().timestamp();
+
+    let result = client.try_create_stream(
+        &sender,
+        &recip,
+        &zero_token,
+        &100_000,
+        &100,
+        &(now + 100),
+        &(now + 3_700),
+        &false,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidToken)));
+}
+
+#[test]
+fn create_stream_rejects_zero_contract_token() {
+    let env = base_env();
+    let client = deploy_factory(&env);
+    let sender = Address::generate(&env);
+    let recip = Address::generate(&env);
+
+    let zero_token = Address::from_string(&soroban_sdk::String::from_str(
+        &env,
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
     ));
     let now = env.ledger().timestamp();
 
@@ -560,11 +619,31 @@ fn protocol_fee_bps_reflects_live_governor_value() {
 }
 
 #[test]
-fn protocol_fee_bps_defaults_to_30_when_uninitialized() {
+fn protocol_fee_bps_reports_not_initialized_rather_than_guessing_30() {
+    // Previously this asserted a bare `30` for a factory that has no governor
+    // to read a fee from — indistinguishable from a governor genuinely
+    // configured at 30 bps, which is the ambiguity issue #339 describes.
     let env = base_env();
     let id = env.register_contract(None, DripFactory);
     let client = DripFactoryClient::new(&env, &id);
-    assert_eq!(client.protocol_fee_bps(), 30);
+
+    assert_eq!(
+        client.try_protocol_fee_bps(),
+        Err(Ok(drip_factory::Error::NotInitialized))
+    );
+}
+
+#[test]
+fn protocol_fee_bps_or_default_preserves_the_lenient_read() {
+    // Callers that would rather show an approximate fee than nothing can still
+    // do so — but they pass the fallback in, so the choice is visible at the
+    // call site instead of hidden inside the factory.
+    let env = base_env();
+    let id = env.register_contract(None, DripFactory);
+    let client = DripFactoryClient::new(&env, &id);
+
+    assert_eq!(client.protocol_fee_bps_or_default(&30), 30);
+    assert_eq!(client.protocol_fee_bps_or_default(&0), 0);
 }
 
 // ── Reentrancy guard ────────────────────────────────────────────────────────
@@ -698,4 +777,112 @@ fn upgrade_stream_wasm_rejects_all_zero_hash() {
     let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
     let result = client.try_upgrade_stream_wasm(&zero_hash);
     assert_eq!(result, Err(Ok(Error::InvalidWasmHash)));
+}
+
+// ── Issue #351: protocol fee is charged at creation ─────────────────────────
+//
+// The governed `fee_bps` / `fee_recipient` from DripGovernor were stored and
+// read (`protocol_fee_bps()`) but never applied. create_stream now charges the
+// fee as a surcharge on the deposit: the sender funds `deposit + fee`, the
+// stream receives the full `deposit`, and `fee` is routed to `fee_recipient`.
+//
+// This needs a real stream WASM (a successful create_stream deploys one), so
+// it is #[ignore]d like the other deployment-path tests. Run with:
+//   cargo build -p drip-stream --target wasm32-unknown-unknown --release
+//   cargo test --test factory_deploy -- --ignored --nocapture
+#[test]
+#[ignore = "requires stream WASM built via cargo build -p drip-stream --target wasm32-unknown-unknown --release"]
+fn create_stream_charges_and_routes_protocol_fee() {
+    use soroban_sdk::testutils::Events as _;
+
+    let env = base_env();
+    env.mock_all_auths();
+
+    // Deploy a dedicated factory + governor so we control fee_recipient and can
+    // read it back from governor config for the assertion.
+    let factory_id = env.register_contract(None, DripFactory);
+    let governor_id = env.register_contract(None, DripGovernor);
+
+    let authority = Address::generate(&env);
+    let fee_recipient = Address::generate(&env);
+    let governor_client = DripGovernorClient::new(&env, &governor_id);
+    governor_client.initialize(&authority, &fee_recipient, &factory_id);
+
+    let client = DripFactoryClient::new(&env, &factory_id);
+    let dummy_hash = BytesN::from_array(&env, &[0u8; 32]);
+    client.initialize(&dummy_hash, &governor_id);
+
+    // Wire a real stream WASM into the factory.
+    let wasm_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/target/wasm32-unknown-unknown/release/drip_stream.wasm"
+    );
+    let wasm = std::fs::read(wasm_path).expect("build the stream WASM first (see docstring)");
+    let wasm_hash = env.deployer().upload_contract_wasm(wasm.as_slice());
+    env.as_contract(&client.address, || {
+        env.storage()
+            .instance()
+            .set(&drip_factory::storage::DataKey::StreamWasmHash, &wasm_hash);
+    });
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let now = env.ledger().timestamp();
+
+    // Fresh token; default governor fee_bps = 30 (0.30%).
+    let fee_bps = governor_client.config().fee_bps;
+    let deposit: i128 = 360_000;
+    let fee = deposit * fee_bps as i128 / 10_000;
+
+    let admin = Address::generate(&env);
+    let token_addr = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let tok = token::Client::new(&env, &token_addr);
+    let token_admin = token::StellarAssetClient::new(&env, &token_addr);
+    // Fund the sender for deposit + fee so the surcharge can be collected.
+    token_admin.mint(&sender, &(deposit + fee));
+
+    client.create_stream(
+        &sender,
+        &recipient,
+        &token_addr,
+        &deposit,
+        &100,
+        &now,
+        &(now + 3_600),
+        &false,
+    );
+
+    let stream_addr = client.stream_address(&(client.stream_count() - 1)).unwrap();
+
+    // 1) Sender paid deposit + fee (fully drained).
+    assert_eq!(tok.balance(&sender), 0);
+
+    // 2) Stream received the full deposit — funding accounting is unchanged.
+    assert_eq!(tok.balance(&stream_addr), deposit);
+
+    // 3) fee_recipient received exactly `deposit * fee_bps / 10_000`.
+    assert_eq!(tok.balance(&fee_recipient), fee);
+
+    // 4) The factory's public view quotes the fee that is now actually charged.
+    assert_eq!(client.protocol_fee_bps(), fee_bps);
+
+    // 5) A fee event was emitted (recipient, amount).
+    let mut fee_events = 0;
+    for e in env.events().all().into_iter() {
+        if e.0 != client.address || e.1.len() != 2 {
+            continue;
+        }
+        let sym: Option<soroban_sdk::Symbol> = e.1.get(0).and_then(|v| v.try_into_val(&env).ok());
+        let topic1: Option<Address> = e.1.get(1).and_then(|v| v.try_into_val(&env).ok());
+        let data: Option<i128> = e.2.try_into_val(&env).ok();
+        if sym == Some(soroban_sdk::symbol_short!("fee"))
+            && topic1 == Some(fee_recipient.clone())
+            && data == Some(fee)
+        {
+            fee_events += 1;
+        }
+    }
+    assert_eq!(fee_events, 1, "expected exactly one fee event");
 }

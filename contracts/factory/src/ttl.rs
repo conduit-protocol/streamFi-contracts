@@ -18,24 +18,6 @@ pub fn bump_instance(env: &Env) {
     env.storage().instance().extend_ttl(THRESHOLD, EXTEND_TO);
 }
 
-/// Extend the TTL of a single persistent entry. Called by read paths so any
-/// healthy activity refreshes the registry indices, preventing them from
-/// silently archiving during an idle period in which only `pause`/`unpause`/
-/// `upgrade_stream_wasm` are exercised (those don't touch the persistent
-/// indices, so without this helper this contract's listings would age out
-/// independent of activity).
-///
-/// In this branch (`fix/audit-round-2`), the maintenance paths now drive
-/// the bounded walker `bump_persistent_bucket`, so this single-key helper
-/// is currently un-called from inside the contract. Make it public so
-/// external integrations / future tests can refresh a specific entry on
-/// demand without going through the walker.
-pub fn bump_persistent(env: &Env, key: &DataKey) {
-    env.storage()
-        .persistent()
-        .extend_ttl(key, THRESHOLD, EXTEND_TO);
-}
-
 /// Bounded TTL walker.
 ///
 /// Advances `DataKey::LastBumpedId` by `BATCH_LIMIT`, wrapping around modulo
