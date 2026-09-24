@@ -88,4 +88,20 @@ impl BatchTransferProcessor {
 
         Ok(total)
     }
+
+    /// Largest number of transfers `process_batch` will accept in one call.
+    ///
+    /// Exposed as a read-only entry point so a client integrating against a
+    /// deployed instance can discover the cap on-chain instead of hardcoding
+    /// it. A hardcoded client-side copy silently drifts if the contract is
+    /// ever upgraded with a different limit: the client would keep building
+    /// batches it believes are valid until `process_batch` starts rejecting
+    /// them with [`Error::BatchTooLarge`].
+    ///
+    /// This returns the same value [`Self::process_batch`] compares against,
+    /// so a batch of exactly `max_batch_size()` entries is accepted and one
+    /// more is rejected.
+    pub fn max_batch_size(_env: Env) -> u32 {
+        MAX_BATCH_SIZE
+    }
 }

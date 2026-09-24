@@ -116,6 +116,41 @@ fn process_batch_rejects_101_entries() {
 }
 
 #[test]
+fn max_batch_size_matches_the_enforced_boundary() {
+    let f = setup();
+
+    // The advertised cap must be the constant the processor actually enforces,
+    // otherwise a client that trusts it would still get BatchTooLarge.
+    let cap = f.client.max_batch_size();
+    assert_eq!(cap, 100);
+
+    // Exactly `cap` entries are accepted...
+    f.token_admin_client.mint(&f.funder, &(cap as i128));
+    let recipients = addrs(&f.env, cap);
+    let mut amounts = Vec::new(&f.env);
+    for _ in 0..cap {
+        amounts.push_back(1i128);
+    }
+    assert_eq!(
+        f.client
+            .process_batch(&f.funder, &f.token.address, &recipients, &amounts),
+        cap as i128,
+    );
+
+    // ...and one more is rejected, so the read-only value is the true boundary.
+    let over_recipients = addrs(&f.env, cap + 1);
+    let mut over_amounts = Vec::new(&f.env);
+    for _ in 0..=cap {
+        over_amounts.push_back(1i128);
+    }
+    assert_eq!(
+        f.client
+            .try_process_batch(&f.funder, &f.token.address, &over_recipients, &over_amounts),
+        Err(Ok(Error::BatchTooLarge)),
+    );
+}
+
+#[test]
 fn process_batch_rejects_length_mismatch() {
     let f = setup();
     let recipients = addrs(&f.env, 2);
