@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { useMutation, gql } from '@apollo/client';
+import { useMutation, gql, useApolloClient } from '@apollo/client';
 import { validateStreamPayload } from './lib/validateStreamPayload';
+import { useFeeEstimate } from './lib/useFeeEstimate';
 
 const SUBMIT_STREAM_REQUEST_MOBILE = gql`
   mutation SubmitStreamRequestMobile($recipient: String!, $amount: Float!, $ratePerSecond: Float!) {
@@ -11,13 +12,36 @@ const SUBMIT_STREAM_REQUEST_MOBILE = gql`
   }
 `;
 
+const FACTORY_ADDRESS = process.env.REACT_APP_FACTORY_ADDRESS ?? '';
+const MUTATION_TIMEOUT_MS = 10_000;
+
 export const MobileView: React.FC = () => {
   const [recipient, setRecipient] = useState('');
   const [amount, setAmount] = useState('');
   const [ratePerSecond, setRatePerSecond] = useState('');
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
+  const client = useApolloClient();
 
-  const [submitStreamRequest, { loading }] = useMutation(SUBMIT_STREAM_REQUEST_MOBILE);
+  const hasValidInputs = validateStreamPayload({
+    recipient,
+    amount: Number(amount),
+    ratePerSecond: Number(ratePerSecond),
+  }).valid;
+
+  const { estimate: feeEstimate, loading: feeLoading, error: feeError } = useFeeEstimate({
+    factoryAddress: FACTORY_ADDRESS,
+    senderAddress: '',
+    enabled: hasValidInputs && FACTORY_ADDRESS.length > 0,
+  });
+
+  const [submitStreamRequest, { loading }] = useMutation(SUBMIT_STREAM_REQUEST_MOBILE, {
+    // FIX for Bug #148: Reset Apollo cache after successful mutation so
+    // subsequent queries reflect the latest on-chain state instead of
+    // serving stale cached data.
+    onCompleted: () => {
+      client.cache.reset();
+    },
+  });
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -41,8 +65,17 @@ export const MobileView: React.FC = () => {
       return;
     }
 
+    // FIX for Bug #285: same underlying issue as StreamCreation (#150) and
+    // WalletConnection — if the GraphQL endpoint never responds, the loading
+    // state hangs indefinitely. Racing the mutation against a timeout
+    // guarantees loading always clears, either with a result or a clear
+    // timeout error.
+    const timeout = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('GraphQL endpoint timed out. Please try again.')), MUTATION_TIMEOUT_MS);
+    });
+
     try {
-      await submitStreamRequest({ variables: payload });
+      await Promise.race([submitStreamRequest({ variables: payload }), timeout]);
     } catch (e) {
       setValidationErrors([e instanceof Error ? e.message : 'Failed to submit stream request.']);
     }
@@ -66,6 +99,18 @@ export const MobileView: React.FC = () => {
         Rate per second
         <input value={ratePerSecond} onChange={(e) => setRatePerSecond(e.target.value)} />
       </label>
+
+      {hasValidInputs && FACTORY_ADDRESS.length > 0 && (
+        <div className="fee-estimate">
+          {feeLoading && <span className="fee-loading">Estimating network fee...</span>}
+          {feeError && <span className="fee-error">Fee estimate unavailable: {feeError}</span>}
+          {feeEstimate && !feeLoading && (
+            <span className="fee-result">
+              Estimated network fee: <strong>{feeEstimate.fee_xlm} XLM</strong>
+            </span>
+          )}
+        </div>
+      )}
 
       {validationErrors.length > 0 && (
         <ul className="validation-errors">

@@ -1,0 +1,157 @@
+#![no_std]
+
+//! Shared constants and utilities for the Drip protocol contracts.
+
+pub mod rbac;
+
+use soroban_sdk::{Address, Env};
+
+/// TTL threshold for instance storage extension.
+/// When the remaining TTL falls below this value, extend to `TTL_EXTEND_TO`.
+pub const TTL_THRESHOLD: u32 = 100_000;
+
+/// Target TTL for instance storage extension.
+/// Extended to this value when `TTL_THRESHOLD` is reached.
+pub const TTL_EXTEND_TO: u32 = 200_000;
+
+/// Returns true when `address` is a known zero/degenerate address.
+///
+/// Soroban's `Address` (protocol 21) can only ever wrap an XDR `ScAddress`
+/// of variant `Account` or `Contract` — there is no separate muxed-address
+/// representation at this layer — so checking both zero forms below covers
+/// every degenerate address the host can construct:
+///
+/// - the all-zero Ed25519 account (`G...` strkey `GAAAA...AWHF`), and
+/// - the all-zero Soroban contract address (`C...` strkey `CAAAA...BSC4`).
+///
+/// Both literals are hardcoded here once so every contract sharing this
+/// helper uses the exact same values — a duplicated copy would be easy to
+/// typo differently without anyone noticing. The account form is checked
+/// first since it is the more common case, so a real account address never
+/// pays for parsing the contract literal.
+pub fn is_zero_address(env: &Env, address: &Address) -> bool {
+    let zero_account = Address::from_string(&soroban_sdk::String::from_str(
+        env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    if address == &zero_account {
+        return true;
+    }
+
+    let zero_contract = Address::from_string(&soroban_sdk::String::from_str(
+        env,
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    ));
+
+    address == &zero_contract
+}
+
+/// Deprecated alias for [`is_zero_address`].
+///
+/// Previous stream guard code referenced `is_zero_stellar_account`, which
+/// never existed and broke the build. The canonical name is
+/// [`is_zero_address`]. This alias is provided so any external consumers
+/// that somehow reference the old name continue to compile during the
+/// deprecation period.
+#[deprecated(note = "use is_zero_address instead")]
+pub fn is_zero_stellar_account(env: &Env, address: &Address) -> bool {
+    is_zero_address(env, address)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::xdr::{AccountId, Hash, PublicKey, ScAddress, Uint256};
+    use soroban_sdk::TryFromVal;
+
+    #[test]
+    fn rejects_zero_ed25519_account() {
+        let env = Env::default();
+        let zero_account = Address::from_string(&soroban_sdk::String::from_str(
+            &env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        ));
+        assert!(is_zero_address(&env, &zero_account));
+    }
+
+    #[test]
+    fn rejects_zero_contract_address() {
+        let env = Env::default();
+        let zero_contract = Address::from_string(&soroban_sdk::String::from_str(
+            &env,
+            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+        ));
+        assert!(is_zero_address(&env, &zero_contract));
+    }
+
+    /// The account literal must actually *decode* to the all-zero Ed25519 key.
+    ///
+    /// The two tests above only re-parse the same literal and compare that
+    /// value to itself, so they stay green even if the strkey encoding of the
+    /// literal changes meaning — for instance after a `soroban-sdk` bump. Build
+    /// the expected address from scratch out of 32 zero bytes instead, so a
+    /// decode change turns this test red rather than silently making
+    /// `is_zero_address` wrong in a way nothing else catches.
+    #[test]
+    fn zero_account_literal_decodes_to_the_all_zero_ed25519_key() {
+        let env = Env::default();
+
+        let decoded = Address::from_string(&soroban_sdk::String::from_str(
+            &env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        ));
+
+        let expected = Address::try_from_val(
+            &env,
+            &ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(
+                [0u8; 32],
+            )))),
+        )
+        .unwrap();
+
+        assert_eq!(decoded, expected);
+        // The decoded form is still the one the guard rejects.
+        assert!(is_zero_address(&env, &decoded));
+    }
+
+    /// Same assertion for the contract literal, built from an all-zero contract
+    /// id rather than an all-zero Ed25519 key.
+    #[test]
+    fn zero_contract_literal_decodes_to_the_all_zero_contract_id() {
+        let env = Env::default();
+
+        let decoded = Address::from_string(&soroban_sdk::String::from_str(
+            &env,
+            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+        ));
+
+        let expected: Address =
+            Address::try_from_val(&env, &ScAddress::Contract(Hash([0u8; 32]))).unwrap();
+
+        assert_eq!(decoded, expected);
+        assert!(is_zero_address(&env, &decoded));
+    }
+
+    #[test]
+    fn accepts_generated_address() {
+        let env = Env::default();
+        let address = Address::generate(&env);
+        assert!(!is_zero_address(&env, &address));
+    }
+
+    #[test]
+    fn deprecated_alias_matches_canonical() {
+        let env = Env::default();
+        let zero_account = Address::from_string(&soroban_sdk::String::from_str(
+            &env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        ));
+        let normal = Address::generate(&env);
+        #[allow(deprecated)]
+        {
+            assert!(is_zero_stellar_account(&env, &zero_account));
+            assert!(!is_zero_stellar_account(&env, &normal));
+        }
+    }
+}

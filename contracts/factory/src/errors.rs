@@ -28,7 +28,7 @@ pub enum Error {
     EmptyBatch = 16,
     /// `create_batch_streams` requests exceeded `MAX_BATCH_SIZE`.
     BatchTooLarge = 17,
-    /// The recipient is the all-zero Stellar account address.
+    /// The recipient is invalid (e.g. the all-zero Stellar account address, or identical to `sender`).
     InvalidRecipient = 22,
     /// Another `create_stream` call is already in progress (reentrancy guard).
     CreateLocked = 23,
@@ -38,4 +38,27 @@ pub enum Error {
     StreamFundingFailed = 25,
     /// The WASM hash provided to `upgrade_stream_wasm` is all zeros (invalid).
     InvalidWasmHash = 26,
+    /// Stream duration is invalid (end_time <= start_time).
+    InvalidDuration = 27,
+    /// The token address is invalid (e.g. the all-zero Stellar account address).
+    InvalidToken = 28,
+    /// The stream start is too far in the future for the protocol's allowed scheduling window.
+    /// `start_time` is further ahead than the protocol's maximum stream
+    /// duration allows.
+    ///
+    /// An unbounded `start_time` locks the deposit for as long as the caller
+    /// likes: with `end_time = 0` no duration bound applies, and if clawback
+    /// is disabled there is no way to recover the funds before the stream
+    /// starts.
+    StartTimeTooFarInFuture = 29,
+    /// `upgrade` was called with a WASM hash whose storage layout version
+    /// does not match `DataKey::FactoryStorageVersion`. Prevents swapping in
+    /// code that assumes an incompatible shape for persisted state
+    /// (`StreamCount`, `StreamAddr`, the paged indices, etc.) without an
+    /// explicit migration.
+    StorageVersionMismatch = 30,
+    /// `initialize` was given the all-zero Stellar account address for the
+    /// governor, which would leave every `create_stream` call pointing at a
+    /// non-existent governor contract.
+    InvalidGovernor = 31,
 }

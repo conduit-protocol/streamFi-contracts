@@ -45,6 +45,15 @@ components fit together.
   │      ▼                   ▼                                           │
   │   CANCELLED           CANCELLED                                      │
   │                                                                      │
+  │  pause/resume/cancel/top_up/clawback/extend_duration may be called   │
+  │  by the sender OR their delegated operator (see "Operator            │
+  │  Delegation" below) — every transition arrow above implicitly        │
+  │  includes that alternate caller.                                     │
+  │                                                                      │
+  │  extend_duration()/top_up_and_extend() don't change ACTIVE/PAUSED/   │
+  │  CANCELLED status — they mutate end_time (and, for the latter,       │
+  │  deposit balance) in place while the stream stays ACTIVE.            │
+  │                                                                      │
   │  Recipient calls withdraw() any time stream is ACTIVE or PAUSED.    │
   │  cancel() atomically settles both parties.                           │
   └─────────────────────────────────────────────────────────────────────┘
@@ -126,13 +135,49 @@ After `Cancelled = true`, `withdraw()` is blocked. The atomic settlement in `can
 - `force_cancel()` lets the recipient settle unilaterally if the sender pauses the stream and never resumes it — without this, a malicious or abandoned sender could freeze a paused stream indefinitely and hold the recipient's earned-but-unwithdrawn balance hostage. Guarded by a hardcoded 30-day threshold (`PAUSE_THRESHOLD_SECS`) measured from `paused_at`; settles identically to `cancel()`.
 - `transfer_recipient(new_recipient)` reassigns the recipient address. Any balance already earned stays claimable by whoever holds the role — it isn't tied to the original recipient's identity. The sender is not notified on-chain (an indexer watching the `xfer_rec` event is the intended integration point).
 
+**Operator delegation:**
+
+The sender can delegate a fixed set of sender-level actions to another address via `set_operator(caller, operator)`, without handing over `sender` itself (which stays fixed for the life of the stream). The delegated actions are exactly: `pause`, `resume`, `cancel`, `top_up`, `clawback`, and `extend_duration` (and by extension `top_up_and_extend`, which combines the last two). Every one of these entry points authorizes via a shared `require_sender_or_operator` check — the sender or the current operator, not both required.
+
+The operator has no power over `withdraw` (recipient-only, unaffected by this mechanism) or `transfer_recipient` (sender-only, not delegatable). Only the original `sender` may call `set_operator`/`revoke_operator` — an operator cannot re-delegate itself, and delegation doesn't survive a `revoke_operator` call or a `cancel`/`force_cancel` settlement. `operator()` is a read-only accessor for the currently-delegated address, if any.
+
+**Duration extension:**
+
+`extend_duration(caller, extra_time_seconds)` pushes `end_time` forward by `extra_time_seconds`, pulling the exact required deposit (`rate_per_second × extra_time_seconds`) from the sender in the same call. `top_up_and_extend(caller, amount, extra_time_seconds)` does the same end_time push alongside an independently-sized `amount` deposit, so a sender isn't forced to deposit exactly the rate-implied amount when extending. Neither works on an open-ended stream (`end_time == 0`) — use `top_up` alone in that case.
+
+*Governance duration bounds:* `GovernorConfig.max_duration_seconds` is enforced at stream creation time (`DripFactory::create_stream`) to bound upfront capital commitments and scheduling horizons. Post-creation extensions (`extend_duration` / `top_up_and_extend`) are intentionally unbounded by the governor's initial duration cap. This allows ongoing payment relationships (such as payroll or rolling subscriptions) to be extended continuously without requiring redeployment, preserving the standalone per-stream architecture (ADR-001) without cross-contract governor calls on each extension.
+
 ### DripGovernor
 
 The governor holds mutable protocol parameters. In the current version it is controlled by a single `authority` address (intended to be a multisig). In a future release, governance will transition to on-chain token voting.
 
 The governor does not hold any token balance.
 
-`DripFactory::create_stream` cross-contract-calls `DripGovernor::config()` to enforce `max_rate_per_second`, `min_duration_seconds`, and `max_duration_seconds` (for fixed-duration streams), and `DripFactory::protocol_fee_bps()` reads `fee_bps` live from the governor — falling back to the 30bps default only if the factory itself hasn't been initialized yet.
+`DripFactory::create_stream` cross-contract-calls `DripGovernor::config()` to enforce `max_rate_per_second`, `min_duration_seconds`, and `max_duration_seconds` (for fixed-duration streams), and `DripFactory::protocol_fee_bps()` reads `fee_bps` live from the governor — falling back to the 30bps default only if the factory itself hasn't been initialized yet. Post-creation stream extensions on deployed `DripStream` instances are intentionally self-contained and not constrained by the initial `max_duration_seconds` creation limit.
+
+### TokenVault
+
+**Status: not part of the streaming protocol.** `DripStream`, `DripFactory` and
+`DripGovernor` never reference it, and no protocol call path reaches it.
+
+It is a standalone, owner-controlled token vault: deposit, withdraw, a
+configurable `max_limit`, an optional operator address, and a pause switch. It
+holds its own balance and has no notion of streams, rates, or schedules.
+
+It remains a workspace member so it continues to build and its tests continue to
+run, but it should be read as an **independent contract that happens to live in
+this repository**, not as a component of the streaming protocol. In particular:
+
+- Nothing in the protocol escrows through it. Stream deposits go
+  sender → factory → stream contract, as shown in the Overview above.
+- A security review scoped to the streaming protocol can exclude it; a review
+  scoped to *everything deployed from this repository* cannot.
+- `deploy.sh` does deploy it, so a deployed instance may exist on a network even
+  though no protocol contract will ever call it.
+
+If it is intended as a future escrow backend, that intent is not recorded
+anywhere and no interface currently anticipates it. See
+[ADR-004](adr/004-token-vault-scope.md).
 
 ---
 

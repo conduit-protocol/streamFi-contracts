@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(deprecated)]
 
 //! DripGovernor is the protocol's immutable parameter store.
 //!
@@ -9,19 +10,23 @@
 //! archival. Without TTL extension, idle governors can expire and cause all
 //! downstream `DripFactory::create_stream` calls to fail until restored.
 //!
-//! **Roles:** Three role tiers allow delegation of governance authority:
+//! **Roles:** Four role tiers allow delegation of governance authority:
 //! - `Admin`: grant and revoke any role (super-user).
 //! - `FeeManager`: manage fees via `set_fee_bps` and `set_fee_recipient`.
 //! - `RateManager`: manage rate and duration bounds via `set_max_rate`, `set_min_duration`, `set_max_duration`.
+//! - `Pauser`: emergency pause/unpause via `governor_pause`, `governor_unpause`, `pause_factory`, `unpause_factory`.
 
 mod config;
 mod errors;
 mod events;
 mod role;
 mod storage;
+mod tests;
 mod ttl;
 
-use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, panic_with_error, Address, BytesN, Env, Symbol, Vec};
+
+use drip_common::is_zero_address;
 
 pub use config::GovernorConfig;
 pub use errors::Error;
@@ -53,6 +58,7 @@ fn assert_not_paused(env: &Env) -> Result<(), Error> {
 pub struct DripGovernor;
 
 #[contractimpl]
+#[allow(deprecated)]
 impl DripGovernor {
     /// Deploy-time initialisation.
     ///
@@ -81,15 +87,20 @@ impl DripGovernor {
         s.set(&DataKey::MaxDurationSeconds, &315_360_000_u64); // 10 years
         s.set(&DataKey::MaxRatePerSecond, &1_000_000_000_000_000_i128);
         s.set(&DataKey::FactoryAddress, &factory_address);
+        s.set(&DataKey::ForceCancelPauseSecs, &2_592_000_u64); // 30 days
 
         role::grant(&env, Role::Admin, &authority);
         role::grant(&env, Role::FeeManager, &authority);
         role::grant(&env, Role::RateManager, &authority);
+        role::grant(&env, Role::Pauser, &authority);
         events::initialized(&env, &authority, &fee_recipient, &factory_address);
     }
 
     // ── Reads ────────────────────────────────────────────────────────────
 
+    /// Returns the complete [`GovernorConfig`] from storage.
+    ///
+    /// Returns `Err(NotInitialized)` if the governor has not yet been initialized.
     pub fn config(env: Env) -> Result<GovernorConfig, Error> {
         config::load(&env)
     }
@@ -98,11 +109,14 @@ impl DripGovernor {
     ///
     /// Focused accessor for callers that only need this one field, avoiding
     /// a full `config()` round-trip (mirrors `DripFactory::protocol_fee_bps`).
-    pub fn min_duration(env: Env) -> u64 {
-        env.storage()
-            .instance()
-            .get(&DataKey::MinDurationSeconds)
-            .unwrap_or(3600)
+    ///
+    /// Returns `Err(NotInitialized)` for an uninitialised governor, matching
+    /// [`DripGovernor::max_duration`], [`DripGovernor::max_rate`], and
+    /// [`DripGovernor::config`] — previously this accessor alone silently
+    /// returned a hardcoded `3600` default, so callers could not distinguish
+    /// "governor says 3600" from "governor doesn't exist yet".
+    pub fn min_duration(env: Env) -> Result<u64, Error> {
+        Ok(config::load(&env)?.min_duration_seconds)
     }
 
     /// Whether `account` currently holds `role`.
@@ -154,11 +168,10 @@ impl DripGovernor {
     ///
     /// Named `governor_pause` — see `governor_is_paused` for why.
     pub fn governor_pause(env: Env, caller: Address) -> Result<(), Error> {
-        role::require_role(&env, &caller, Role::Admin)?;
+        role::require_role_or_admin(&env, &caller, Role::Pauser)?;
         if is_paused(&env) {
             return Err(Error::AlreadyPaused);
         }
-        ttl::bump(&env);
         env.storage().instance().set(&DataKey::Paused, &true);
         events::paused(&env, &caller, env.ledger().timestamp());
         Ok(())
@@ -168,11 +181,10 @@ impl DripGovernor {
     ///
     /// Named `governor_unpause` — see `governor_is_paused` for why.
     pub fn governor_unpause(env: Env, caller: Address) -> Result<(), Error> {
-        role::require_role(&env, &caller, Role::Admin)?;
+        role::require_role_or_admin(&env, &caller, Role::Pauser)?;
         if !is_paused(&env) {
             return Err(Error::NotPaused);
         }
-        ttl::bump(&env);
         env.storage().instance().set(&DataKey::Paused, &false);
         events::unpaused(&env, &caller, env.ledger().timestamp());
         Ok(())
@@ -198,10 +210,10 @@ impl DripGovernor {
     // function name instead of a generated client.
 
     /// Role-gated passthrough: pauses the `DripFactory` this governor
-    /// controls, so a `Role::Admin` holder has an actual entry point to
-    /// trigger the factory's emergency halt.
+    /// controls, so a `Role::Admin` or `Role::Pauser` holder has an actual
+    /// entry point to trigger the factory's emergency halt.
     pub fn pause_factory(env: Env, caller: Address) -> Result<(), Error> {
-        role::require_role(&env, &caller, Role::Admin)?;
+        role::require_role_or_admin(&env, &caller, Role::Pauser)?;
         let factory: Address = env
             .storage()
             .instance()
@@ -224,7 +236,7 @@ impl DripGovernor {
     /// Role-gated passthrough: lifts the `DripFactory` emergency pause. See
     /// `pause_factory`.
     pub fn unpause_factory(env: Env, caller: Address) -> Result<(), Error> {
-        role::require_role(&env, &caller, Role::Admin)?;
+        role::require_role_or_admin(&env, &caller, Role::Pauser)?;
         let factory: Address = env
             .storage()
             .instance()
@@ -254,7 +266,6 @@ impl DripGovernor {
         account: Address,
     ) -> Result<(), Error> {
         role::require_role(&env, &caller, Role::Admin)?;
-        ttl::bump(&env);
         if role::grant(&env, role, &account) {
             events::grant_role(&env, &caller, role, &account);
         }
@@ -274,7 +285,6 @@ impl DripGovernor {
         account: Address,
     ) -> Result<(), Error> {
         role::require_role(&env, &caller, Role::Admin)?;
-        ttl::bump(&env);
         if role::revoke(&env, role, &account)? {
             events::revoke_role(&env, &caller, role, &account);
         }
@@ -286,51 +296,175 @@ impl DripGovernor {
     /// Grants first so the subsequent revoke can never trip the `LastAdmin`
     /// guard, then revokes `caller`. Kept for API familiarity — equivalent to
     /// a `grant_role(Admin, new)` followed by `revoke_role(Admin, caller)`.
+    ///
+    /// **Deprecated**: Use `propose_authority` + `accept_authority` instead for
+    /// the safer 2-step transfer pattern (Ownable2Step).
+    #[deprecated(
+        note = "Use `propose_authority` + `accept_authority` instead for the safer 2-step transfer pattern (Ownable2Step)."
+    )]
     pub fn transfer_authority(
         env: Env,
         caller: Address,
         new_authority: Address,
     ) -> Result<(), Error> {
+        if new_authority == caller
+            || is_zero_address(&env, &new_authority)
+            || role::has_role(&env, Role::Admin, &new_authority)
+        {
+            return Err(Error::InvalidParam);
+        }
         role::require_role(&env, &caller, Role::Admin)?;
-        ttl::bump(&env);
         role::grant(&env, Role::Admin, &new_authority);
         role::revoke(&env, Role::Admin, &caller)?;
         events::transfer_authority(&env, &caller, &new_authority);
         Ok(())
     }
 
+    /// Propose a new authority address (step 1 of 2).
+    ///
+    /// Stores the pending authority address and the proposer. The transfer is
+    /// not complete until the pending authority calls `accept_authority`. This
+    /// ensures the new address is live and can actually sign transactions
+    /// before the handoff.
+    pub fn propose_authority(
+        env: Env,
+        caller: Address,
+        new_authority: Address,
+    ) -> Result<(), Error> {
+        if is_zero_address(&env, &new_authority)
+            || role::has_role(&env, Role::Admin, &new_authority)
+        {
+            return Err(Error::InvalidParam);
+        }
+        role::require_role(&env, &caller, Role::Admin)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAuthority, &new_authority);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAuthorityProposer, &caller);
+        events::propose_authority(&env, &caller, &new_authority);
+        Ok(())
+    }
+
+    /// Accept the pending authority transfer (step 2 of 2).
+    ///
+    /// Must be called by the pending authority address itself. This completes
+    /// the transfer: the pending authority gains `Admin` and the proposer
+    /// loses it.
+    pub fn accept_authority(env: Env, caller: Address) -> Result<(), Error> {
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAuthority)
+            .ok_or(Error::NoPendingAuthority)?;
+        if caller != pending {
+            return Err(Error::NotPendingAuthority);
+        }
+        caller.require_auth();
+        ttl::bump(&env);
+
+        // Grant Admin to the new authority (the caller) first, then revoke from proposer.
+        // This ensures the LastAdmin guard never blocks the transfer.
+        let proposer: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAuthorityProposer)
+            .ok_or(Error::NoPendingAuthority)?;
+        role::grant(&env, Role::Admin, &caller);
+        let _ = role::revoke(&env, Role::Admin, &proposer)?;
+
+        // Clean up pending state.
+        env.storage().instance().remove(&DataKey::PendingAuthority);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingAuthorityProposer);
+
+        events::accept_authority(&env, &caller, &proposer);
+        Ok(())
+    }
+
+    /// Return the current number of `Admin` role holders.
+    ///
+    /// UIs and indexers can call this to show how many authorities exist
+    /// before proposing a transfer or revoking a role.
+    pub fn admin_count(env: Env) -> u32 {
+        role::admin_count(&env)
+    }
+
+    // ── Self-upgrade (Admin-gated) ──────────────────────────────────────
+
+    /// Replace this contract's own WASM bytecode.
+    ///
+    /// The new WASM must already be uploaded to the ledger (via
+    /// `stellar contract upload`); only the hash is passed here. Gated on
+    /// `Admin` so a compromised or abandoned admin key cannot silently swap
+    /// the implementation.
+    ///
+    /// Blocked while the governor is paused, matching the factory's
+    /// `upgrade` guard — a halted protocol should accept no code changes.
+    pub fn upgrade(env: Env, caller: Address, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        role::require_role(&env, &caller, Role::Admin)?;
+        assert_not_paused(&env)?;
+
+        if new_wasm_hash == BytesN::from_array(&env, &[0u8; 32]) {
+            return Err(Error::InvalidWasmHash);
+        }
+
+        ttl::bump(&env);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        events::upgraded(&env, &caller, env.ledger().timestamp());
+        Ok(())
+    }
+
     // ── Parameter writes (role-gated + pause guard) ──────────────────────
 
+    /// Sets the protocol fee in basis points (1 bps = 0.01%).
+    ///
+    /// Only a `FeeManager` (or `Admin`) may call this. The fee must be between
+    /// 0 and 10,000 basis points (0% to 100%); values above 10,000 revert with
+    /// `Error::InvalidParam`.
     pub fn set_fee_bps(env: Env, caller: Address, fee_bps: u32) -> Result<(), Error> {
-        assert_not_paused(&env)?;
-        role::require_role_or_admin(&env, &caller, Role::FeeManager)?;
-        ttl::bump(&env);
         if fee_bps > 10_000 {
             return Err(Error::InvalidParam);
         }
+        assert_not_paused(&env)?;
+        role::require_role_or_admin(&env, &caller, Role::FeeManager)?;
+        let old_fee_bps: u32 = env.storage().instance().get(&DataKey::FeeBps).unwrap_or(30);
         env.storage().instance().set(&DataKey::FeeBps, &fee_bps);
-        events::set_fee_bps(&env, &caller, fee_bps);
+        events::set_fee_bps(&env, &caller, old_fee_bps, fee_bps);
         Ok(())
     }
 
     pub fn set_fee_recipient(env: Env, caller: Address, recipient: Address) -> Result<(), Error> {
+        if is_zero_address(&env, &recipient) {
+            return Err(Error::InvalidParam);
+        }
         assert_not_paused(&env)?;
         role::require_role_or_admin(&env, &caller, Role::FeeManager)?;
-        ttl::bump(&env);
+        let old_recipient: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeRecipient)
+            .ok_or(Error::NotInitialized)?;
         env.storage()
             .instance()
             .set(&DataKey::FeeRecipient, &recipient);
-        events::set_fee_recipient(&env, &caller, &recipient);
+        events::set_fee_recipient(&env, &caller, &old_recipient, &recipient);
         Ok(())
     }
 
     pub fn set_min_duration(env: Env, caller: Address, seconds: u64) -> Result<(), Error> {
-        assert_not_paused(&env)?;
-        role::require_role_or_admin(&env, &caller, Role::RateManager)?;
-        ttl::bump(&env);
         if seconds == 0 {
             return Err(Error::InvalidParam);
         }
+        assert_not_paused(&env)?;
+        role::require_role_or_admin(&env, &caller, Role::RateManager)?;
+        let old_min_duration: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinDurationSeconds)
+            .unwrap_or(3600);
         let max_duration: u64 = env
             .storage()
             .instance()
@@ -339,12 +473,6 @@ impl DripGovernor {
         if seconds > max_duration {
             return Err(Error::InvalidParam);
         }
-        // Cross-check against current `MaxRatePerSecond`: the product
-        // `max_rate * min_duration` is the upper bound on stream principal a
-        // caller may commit, and capacity math (in `DripFactory::create_stream`)
-        // relies on it fitting in a single `i128` (which has
-        // ~10^38 capacity). Reject up-front instead of letting valid-looking
-        // parameters fail at create_stream with `ArithmeticOverflow`.
         let max_rate: i128 = env
             .storage()
             .instance()
@@ -355,20 +483,21 @@ impl DripGovernor {
         env.storage()
             .instance()
             .set(&DataKey::MinDurationSeconds, &seconds);
-        events::set_min_duration(&env, &caller, seconds);
+        events::set_min_duration(&env, &caller, old_min_duration, seconds);
         Ok(())
     }
 
     pub fn set_max_rate(env: Env, caller: Address, max_rate: i128) -> Result<(), Error> {
-        assert_not_paused(&env)?;
-        role::require_role_or_admin(&env, &caller, Role::RateManager)?;
-        ttl::bump(&env);
         if max_rate <= 0 {
             return Err(Error::InvalidParam);
         }
-        // Mirror cross-check on the `min_duration_seconds` side (see
-        // `set_min_duration`). Both setters read the counterpart from storage,
-        // so whichever order the two settings arrive in is safe.
+        assert_not_paused(&env)?;
+        role::require_role_or_admin(&env, &caller, Role::RateManager)?;
+        let old_max_rate: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxRatePerSecond)
+            .unwrap_or(1_000_000_000_000_000);
         let min_duration: u64 = env
             .storage()
             .instance()
@@ -379,17 +508,21 @@ impl DripGovernor {
         env.storage()
             .instance()
             .set(&DataKey::MaxRatePerSecond, &max_rate);
-        events::set_max_rate(&env, &caller, max_rate);
+        events::set_max_rate(&env, &caller, old_max_rate, max_rate);
         Ok(())
     }
 
     pub fn set_max_duration(env: Env, caller: Address, seconds: u64) -> Result<(), Error> {
-        assert_not_paused(&env)?;
-        role::require_role_or_admin(&env, &caller, Role::RateManager)?;
-        ttl::bump(&env);
         if seconds == 0 {
             return Err(Error::InvalidParam);
         }
+        assert_not_paused(&env)?;
+        role::require_role_or_admin(&env, &caller, Role::RateManager)?;
+        let old_max_duration: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxDurationSeconds)
+            .unwrap_or(315_360_000);
         let min_duration: u64 = env
             .storage()
             .instance()
@@ -401,7 +534,31 @@ impl DripGovernor {
         env.storage()
             .instance()
             .set(&DataKey::MaxDurationSeconds, &seconds);
-        events::set_max_duration(&env, &caller, seconds);
+        events::set_max_duration(&env, &caller, old_max_duration, seconds);
+        Ok(())
+    }
+
+    /// Sets the number of seconds a stream must remain paused before its
+    /// recipient may call `DripStream::force_cancel`.
+    ///
+    /// Governance-configurable per deployment: a payroll protocol might want
+    /// 7 days, a long-horizon vesting stream 90. Gated by `RateManager` —
+    /// the same role tier that already controls the other stream bounds
+    /// (`set_min_duration`, `set_max_duration`, `set_max_rate`).
+    pub fn set_force_cancel_pause_threshold(
+        env: Env,
+        caller: Address,
+        seconds: u64,
+    ) -> Result<(), Error> {
+        if seconds == 0 {
+            return Err(Error::InvalidParam);
+        }
+        assert_not_paused(&env)?;
+        role::require_role_or_admin(&env, &caller, Role::RateManager)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::ForceCancelPauseSecs, &seconds);
+        events::set_force_cancel_pause_threshold(&env, &caller, seconds);
         Ok(())
     }
 }

@@ -3,4 +3,5 @@ target/
 **/*.wasm
 .DS_Store
 test_snapshots/
-fix.md
+frontend/node_modules/
+node_modules/

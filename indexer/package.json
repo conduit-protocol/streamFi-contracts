@@ -1,0 +1,29 @@
+{
+  "name": "streamfi-indexer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Off-chain event indexer for StreamFi contracts: polls chain events into Postgres and folds them into derived tables.",
+  "type": "module",
+  "main": "dist/worker.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start:worker": "node dist/worker.js",
+    "dev": "tsx src/worker.ts",
+    "lint": "eslint \"src/**/*.ts\" \"test/**/*.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "pg": "^8.11.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.2",
+    "@types/pg": "^8.11.6",
+    "@typescript-eslint/eslint-plugin": "^7.13.0",
+    "@typescript-eslint/parser": "^7.13.0",
+    "eslint": "^8.57.0",
+    "tsx": "^4.15.4",
+    "typescript": "^5.4.5",
+    "vitest": "^1.6.0"
+  }
+}
