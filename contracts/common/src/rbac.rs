@@ -254,3 +254,527 @@ pub fn require_role<RK: StorageKey>(
         Err(RbacError::NotAuthorized)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{contract, contractimpl, contracttype, symbol_short};
+
+    // ── Contract frame ────────────────────────────────────────────────────────
+    //
+    // `rbac` is storage-only shared code: it owns no `#[contract]` of its own,
+    // so the suite has to supply the contract frame that `soroban_sdk` requires
+    // before any instance-storage access. The host below is registered per test
+    // purely so the frame has instance storage to open — `Env::as_contract`
+    // fails with a `MissingValue` host error against an address that was never
+    // registered.
+
+    #[contract]
+    struct RbacTestHost;
+
+    #[contractimpl]
+    impl RbacTestHost {
+        /// Never invoked. Present only because registering a contract requires
+        /// at least one callable entry point.
+        pub fn noop(_env: Env) {}
+    }
+
+    fn in_contract<T>(env: &Env, f: impl FnOnce() -> T) -> T {
+        env.as_contract(&env.register_contract(None, RbacTestHost), f)
+    }
+
+    // ── Minimal key space ─────────────────────────────────────────────────────
+    //
+    // `rbac` is generic over its storage keys, so the tests supply their own
+    // `#[contracttype]` key enum rather than reaching for a consumer contract's
+    // `DataKey`. That is the whole point of the issue: this suite must be
+    // independent of `DripGovernor` and `DripOracle` while still exercising the
+    // exact key shapes they pass in.
+
+    #[contracttype]
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum TestRole {
+        Admin,
+        Operator,
+    }
+
+    #[contracttype]
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct TestRoleKey {
+        role: TestRole,
+        account: Address,
+    }
+
+    #[contracttype]
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum TestKey {
+        Role(TestRoleKey),
+        AdminCount,
+        RoleMembers(TestRole),
+    }
+
+    const ADMIN_COUNT: TestKey = TestKey::AdminCount;
+
+    fn role_key(role: TestRole, account: &Address) -> TestKey {
+        TestKey::Role(TestRoleKey {
+            role,
+            account: account.clone(),
+        })
+    }
+
+    fn members_key(role: &TestRole) -> TestKey {
+        TestKey::RoleMembers(role.clone())
+    }
+
+    fn grant_role(env: &Env, role: TestRole, account: &Address, is_admin: bool) -> bool {
+        grant(
+            env,
+            &role_key(role.clone(), account),
+            &ADMIN_COUNT,
+            &members_key(&role),
+            is_admin,
+            account,
+        )
+    }
+
+    fn revoke_role(
+        env: &Env,
+        role: TestRole,
+        account: &Address,
+        is_admin: bool,
+    ) -> Result<bool, RbacError> {
+        revoke(
+            env,
+            &role_key(role.clone(), account),
+            &ADMIN_COUNT,
+            &members_key(&role),
+            is_admin,
+            account,
+        )
+    }
+
+    /// Stand-in for `DripGovernor`'s `ttl::bump`: records that the
+    /// `on_success` hook actually ran. Observing the real TTL would couple
+    /// these unit tests to ledger mechanics that `governor` already covers.
+    fn mark_success(env: &Env) {
+        env.storage()
+            .instance()
+            .set(&symbol_short!("bumped"), &true);
+    }
+
+    fn success_recorded(env: &Env) -> bool {
+        env.storage().instance().has(&symbol_short!("bumped"))
+    }
+
+    // ── has_role ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn has_role_is_false_before_any_grant() {
+        let env = Env::default();
+        let alice = Address::generate(&env);
+
+        in_contract(&env, || {
+            assert!(!has_role(&env, &role_key(TestRole::Operator, &alice)));
+        });
+    }
+
+    // ── admin_count ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn admin_count_is_zero_before_initialization() {
+        let env = Env::default();
+
+        in_contract(&env, || {
+            assert_eq!(admin_count(&env, &ADMIN_COUNT), 0);
+        });
+    }
+
+    #[test]
+    fn only_admin_grants_increment_the_admin_count() {
+        let env = Env::default();
+        let operator = Address::generate(&env);
+        let admin = Address::generate(&env);
+
+        in_contract(&env, || {
+            grant_role(&env, TestRole::Operator, &operator, false);
+            assert_eq!(admin_count(&env, &ADMIN_COUNT), 0);
+
+            grant_role(&env, TestRole::Admin, &admin, true);
+            assert_eq!(admin_count(&env, &ADMIN_COUNT), 1);
+
+            // Re-granting a role that is already held must not double count.
+            grant_role(&env, TestRole::Admin, &admin, true);
+            assert_eq!(admin_count(&env, &ADMIN_COUNT), 1);
+        });
+    }
+
+    // ── grant ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn grant_marks_membership_and_reports_the_transition() {
+        let env = Env::default();
+        let alice = Address::generate(&env);
+
+        in_contract(&env, || {
+            assert!(grant_role(&env, TestRole::Operator, &alice, false));
+            assert!(has_role(&env, &role_key(TestRole::Operator, &alice)));
+        });
+    }
+
+    #[test]
+    fn grant_is_idempotent_and_does_not_duplicate_members() {
+        let env = Env::default();
+        let alice = Address::generate(&env);
+
+        in_contract(&env, || {
+            assert!(grant_role(&env, TestRole::Operator, &alice, false));
+            assert!(!grant_role(&env, TestRole::Operator, &alice, false));
+
+            let members = role_members(&env, &members_key(&TestRole::Operator));
+            assert_eq!(members.len(), 1);
+            assert_eq!(members.get(0).unwrap(), alice);
+        });
+    }
+
+    #[test]
+    fn grant_appends_members_in_grant_order() {
+        let env = Env::default();
+        let first = Address::generate(&env);
+        let second = Address::generate(&env);
+        let third = Address::generate(&env);
+
+        in_contract(&env, || {
+            grant_role(&env, TestRole::Operator, &first, false);
+            grant_role(&env, TestRole::Operator, &second, false);
+            grant_role(&env, TestRole::Operator, &third, false);
+
+            let members = role_members(&env, &members_key(&TestRole::Operator));
+            assert_eq!(members.len(), 3);
+            assert_eq!(members.get(0).unwrap(), first);
+            assert_eq!(members.get(1).unwrap(), second);
+            assert_eq!(members.get(2).unwrap(), third);
+        });
+    }
+
+    // ── revoke ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn revoke_of_a_role_that_is_not_held_reports_no_change() {
+        let env = Env::default();
+        let alice = Address::generate(&env);
+
+        in_contract(&env, || {
+            assert_eq!(
+                revoke_role(&env, TestRole::Operator, &alice, false),
+                Ok(false)
+            );
+            assert!(!has_role(&env, &role_key(TestRole::Operator, &alice)));
+            assert_eq!(
+                role_members(&env, &members_key(&TestRole::Operator)).len(),
+                0
+            );
+        });
+    }
+
+    #[test]
+    fn revoke_removes_the_role_and_only_that_member() {
+        let env = Env::default();
+        let first = Address::generate(&env);
+        let middle = Address::generate(&env);
+        let last = Address::generate(&env);
+
+        in_contract(&env, || {
+            for account in [&first, &middle, &last] {
+                grant_role(&env, TestRole::Operator, account, false);
+            }
+
+            assert_eq!(
+                revoke_role(&env, TestRole::Operator, &middle, false),
+                Ok(true)
+            );
+
+            assert!(has_role(&env, &role_key(TestRole::Operator, &first)));
+            assert!(!has_role(&env, &role_key(TestRole::Operator, &middle)));
+            assert!(has_role(&env, &role_key(TestRole::Operator, &last)));
+
+            // The index is rebuilt rather than truncated, so order survives.
+            let members = role_members(&env, &members_key(&TestRole::Operator));
+            assert_eq!(members.len(), 2);
+            assert_eq!(members.get(0).unwrap(), first);
+            assert_eq!(members.get(1).unwrap(), last);
+        });
+    }
+
+    #[test]
+    fn revoke_decrements_the_admin_count_while_another_admin_remains() {
+        let env = Env::default();
+        let first = Address::generate(&env);
+        let second = Address::generate(&env);
+
+        in_contract(&env, || {
+            grant_role(&env, TestRole::Admin, &first, true);
+            grant_role(&env, TestRole::Admin, &second, true);
+            assert_eq!(admin_count(&env, &ADMIN_COUNT), 2);
+
+            assert_eq!(revoke_role(&env, TestRole::Admin, &second, true), Ok(true));
+            assert_eq!(admin_count(&env, &ADMIN_COUNT), 1);
+            assert!(has_role(&env, &role_key(TestRole::Admin, &first)));
+        });
+    }
+
+    #[test]
+    fn revoke_refuses_to_remove_the_last_admin() {
+        let env = Env::default();
+        let only_admin = Address::generate(&env);
+
+        in_contract(&env, || {
+            grant_role(&env, TestRole::Admin, &only_admin, true);
+
+            assert_eq!(
+                revoke_role(&env, TestRole::Admin, &only_admin, true),
+                Err(RbacError::LastAdmin)
+            );
+
+            // This is the guarantee that stops the protocol from freezing, so
+            // assert every piece of state is left untouched.
+            assert!(has_role(&env, &role_key(TestRole::Admin, &only_admin)));
+            assert_eq!(admin_count(&env, &ADMIN_COUNT), 1);
+            assert_eq!(role_members(&env, &members_key(&TestRole::Admin)).len(), 1);
+        });
+    }
+
+    // ── role_members ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn role_members_is_empty_for_an_unset_role() {
+        let env = Env::default();
+
+        in_contract(&env, || {
+            assert_eq!(
+                role_members(&env, &members_key(&TestRole::Operator)).len(),
+                0
+            );
+        });
+    }
+
+    /// The module docs claim the membership index lives in `instance()` storage
+    /// (the issue #345 fix). Pin the tier, so a regression to a different tier
+    /// fails here instead of only surfacing as a surprise TTL expiry on-chain.
+    #[test]
+    fn role_state_is_written_to_instance_storage() {
+        let env = Env::default();
+        let alice = Address::generate(&env);
+
+        in_contract(&env, || {
+            grant_role(&env, TestRole::Operator, &alice, false);
+
+            let role = role_key(TestRole::Operator, &alice);
+            let members = members_key(&TestRole::Operator);
+            assert!(env.storage().instance().has(&role));
+            assert!(env.storage().instance().has(&members));
+            assert!(!env.storage().persistent().has(&role));
+            assert!(!env.storage().persistent().has(&members));
+
+            // The admin counter is written lazily, so a non-admin grant must
+            // not create it; an Admin grant must, in the same tier.
+            assert!(!env.storage().instance().has(&ADMIN_COUNT));
+            grant_role(&env, TestRole::Admin, &alice, true);
+            assert!(env.storage().instance().has(&ADMIN_COUNT));
+            assert!(!env.storage().persistent().has(&ADMIN_COUNT));
+        });
+    }
+
+    // ── require_role_or_admin ─────────────────────────────────────────────────
+
+    #[test]
+    fn require_role_or_admin_accepts_a_role_holder() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let operator = Address::generate(&env);
+
+        in_contract(&env, || {
+            grant_role(&env, TestRole::Operator, &operator, false);
+
+            assert_eq!(
+                require_role_or_admin(
+                    &env,
+                    &operator,
+                    &role_key(TestRole::Operator, &operator),
+                    &role_key(TestRole::Admin, &operator),
+                    None,
+                ),
+                Ok(())
+            );
+        });
+    }
+
+    #[test]
+    fn require_role_or_admin_accepts_an_admin_without_the_specific_role() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+
+        in_contract(&env, || {
+            grant_role(&env, TestRole::Admin, &admin, true);
+
+            // The super-user holds no Operator role but must still pass.
+            assert!(!has_role(&env, &role_key(TestRole::Operator, &admin)));
+            assert_eq!(
+                require_role_or_admin(
+                    &env,
+                    &admin,
+                    &role_key(TestRole::Operator, &admin),
+                    &role_key(TestRole::Admin, &admin),
+                    None,
+                ),
+                Ok(())
+            );
+        });
+    }
+
+    #[test]
+    fn require_role_or_admin_rejects_an_unrelated_caller() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let stranger = Address::generate(&env);
+
+        in_contract(&env, || {
+            assert_eq!(
+                require_role_or_admin(
+                    &env,
+                    &stranger,
+                    &role_key(TestRole::Operator, &stranger),
+                    &role_key(TestRole::Admin, &stranger),
+                    None,
+                ),
+                Err(RbacError::NotAuthorized)
+            );
+        });
+    }
+
+    #[test]
+    fn require_role_or_admin_invokes_on_success_only_when_authorized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let operator = Address::generate(&env);
+        let stranger = Address::generate(&env);
+
+        in_contract(&env, || {
+            grant_role(&env, TestRole::Operator, &operator, false);
+
+            assert_eq!(
+                require_role_or_admin(
+                    &env,
+                    &operator,
+                    &role_key(TestRole::Operator, &operator),
+                    &role_key(TestRole::Admin, &operator),
+                    Some(mark_success),
+                ),
+                Ok(())
+            );
+            assert!(success_recorded(&env));
+
+            // A rejected caller must not run the hook, or the TTL would be
+            // bumped on a failed authorization.
+            env.storage().instance().remove(&symbol_short!("bumped"));
+            assert_eq!(
+                require_role_or_admin(
+                    &env,
+                    &stranger,
+                    &role_key(TestRole::Operator, &stranger),
+                    &role_key(TestRole::Admin, &stranger),
+                    Some(mark_success),
+                ),
+                Err(RbacError::NotAuthorized)
+            );
+            assert!(!success_recorded(&env));
+        });
+    }
+
+    // ── require_role ──────────────────────────────────────────────────────────
+
+    /// The whole difference between the two gates: `require_role` must **not**
+    /// fall back to the Admin super-user. That is what keeps `grant_role`
+    /// itself Admin-only instead of reachable by any role holder.
+    ///
+    /// Split from the positive case below rather than asserting a rejection and
+    /// an acceptance in one test: both would call `admin.require_auth()`, and a
+    /// second `require_auth` for the same address inside one invocation fails
+    /// with `Auth, ExistingValue` before the gate is even reached.
+    #[test]
+    fn require_role_rejects_an_admin_that_lacks_the_exact_role() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+
+        in_contract(&env, || {
+            grant_role(&env, TestRole::Admin, &admin, true);
+
+            assert_eq!(
+                require_role(&env, &admin, &role_key(TestRole::Operator, &admin), None),
+                Err(RbacError::NotAuthorized)
+            );
+        });
+    }
+
+    #[test]
+    fn require_role_accepts_the_exact_role_holder() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+
+        in_contract(&env, || {
+            grant_role(&env, TestRole::Admin, &admin, true);
+
+            assert_eq!(
+                require_role(&env, &admin, &role_key(TestRole::Admin, &admin), None),
+                Ok(())
+            );
+        });
+    }
+
+    #[test]
+    fn require_role_skips_on_success_when_the_exact_role_is_missing() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+
+        in_contract(&env, || {
+            grant_role(&env, TestRole::Admin, &admin, true);
+
+            assert_eq!(
+                require_role(
+                    &env,
+                    &admin,
+                    &role_key(TestRole::Operator, &admin),
+                    Some(mark_success),
+                ),
+                Err(RbacError::NotAuthorized)
+            );
+            assert!(!success_recorded(&env));
+        });
+    }
+
+    #[test]
+    fn require_role_invokes_on_success_for_the_exact_role() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+
+        in_contract(&env, || {
+            grant_role(&env, TestRole::Admin, &admin, true);
+
+            assert_eq!(
+                require_role(
+                    &env,
+                    &admin,
+                    &role_key(TestRole::Admin, &admin),
+                    Some(mark_success),
+                ),
+                Ok(())
+            );
+            assert!(success_recorded(&env));
+        });
+    }
+}
