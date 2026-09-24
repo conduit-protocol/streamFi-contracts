@@ -298,6 +298,24 @@ stellar network start local
 # Output: contract IDs written to .contract-ids/local.json
 ```
 
+### Indexer
+
+The `indexer/` service tails Soroban `getEvents` and projects stream state into Postgres.
+
+```bash
+# Database — versioned migrations (replaces one-shot psql)
+# Legacy: psql "$DATABASE_URL" -f db/schema.sql  (deprecated — no history)
+DATABASE_URL=postgres://user:pass@localhost:5432/streamfi npm run --prefix indexer migrate
+# Check pending/applied:  DATABASE_URL=... npm run --prefix indexer migrate -- status
+# Alternative runner:      DATABASE_URL=... node db/migrate.js up
+
+# Start the worker (exposes /healthz and /metrics)
+PORT=3000 START_LEDGER=1 POLL_INTERVAL_MS=5000 npm run --prefix indexer start
+# Health probe:   curl http://localhost:3000/healthz  # { lastSuccessfulPollTimestamp, currentCursor }
+# Metrics:        curl http://localhost:3000/metrics   # Prometheus format: pages_processed, events_folded, fold_failures
+# Readiness file alternative (if HEALTHZ_DISABLE=1):  HEALTHZ_FILE=/tmp/indexer.ready npm run --prefix indexer start
+```
+
 ### Deploy to testnet
 
 ```bash
@@ -345,6 +363,26 @@ conduit-contracts/
 │           ├── config.rs       # GovernorConfig struct + load helper
 │           ├── auth.rs         # authority-gate shared by every write
 │           └── ttl.rs          # instance TTL extension
+├── indexer/
+│   ├── src/
+│   │   ├── indexer/
+│   │   │   ├── types.ts        # SorobanEventSource contract + pagination & fields docs
+│   │   │   ├── poller.ts       # 105-line poller with counters (pages/events/failures)
+│   │   │   ├── eventSource.ts  # stub SorobanEventSource (replace with RPC)
+│   │   │   └── fold.ts         # per-event fold logic
+│   │   ├── worker.ts           # bare process + /healthz + /metrics (+ readiness file alt)
+│   │   ├── metrics.ts          # pages_processed / events_folded / fold_failures
+│   │   ├── health.ts           # lastSuccessfulPoll + cursor for /healthz
+│   │   └── db/
+│   │       ├── migrate.ts      # hand-rolled numbered-file runner (up/status/down)
+│   │       └── index.ts        # cursor load/save helpers
+│   ├── package.json
+│   └── tsconfig.json
+├── db/
+│   ├── schema.sql              # legacy one-shot (deprecated)
+│   ├── migrate.js              # hand-rolled runner (node db/migrate.js up)
+│   └── migrations/
+│       └── 001_initial.sql     # converted schema.sql — first versioned migration
 ├── tests/
 │   ├── stream_lifecycle.rs     # create → withdraw → cancel
 │   ├── stream_clawback.rs
