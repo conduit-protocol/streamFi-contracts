@@ -62,6 +62,8 @@ pub fn is_zero_stellar_account(env: &Env, address: &Address) -> bool {
 mod tests {
     use super::*;
     use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::xdr::{AccountId, Hash, PublicKey, ScAddress, Uint256};
+    use soroban_sdk::TryFromVal;
 
     #[test]
     fn rejects_zero_ed25519_account() {
@@ -81,6 +83,54 @@ mod tests {
             "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
         ));
         assert!(is_zero_address(&env, &zero_contract));
+    }
+
+    /// The account literal must actually *decode* to the all-zero Ed25519 key.
+    ///
+    /// The two tests above only re-parse the same literal and compare that
+    /// value to itself, so they stay green even if the strkey encoding of the
+    /// literal changes meaning — for instance after a `soroban-sdk` bump. Build
+    /// the expected address from scratch out of 32 zero bytes instead, so a
+    /// decode change turns this test red rather than silently making
+    /// `is_zero_address` wrong in a way nothing else catches.
+    #[test]
+    fn zero_account_literal_decodes_to_the_all_zero_ed25519_key() {
+        let env = Env::default();
+
+        let decoded = Address::from_string(&soroban_sdk::String::from_str(
+            &env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        ));
+
+        let expected = Address::try_from_val(
+            &env,
+            &ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(
+                [0u8; 32],
+            )))),
+        )
+        .unwrap();
+
+        assert_eq!(decoded, expected);
+        // The decoded form is still the one the guard rejects.
+        assert!(is_zero_address(&env, &decoded));
+    }
+
+    /// Same assertion for the contract literal, built from an all-zero contract
+    /// id rather than an all-zero Ed25519 key.
+    #[test]
+    fn zero_contract_literal_decodes_to_the_all_zero_contract_id() {
+        let env = Env::default();
+
+        let decoded = Address::from_string(&soroban_sdk::String::from_str(
+            &env,
+            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+        ));
+
+        let expected: Address =
+            Address::try_from_val(&env, &ScAddress::Contract(Hash([0u8; 32]))).unwrap();
+
+        assert_eq!(decoded, expected);
+        assert!(is_zero_address(&env, &decoded));
     }
 
     #[test]
