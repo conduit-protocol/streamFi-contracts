@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { useMutation, gql, useApolloClient } from '@apollo/client';
-import { validateStreamPayload } from './lib/validateStreamPayload';
+import { validateStreamPayload } from '../lib/validateStreamPayload';
 import { GET_DASHBOARD_SUMMARY } from './Dashboard';
-import { useFeeEstimate } from './lib/useFeeEstimate';
-import { useWalletSession } from './lib/useWalletSession';
+import { useFeeEstimate } from '../lib/useFeeEstimate';
+import { useWalletSession } from '../lib/useWalletSession';
 
 const FACTORY_ADDRESS = process.env.REACT_APP_FACTORY_ADDRESS ?? '';
 

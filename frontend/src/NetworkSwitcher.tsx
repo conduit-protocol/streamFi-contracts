@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import type { Network } from './lib/types';
+import type { Network } from '../lib/types';
 
 const NETWORK_SWITCH_TIMEOUT_MS = 10_000;
 

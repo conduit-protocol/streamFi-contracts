@@ -1,5 +1,5 @@
 import React, { useState, useImperativeHandle, forwardRef } from 'react';
-import type { Token } from './lib/types';
+import type { Token } from '../lib/types';
 
 const STELLAR_CONTRACT_ID_RE = /^C[A-Z2-7]{55}$/;
 

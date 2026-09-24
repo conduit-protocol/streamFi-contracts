@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { StreamAppSDK } from './lib/stream';
-import { estimateFee } from './lib/estimateFee';
+import { StreamAppSDK } from '../lib/stream';
+import { estimateFee } from '../lib/estimateFee';
 import styles from './StreamManagement.module.css';
 
 const RPC_URL = process.env.REACT_APP_RPC_URL ?? 'https://soroban-testnet.stellar.org';

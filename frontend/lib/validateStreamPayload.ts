@@ -17,7 +17,11 @@ export interface StreamPayload {
   ratePerSecond: string;
 }
 
-const STELLAR_ADDRESS_RE = /^G[A-Z2-7]{55}$/;
+// `G...` classic account addresses and `C...` Soroban contract addresses are
+// both valid `Address` recipients on-chain — the contracts don't forbid a
+// stream paying out to a contract (a treasury, a splitter, etc.) — so both
+// must be accepted here.
+const STELLAR_ADDRESS_RE = /^[GC][A-Z2-7]{55}$/;
 /** Canonical positive integer: no sign, no decimal point, no exponent, no leading zeros. */
 const POSITIVE_INT_RE = /^[1-9]\d*$/;
 
@@ -43,7 +47,7 @@ export function validateStreamPayload(payload: Partial<StreamPayload>): Validati
   const errors: string[] = [];
 
   if (!payload.recipient || !STELLAR_ADDRESS_RE.test(payload.recipient)) {
-    errors.push('Recipient must be a valid Stellar public address (starts with G, 56 characters).');
+    errors.push('Recipient must be a valid Stellar address: a public account (starts with G) or a contract address (starts with C), 56 characters.');
   }
 
   const amount = parsePositiveInt(payload.amount);
