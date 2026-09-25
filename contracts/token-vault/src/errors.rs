@@ -29,4 +29,6 @@ pub enum Error {
     DepositTransferFailed = 13,
     /// The token transfer did not move exactly the expected amount for `withdraw`.
     WithdrawTransferFailed = 14,
+    /// The WASM hash provided to `upgrade` is all zeros (invalid).
+    InvalidWasmHash = 15,
 }

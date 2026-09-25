@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
-# upgrade.sh — Upload new WASM and upgrade factory or governor.
+# upgrade.sh — Upload new WASM and upgrade any deployed contract.
 #
 # Usage:
 #   ./scripts/upgrade.sh testnet factory
 #   ./scripts/upgrade.sh testnet governor
+#   ./scripts/upgrade.sh testnet oracle
+#   ./scripts/upgrade.sh testnet batch-processor
+#   ./scripts/upgrade.sh testnet token-vault
 #
-# oracle, batch-processor, and token-vault are deployed by deploy.sh (#295)
-# but are NOT supported here: none of their contracts currently expose an
-# `upgrade` entry point (only DripFactory and DripGovernor do — see
-# `pub fn upgrade` in contracts/factory/src/lib.rs and
-# contracts/governor/src/lib.rs). Adding upgrade support for them means
-# adding an admin-gated upgrade() function to each contract first, which is
-# a contract-logic change, not a scripting one — tracked separately rather
-# than faked here.
+# Every deployed contract exposes an admin/owner-gated `upgrade` entry point
+# (issue #651). The BatchTransferProcessor's gate is the admin recorded by its
+# `initialize` (deploy.sh passes the deploy authority), so that contract must
+# have been initialized before it can be upgraded.
 
 set -euo pipefail
 
@@ -29,6 +28,13 @@ fi
 
 FACTORY_ID=$(jq -r '.factory'  "$IDS_FILE")
 GOVERNOR_ID=$(jq -r '.governor' "$IDS_FILE")
+ORACLE_ID=$(jq -r '.oracle'  "$IDS_FILE")
+BATCH_PROCESSOR_ID=$(jq -r '.batchProcessor' "$IDS_FILE")
+TOKEN_VAULT_ID=$(jq -r '.tokenVault' "$IDS_FILE")
+
+# The upgrade authorities: governor address for the factory, deploy/admin
+# address for the oracle, batch processor, and token vault.
+AUTHORITY=$(stellar keys address dev 2>/dev/null || stellar keys address alice)
 
 echo "🔨  Building contracts…"
 cd "$ROOT_DIR"
@@ -60,12 +66,44 @@ elif [[ "$CONTRACT" == "governor" ]]; then
     -- upgrade --new_wasm_hash "$NEW_HASH"
   echo "✅  DripGovernor upgraded."
 
-elif [[ "$CONTRACT" == "oracle" || "$CONTRACT" == "batch-processor" || "$CONTRACT" == "token-vault" ]]; then
-  echo "❌  '$CONTRACT' has no on-chain 'upgrade' entry point yet — only 'factory' and 'governor' do." >&2
-  echo "    See the note at the top of this script." >&2
-  exit 1
+elif [[ "$CONTRACT" == "oracle" ]]; then
+  echo "📤  Uploading new TwapOracle WASM…"
+  NEW_HASH=$(stellar contract upload \
+    --wasm "$WASM_DIR/drip_oracle.wasm" \
+    --network "$NETWORK" --source dev --quiet)
+  echo "    New hash: $NEW_HASH"
+  stellar contract invoke \
+    --id "$ORACLE_ID" \
+    --network "$NETWORK" --source dev \
+    -- upgrade --caller "$AUTHORITY" --new_wasm_hash "$NEW_HASH"
+  echo "✅  TwapOracle upgraded."
+
+elif [[ "$CONTRACT" == "batch-processor" ]]; then
+  echo "📤  Uploading new BatchTransferProcessor WASM…"
+  NEW_HASH=$(stellar contract upload \
+    --wasm "$WASM_DIR/drip_batch_processor.wasm" \
+    --network "$NETWORK" --source dev --quiet)
+  echo "    New hash: $NEW_HASH"
+  stellar contract invoke \
+    --id "$BATCH_PROCESSOR_ID" \
+    --network "$NETWORK" --source dev \
+    -- upgrade --caller "$AUTHORITY" --new_wasm_hash "$NEW_HASH"
+  echo "✅  BatchTransferProcessor upgraded."
+
+elif [[ "$CONTRACT" == "token-vault" ]]; then
+  echo "📤  Uploading new TokenVault WASM…"
+  NEW_HASH=$(stellar contract upload \
+    --wasm "$WASM_DIR/token_vault.wasm" \
+    --network "$NETWORK" --source dev --quiet)
+  echo "    New hash: $NEW_HASH"
+  stellar contract invoke \
+    --id "$TOKEN_VAULT_ID" \
+    --network "$NETWORK" --source dev \
+    -- upgrade --caller "$AUTHORITY" --new_wasm_hash "$NEW_HASH"
+  echo "✅  TokenVault upgraded."
 
 else
-  echo "❌  Unknown contract '$CONTRACT'. Use 'factory' or 'governor'." >&2
+  echo "❌  Unknown contract '$CONTRACT'. Use 'factory', 'governor', 'oracle'," \
+    "'batch-processor', or 'token-vault'." >&2
   exit 1
 fi
