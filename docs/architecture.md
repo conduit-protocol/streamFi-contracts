@@ -92,6 +92,37 @@ governor supplies protocol configuration, and the supporting contracts and
 applications provide optional batch execution, price data, custody, discovery,
 and user interaction.
 
+#### Oracle fiat-payout calculation
+
+`TwapOracle::calculate_fiat_stream_payout(token_amount)` converts a nominal
+token amount into its fiat equivalent using the oracle's current TWAP price:
+
+```
+fiat_value = token_amount * twap_price / 10^decimals
+```
+
+The function acquires the oracle's re-entrancy guard, calls `get_twap_price`
+internally (using the unguarded inner helper to avoid nested locking), fetches
+the configured `decimals` from `OracleConfig`, and performs checked
+`u128` arithmetic with overflow protection at every step.
+
+**Staleness handling:** `get_twap_price` enforces a staleness window -- if no
+price observation has been submitted within the configured threshold, the call
+reverts with `StalePriceData`. This means `calculate_fiat_stream_payout`
+inherits the same staleness guarantee: callers never receive a fiat conversion
+based on an outdated price.
+
+**Currency-denomination gap:** The oracle is configured with a single implicit
+quote currency (e.g., USD) via its `decimals` precision, but there is no
+on-chain field identifying which fiat currency the price represents. Callers
+must coordinate the denomination off-chain or through deployment conventions.
+
+**Integration surface:** Any contract or off-chain service can call
+`calculate_fiat_stream_payout` as a read-only cross-contract call. It does not
+modify oracle state. Typical use: displaying the fiat-equivalent value of a
+stream's remaining balance or accrued payout without requiring the caller to
+fetch and scale the price themselves.
+
 ### DripFactory
 
 The factory is a singleton deployed once per network. It owns no token balance for longer than one transaction — funds enter from the sender, then immediately forward to the new stream contract.
