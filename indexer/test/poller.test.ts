@@ -11,7 +11,7 @@ import type { RawEvent } from "../src/handlers.js";
 function mockClient(overrides: Partial<PoolClient> = {}): PoolClient & { queries: string[] } {
   const queries: string[] = [];
   const client = {
-    query: vi.fn(async (sql: string, params?: unknown[]) => {
+    query: vi.fn(async (sql: string, _params?: unknown[]) => {
       queries.push(sql);
       // Simulate cursor table
       if (sql.includes("SELECT last_ledger FROM cursor")) {
@@ -25,7 +25,6 @@ function mockClient(overrides: Partial<PoolClient> = {}): PoolClient & { queries
     }),
     release: vi.fn(),
     on: vi.fn(),
-    // @ts-expect-error partial mock
     queries,
     ...overrides,
   } as unknown as PoolClient & { queries: string[] };

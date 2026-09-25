@@ -45,7 +45,6 @@ function mockClient(): PoolClient & { queries: { sql: string; params: unknown[] 
     }),
     release: vi.fn(),
     on: vi.fn(),
-    // @ts-expect-error test helper
     queries,
     seenKeys,
   } as unknown as PoolClient & { queries: { sql: string; params: unknown[] }[]; seenKeys: Set<string> };
@@ -59,7 +58,6 @@ function ev(partial: Partial<RawEvent> & { data?: Record<string, unknown> }): Ra
     eventType: "stream_withdrawn",
     contractId: "CA3D...",
     topics: [],
-    data: {},
     ...partial,
     data: { ...(partial.data ?? {}) },
   };
