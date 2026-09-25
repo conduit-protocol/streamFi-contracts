@@ -149,7 +149,7 @@ export async function startPollLoop(
   const intervalMs = opts.intervalMs ?? 5_000;
   const limit = opts.limit ?? 100;
 
-  while (true) {
+  for (;;) {
     try {
       const { fetched } = await pollOnce(pool, fetchEvents, limit);
       if (fetched === 0) {

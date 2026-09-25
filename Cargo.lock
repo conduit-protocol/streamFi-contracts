@@ -162,6 +162,7 @@ dependencies = [
  "serde",
  "serde_json",
  "soroban-sdk",
+ "token-vault",
 ]
 
 [[package]]

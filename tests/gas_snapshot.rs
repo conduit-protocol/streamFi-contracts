@@ -15,11 +15,13 @@
 use drip_batch_processor::{BatchTransferProcessor, BatchTransferProcessorClient};
 use drip_factory::{DripFactory, DripFactoryClient};
 use drip_governor::{DripGovernor, DripGovernorClient};
+use drip_oracle::{OracleConfig, Role as OracleRole, TwapOracle, TwapOracleClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
     token, Address, BytesN, Env,
 };
 use std::collections::BTreeMap;
+use token_vault::{TokenVault, TokenVaultClient};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct Snapshot {
