@@ -19,28 +19,12 @@ pub const FLAG_CANCELLED: u32 = 1 << 2;
 pub const CURRENT_STORAGE_VERSION: u32 = 1;
 
 #[contracttype]
+#[derive(Clone, Copy)]
 pub enum DataKey {
-    Sender,
-    Recipient,
-    Token,
-    RatePerSecond,
-    StartTime,
-    EndTime,
-    Withdrawn,
-    PausedAt,
-    Flags,
-    ClawbackEnabled,
-    Cancelled,
     /// Single-key representation of all stream fields.
-    /// Replaces the 11 individual keys above for new writes — loaded in one
-    /// storage read instead of eleven.
+    /// Consolidates all stream metadata into one storage read instead of eleven
+    /// legacy per-field keys (superseded on first `save()` of pre-consolidation streams).
     Config,
-    /// Legacy standalone copy of the current event sequence value.
-    ///
-    /// New writes persist this as part of `StreamInfo`/`Config` so it survives
-    /// consolidated-key migrations. Older streams may still have this key until
-    /// the first `save()` migrates them to the single-key layout.
-    EventSequence,
     /// Lock for re-entrancy protection and concurrency control.
     Guard,
     /// Storage layout version, written once at `initialize()`.

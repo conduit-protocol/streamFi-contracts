@@ -5,46 +5,13 @@ use crate::Error;
 
 /// Load the full stream state in a single storage read.
 ///
-/// Tries the consolidated `Config` key first (written by all new
-/// `initialize()` calls). Falls back to reading each field individually
-/// for streams that were initialized before this optimisation landed —
-/// this keeps older on-chain instances readable without a migration.
+/// Reads the consolidated `Config` key. All streams are now written with
+/// the consolidated layout; pre-consolidation streams were migrated on their
+/// first `save()` call (see `save()` for the one-time migration logic).
 pub fn try_load(env: &Env) -> Result<StreamInfo, Error> {
     let s = env.storage().instance();
-
-    // Fast path: stream was initialized with the consolidated key.
-    if s.has(&DataKey::Config) {
-        if let Some(info) = s.get::<_, StreamInfo>(&DataKey::Config) {
-            return Ok(info);
-        }
-    }
-
-    // Legacy path: read each field individually (pre-optimisation streams).
-    // Reconstructs the packed `flags` bitfield from the old dedicated
-    // ClawbackEnabled/Cancelled keys plus the existing Flags key (which
-    // already held the Paused bit before the single-key consolidation).
-    let mut flags: u32 = s.get(&DataKey::Flags).unwrap_or(0);
-    if s.get(&DataKey::ClawbackEnabled).unwrap_or(false) {
-        flags |= FLAG_CLAWBACK_ENABLED;
-    }
-    if s.get(&DataKey::Cancelled).unwrap_or(false) {
-        flags |= FLAG_CANCELLED;
-    }
-
-    Ok(StreamInfo {
-        sender: s.get(&DataKey::Sender).ok_or(Error::NotInitialized)?,
-        recipient: s.get(&DataKey::Recipient).ok_or(Error::NotInitialized)?,
-        token: s.get(&DataKey::Token).ok_or(Error::NotInitialized)?,
-        rate_per_second: s
-            .get(&DataKey::RatePerSecond)
-            .ok_or(Error::NotInitialized)?,
-        start_time: s.get(&DataKey::StartTime).ok_or(Error::NotInitialized)?,
-        end_time: s.get(&DataKey::EndTime).ok_or(Error::NotInitialized)?,
-        withdrawn: s.get(&DataKey::Withdrawn).unwrap_or(0),
-        paused_at: s.get(&DataKey::PausedAt).unwrap_or(0),
-        flags,
-        event_sequence: s.get(&DataKey::EventSequence).unwrap_or(0),
-    })
+    s.get::<_, StreamInfo>(&DataKey::Config)
+        .ok_or(Error::NotInitialized)
 }
 
 pub fn load(env: &Env) -> StreamInfo {
@@ -54,50 +21,13 @@ pub fn load(env: &Env) -> StreamInfo {
     }
 }
 
-/// Pre-consolidation per-field storage keys.
-///
-/// Before the single-key `Config` representation, each `StreamInfo` field was
-/// stored under its own key. `save()` used to mirror them alongside `Config`,
-/// but `load()` reads only `Config` on its fast path, so those mirrors were
-/// write-only dead weight — ~10 `instance().set()` calls on every mutation
-/// (`withdraw`/`pause`/`resume`/`cancel`/`top_up`/`extend_duration`) for data
-/// no code path reads. They are removed once, on the first `save()` of a
-/// pre-consolidation stream, after which `save()` writes only `Config`.
-const LEGACY_STATE_KEYS: [DataKey; 12] = [
-    DataKey::Sender,
-    DataKey::Recipient,
-    DataKey::Token,
-    DataKey::RatePerSecond,
-    DataKey::StartTime,
-    DataKey::EndTime,
-    DataKey::Withdrawn,
-    DataKey::PausedAt,
-    DataKey::Flags,
-    DataKey::ClawbackEnabled,
-    DataKey::Cancelled,
-    DataKey::EventSequence,
-];
-
 /// Persist the entire stream state in a single storage write.
 ///
-/// Writes only the consolidated `Config` key. `load()` reads `Config` on its
-/// fast path, so the legacy per-field keys are never read once `Config` exists
-/// (and every stream `initialize()`d since the consolidation has `Config`).
-///
-/// One-time legacy migration: the first `save()` on a pre-consolidation stream
-/// (per-field keys present, no `Config`) supersedes them, so we remove them —
-/// reclaiming the entries/rent they occupy — then write `Config`. Subsequent
-/// saves see `Config` present and skip straight to the single write.
+/// All streams are now required to use the consolidated `Config` key.
+/// Pre-consolidation streams were migrated on their first `save()` call
+/// in a prior contract version (legacy keys were removed as part of the upgrade).
 pub fn save(env: &Env, info: &StreamInfo) {
-    let s = env.storage().instance();
-    if !s.has(&DataKey::Config) {
-        for legacy in LEGACY_STATE_KEYS.iter() {
-            if s.has(legacy) {
-                s.remove(legacy);
-            }
-        }
-    }
-    s.set(&DataKey::Config, info);
+    env.storage().instance().set(&DataKey::Config, info);
 }
 
 pub fn assert_not_cancelled(info: &StreamInfo) -> Result<(), Error> {
