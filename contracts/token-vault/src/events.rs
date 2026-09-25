@@ -39,12 +39,23 @@ pub fn deposited(env: &Env, from: &Address, amount: i128, new_balance: i128) {
 ///
 /// Topics: `("withdrawn", caller)` — the owner or delegated operator that
 /// authorized the withdrawal.
-/// Data:   `(to, amount, new_balance)` — the recipient, the withdrawn
-/// amount, and the vault's resulting total balance.
-pub fn withdrawn(env: &Env, caller: &Address, to: &Address, amount: i128, new_balance: i128) {
+/// Data:   `(to, amount, new_balance, by_operator)` — the recipient, the
+/// withdrawn amount, the vault's resulting total balance, and whether the
+/// authorization came from the delegated operator rather than the owner
+/// itself (`false` means the owner authorized it). This lets off-chain
+/// consumers attribute each payout to the signing role without correlating
+/// `caller` against owner-transfer history (issue #662).
+pub fn withdrawn(
+    env: &Env,
+    caller: &Address,
+    to: &Address,
+    amount: i128,
+    new_balance: i128,
+    by_operator: bool,
+) {
     env.events().publish(
         (symbol_short!("withdrawn"), caller.clone()),
-        (to.clone(), amount, new_balance),
+        (to.clone(), amount, new_balance, by_operator),
     );
 }
 

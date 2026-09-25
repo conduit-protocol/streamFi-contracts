@@ -565,8 +565,32 @@ fn withdraw_emits_withdrawn_event() {
         topics.clone(),
         (symbol_short!("withdrawn"), s.owner.clone()).into_val(&s.env)
     );
-    let payload: (Address, i128, i128) = data.clone().try_into_val(&s.env).unwrap();
-    assert_eq!(payload, (recipient.clone(), 400_i128, 600_i128));
+    let payload: (Address, i128, i128, bool) = data.clone().try_into_val(&s.env).unwrap();
+    assert_eq!(payload, (recipient.clone(), 400_i128, 600_i128, false));
+}
+
+#[test]
+fn operator_withdraw_emits_by_operator_flag() {
+    let s = Setup::new(1_000_000);
+    s.client.deposit(&s.owner, &1_000);
+
+    let op = Address::generate(&s.env);
+    s.client.set_operator(&s.owner, &op);
+    s.client.set_operator_withdraw_limit(&s.owner, &1_000);
+
+    let recipient = Address::generate(&s.env);
+    s.client.withdraw(&op, &recipient, &300);
+
+    let events = vault_events(&s);
+    assert_eq!(events.len(), 4);
+
+    let (_, topics, data) = &events[3];
+    assert_eq!(
+        topics.clone(),
+        (symbol_short!("withdrawn"), op.clone()).into_val(&s.env)
+    );
+    let payload: (Address, i128, i128, bool) = data.clone().try_into_val(&s.env).unwrap();
+    assert_eq!(payload, (recipient.clone(), 300_i128, 700_i128, true));
 }
 
 #[test]

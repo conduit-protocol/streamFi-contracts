@@ -168,8 +168,12 @@ impl TokenVault {
             return Err(Error::DepositTransferFailed);
         }
 
+        // Record which signing role authorized the payout (issue #662): the
+        // ownership-transfer path above can change `owner`, so consumers of
+        // the event can't reliably infer role from the `caller` address.
+        let by_operator = caller != owner;
         bump_instance(&env);
-        events::withdrawn(&env, &caller, &to, amount, new_balance);
+        events::withdrawn(&env, &caller, &to, amount, new_balance, by_operator);
         Ok(())
     }
 
