@@ -80,7 +80,30 @@ The factory validated `deposit >= rate_per_sec` (at least 1 second of streaming)
 
 A malicious sender pausing a stream indefinitely, blocking further accrual for the recipient while retaining full control of unstreamed tokens, is mitigated by `force_cancel()`: the recipient can unilaterally settle the stream once it's been paused for more than `PAUSE_THRESHOLD_SECS` (30 days). See `docs/architecture.md` for the settlement details.
 
-### 6. Clawback can be used adversarially
+### 6. Factory `record_cancel` is permissionless
+
+`DripFactory::record_cancel()` takes no caller address and performs no
+authentication. Anyone can invoke it to decrement the `active_streams` aggregate
+counter by one (via `saturating_sub`, so it floors at zero).
+
+**Impact:** The `active_streams` field is a display metric used by off-chain
+consumers (indexer, frontend dashboards). It does not gate any on-chain logic --
+no access control, fee calculation, or settlement path depends on it. An
+attacker calling `record_cancel` repeatedly can zero out the counter but cannot
+move funds, alter stream state, or affect protocol correctness.
+
+**Design rationale:** `record_cancel` exists as a permissionless hook so that
+stream contracts cancelling outside the factory's `cancel_batch_streams` path
+can report the cancellation without requiring the factory to grant caller-level
+trust. The factory counted each stream at creation time; the decrement is a
+best-effort bookkeeping signal, not a security-critical state transition.
+
+**Accepted tradeoff:** The counter can be driven to zero by a griefer, making
+it unreliable as a source of truth. Off-chain consumers that need an accurate
+active-stream count should derive it from event logs (stream-created minus
+stream-cancelled) rather than relying on this aggregate.
+
+### 7. Clawback can be used adversarially
 
 A sender with `clawback_enabled = true` can call `clawback()` to reclaim all unstreamed tokens at any time, effectively starving the recipient of future payments. Recipients should verify `clawback_enabled` before accepting a stream.
 
