@@ -1,12 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
+import type { Network } from './lib/types';
 
 const NETWORK_SWITCH_TIMEOUT_MS = 10_000;
-
-interface Network {
-  id: string;
-  name: string;
-  rpcUrl: string;
-}
 
 const NETWORKS: Network[] = [
   { id: 'testnet', name: 'Testnet', rpcUrl: 'https://soroban-testnet.stellar.org' },

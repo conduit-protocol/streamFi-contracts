@@ -34,6 +34,7 @@ drip-factory           = { path = "contracts/factory",           features = ["te
 drip-governor          = { path = "contracts/governor",          features = ["testutils"] }
 drip-oracle            = { path = "contracts/oracle",            features = ["testutils"] }
 drip-batch-processor   = { path = "contracts/batch-processor",   features = ["testutils"] }
+token-vault            = { path = "contracts/token-vault",       features = ["testutils"] }
 soroban-sdk            = { workspace = true, features = ["testutils"] }
 
 [profile.release]
