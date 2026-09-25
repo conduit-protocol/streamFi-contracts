@@ -6,6 +6,29 @@ Three contracts. One protocol.
 
 ---
 
+## Component Status
+
+This repository now spans more than the original three streaming contracts. The
+table below marks each component's intended track so newcomers don't have to
+infer it from source layout.
+
+| Component | Type | Status | Notes |
+|---|---|---|---|
+| `DripStream` | Contract | Production-track | Core protocol — per-stream escrow, see [Contracts](#contracts) below |
+| `DripFactory` | Contract | Production-track | Core protocol — deploys and registers streams |
+| `DripGovernor` | Contract | Production-track | Core protocol — protocol configuration authority |
+| `BatchTransferProcessor` | Contract | Production-track | Optional batch-transfer execution boundary — see [ADR-007](./docs/adr/007-batch-transfer-processor-scope.md) |
+| `TwapOracle` | Contract | Production-track | Independent price-oracle service; not in the stream settlement path — see [`docs/architecture.md`](./docs/architecture.md) |
+| `TokenVault` | Contract | Independent / experimental | Standalone token vault; **not part of the streaming protocol** — no protocol call path reaches it, see [`docs/architecture.md`](./docs/architecture.md#tokenvault) |
+| `indexer/` | Service (TypeScript) | Scaffold | Off-chain event poller into Postgres; not wired to a live RPC endpoint yet — see [`indexer/README.md`](./indexer/README.md) |
+| `frontend/` | Application (TypeScript) | Scaffold | Components-only library, not a standalone app — no bundler config of its own, see [`frontend/README.md`](./frontend/README.md) |
+
+**Audit status:** none of the above has undergone an external audit yet — see
+[`docs/security.md`](./docs/security.md). Do not deploy any of them to Mainnet
+with real funds.
+
+---
+
 ## Contracts
 
 ### `DripStream`
