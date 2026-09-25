@@ -1,11 +1,7 @@
 import React, { useState, useImperativeHandle, forwardRef } from 'react';
+import type { Token } from './lib/types';
 
 const STELLAR_CONTRACT_ID_RE = /^C[A-Z2-7]{55}$/;
-
-interface PresetToken {
-  label: string;
-  address: string;
-}
 
 // TODO: these placeholder addresses are neither the right length nor a
 // verified USDC/XLM Soroban contract ID for any network — shipping a
@@ -13,7 +9,7 @@ interface PresetToken {
 // preset list is empty until a maintainer supplies real, verified contract
 // IDs. Until then, users always go through the validated "custom address"
 // path below.
-const PRESET_TOKENS: PresetToken[] = [];
+const PRESET_TOKENS: Token[] = [];
 
 export interface TokenSelectorHandle {
   validate: () => boolean;
