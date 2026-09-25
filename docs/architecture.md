@@ -155,6 +155,8 @@ The governor does not hold any token balance.
 
 `DripFactory::create_stream` cross-contract-calls `DripGovernor::config()` to enforce `max_rate_per_second`, `min_duration_seconds`, and `max_duration_seconds` (for fixed-duration streams), and `DripFactory::protocol_fee_bps()` reads `fee_bps` live from the governor — falling back to the 30bps default only if the factory itself hasn't been initialized yet. Post-creation stream extensions on deployed `DripStream` instances are intentionally self-contained and not constrained by the initial `max_duration_seconds` creation limit.
 
+**Governor parameter scope:** `set_force_cancel_pause_threshold` updates the governor's stored threshold value, but this affects only *future* streams created after the call. Already-deployed streams retain the threshold value they were initialized with (stored in `DripStream::ForceCancelPauseThresholdSecs`). This forward-only semantics preserves stream contract determinism — a stream's pause-to-cancel deadline is fixed at creation and does not change retroactively.
+
 ### TokenVault
 
 **Status: not part of the streaming protocol.** `DripStream`, `DripFactory` and

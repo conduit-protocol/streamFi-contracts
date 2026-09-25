@@ -545,6 +545,12 @@ impl DripGovernor {
     /// 7 days, a long-horizon vesting stream 90. Gated by `RateManager` —
     /// the same role tier that already controls the other stream bounds
     /// (`set_min_duration`, `set_max_duration`, `set_max_rate`).
+    ///
+    /// **Forward-only:** This parameter affects only streams initialized *after*
+    /// the call. Already-deployed streams retain the threshold value they were
+    /// initialized with (stored in `DripStream::ForceCancelPauseThresholdSecs`
+    /// at creation time). This preserves stream contract semantics and prevents
+    /// retroactive changes to pause deadlines.
     pub fn set_force_cancel_pause_threshold(
         env: Env,
         caller: Address,
