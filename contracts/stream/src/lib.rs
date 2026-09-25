@@ -876,11 +876,7 @@ impl DripStream {
     /// processed after reconnecting. A gap means the missing ledger range
     /// must be replayed before live processing continues.
     pub fn event_sequence(env: Env) -> u64 {
-        let storage = env.storage().instance();
-        if storage.has(&DataKey::Config) {
-            return state::load(&env).event_sequence;
-        }
-        storage.get(&DataKey::EventSequence).unwrap_or(0)
+        state::load(&env).event_sequence
     }
 
     /// Storage layout version this instance was initialized with.

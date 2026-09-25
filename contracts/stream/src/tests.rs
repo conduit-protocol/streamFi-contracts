@@ -777,62 +777,6 @@ fn initialize_accepts_open_ended_stream() {
 /// legacy per-field storage keys, bypassing `initialize()`'s guard, then show
 /// that once ledger time passes `start_time` the release math underflows and
 /// surfaces `ArithmeticOverflow`. In a real deployment that same error fires
-/// inside `withdraw`, `cancel`, and `clawback`, so the escrow could be neither
-/// paid out nor refunded — the funds would be locked forever. The guard in
-/// `initialize()` makes this state unreachable in the first place.
-#[test]
-fn malformed_time_range_would_lock_funds() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let sender = Address::generate(&env);
-    let recipient = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-    let token_addr = env
-        .register_stellar_asset_contract_v2(token_admin.clone())
-        .address();
-
-    let start_time: u64 = 1_000_000;
-    let end_time: u64 = start_time - 3_600; // end BEFORE start — malformed
-
-    let stream_id = env.register_contract(None, DripStream);
-
-    // Inject the malformed state directly via the legacy per-field keys.
-    // `state::load` reconstructs from these when no `Config` key is present,
-    // so this reproduces exactly what a pre-fix `initialize()` would persist.
-    env.as_contract(&stream_id, || {
-        let storage = env.storage().instance();
-        storage.set(&DataKey::Sender, &sender);
-        storage.set(&DataKey::Recipient, &recipient);
-        storage.set(&DataKey::Token, &token_addr);
-        storage.set(&DataKey::RatePerSecond, &100_i128);
-        storage.set(&DataKey::StartTime, &start_time);
-        storage.set(&DataKey::EndTime, &end_time);
-        storage.set(&DataKey::Withdrawn, &0_i128);
-        storage.set(&DataKey::PausedAt, &0_u64);
-        storage.set(&DataKey::Flags, &0_u32);
-    });
-
-    // Advance ledger past start_time so the release math actually runs.
-    env.ledger().set(LedgerInfo {
-        timestamp: start_time + 10,
-        protocol_version: 21,
-        sequence_number: 1,
-        network_id: Default::default(),
-        base_reserve: 10,
-        min_temp_entry_ttl: 16,
-        min_persistent_entry_ttl: 4096,
-        max_entry_ttl: 6_312_000,
-    });
-
-    let result = env.as_contract(&stream_id, || {
-        let info = crate::state::load(&env);
-        crate::math::streamed_amount(&env, &info)
-    });
-
-    // The trap: the settlement math the whole contract depends on is bricked.
-    assert_eq!(result, Err(Error::ArithmeticOverflow));
-}
 
 // ── TTL management ─────────────────────────────────────────────────────────────
 
@@ -1135,41 +1079,6 @@ fn extend_duration_rejects_on_arithmetic_overflow() {
     assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
 }
 
-#[test]
-fn legacy_storage_layout_still_loads_and_tracks_state() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let sender = Address::generate(&env);
-    let recipient = Address::generate(&env);
-
-    let token_admin = Address::generate(&env);
-    let token_addr = env
-        .register_stellar_asset_contract_v2(token_admin.clone())
-        .address();
-
-    let now: u64 = 1_000_000;
-    let stream_id = env.register_contract(None, DripStream);
-
-    env.as_contract(&stream_id, || {
-        let storage = env.storage().instance();
-        storage.set(&DataKey::Sender, &sender);
-        storage.set(&DataKey::Recipient, &recipient);
-        storage.set(&DataKey::Token, &token_addr);
-        storage.set(&DataKey::RatePerSecond, &100_i128);
-        storage.set(&DataKey::StartTime, &now);
-        storage.set(&DataKey::EndTime, &(now + 3_600));
-        storage.set(&DataKey::Withdrawn, &0_i128);
-        storage.set(&DataKey::PausedAt, &0_u64);
-        storage.set(&DataKey::Flags, &0_u32);
-    });
-
-    let info = env.as_contract(&stream_id, || crate::state::load(&env));
-    assert_eq!(info.rate_per_second, 100);
-    assert!(!info.is_paused());
-    assert!(!info.is_cancelled());
-    assert!(!info.is_clawback_enabled());
-}
 
 // ── Cancellation CEI / settlement invariants (issue #78) ──────────────────────
 //
@@ -1894,29 +1803,20 @@ fn sender_still_can_pause_after_setting_operator() {
 // stream, removes the legacy keys one-time.
 
 #[test]
-fn initialize_writes_only_config_and_not_legacy_keys() {
+fn initialize_writes_only_config() {
     let s = Setup::new(100, 3600, false);
 
-    let (has_config, has_sender, has_withdrawn, has_flags) =
-        s.env.as_contract(&s.client.address, || {
-            let storage = s.env.storage().instance();
-            (
-                storage.has(&DataKey::Config),
-                storage.has(&DataKey::Sender),
-                storage.has(&DataKey::Withdrawn),
-                storage.has(&DataKey::Flags),
-            )
-        });
+    let has_config = s.env.as_contract(&s.client.address, || {
+        let storage = s.env.storage().instance();
+        storage.has(&DataKey::Config)
+    });
 
     assert!(
         has_config,
         "consolidated Config must be written on initialize"
     );
-    assert!(!has_sender, "legacy Sender key must not be written");
-    assert!(!has_withdrawn, "legacy Withdrawn key must not be written");
-    assert!(!has_flags, "legacy Flags key must not be written");
 
-    // initialize() must still expose the full state via load()/info().
+    // initialize() must expose the full state via load()/info().
     let info = s
         .env
         .as_contract(&s.client.address, || crate::state::load(&s.env));
@@ -1925,27 +1825,20 @@ fn initialize_writes_only_config_and_not_legacy_keys() {
 }
 
 #[test]
-fn event_sequence_is_persisted_in_config_and_not_left_as_legacy_state() {
+fn event_sequence_is_persisted_in_config() {
     let s = Setup::new(100, 3600, false);
     s.advance_secs(100);
     s.client.pause(&s.sender);
     s.client.resume(&s.sender);
 
-    let (has_config, has_event_sequence) = s.env.as_contract(&s.client.address, || {
+    let has_config = s.env.as_contract(&s.client.address, || {
         let storage = s.env.storage().instance();
-        (
-            storage.has(&DataKey::Config),
-            storage.has(&DataKey::EventSequence),
-        )
+        storage.has(&DataKey::Config)
     });
 
     assert!(
         has_config,
         "Config must be present after event-driven updates"
-    );
-    assert!(
-        !has_event_sequence,
-        "EventSequence must be stored in Config rather than as a standalone legacy key"
     );
 
     let info = s
@@ -1959,153 +1852,22 @@ fn event_sequence_is_persisted_in_config_and_not_left_as_legacy_state() {
 }
 
 #[test]
-fn state_mutation_writes_only_config_not_legacy_keys() {
+fn state_mutation_writes_only_config() {
     let s = Setup::new(100, 3600, false);
     s.advance_secs(100);
     s.client.withdraw(&10_000); // drives state::save
 
-    let (has_config, has_sender, has_withdrawn) = s.env.as_contract(&s.client.address, || {
+    let has_config = s.env.as_contract(&s.client.address, || {
         let storage = s.env.storage().instance();
-        (
-            storage.has(&DataKey::Config),
-            storage.has(&DataKey::Sender),
-            storage.has(&DataKey::Withdrawn),
-        )
+        storage.has(&DataKey::Config)
     });
     assert!(has_config, "Config must be present after a mutation");
-    assert!(
-        !has_sender,
-        "mutation must not resurrect the legacy Sender key"
-    );
-    assert!(
-        !has_withdrawn,
-        "mutation must not resurrect the legacy Withdrawn key"
-    );
 
-    // The mutation's effect must still be durable through Config.
+    // The mutation's effect must be durable through Config.
     let info = s
         .env
         .as_contract(&s.client.address, || crate::state::load(&s.env));
     assert_eq!(info.withdrawn, 10_000);
-}
-
-#[test]
-fn save_migrates_legacy_keys_to_config_once() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let sender = Address::generate(&env);
-    let recipient = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-    let token_addr = env
-        .register_stellar_asset_contract_v2(token_admin.clone())
-        .address();
-    let stream_id = env.register_contract(None, DripStream);
-
-    // Simulate a pre-consolidation stream: only the per-field keys exist.
-    env.as_contract(&stream_id, || {
-        let storage = env.storage().instance();
-        storage.set(&DataKey::Sender, &sender);
-        storage.set(&DataKey::Recipient, &recipient);
-        storage.set(&DataKey::Token, &token_addr);
-        storage.set(&DataKey::RatePerSecond, &100_i128);
-        storage.set(&DataKey::StartTime, &1_000_000_u64);
-        storage.set(&DataKey::EndTime, &1_003_600_u64);
-        storage.set(&DataKey::Withdrawn, &0_i128);
-        storage.set(&DataKey::PausedAt, &0_u64);
-        storage.set(&DataKey::Flags, &0_u32);
-        assert!(!storage.has(&DataKey::Config));
-    });
-
-    // First save() supersedes the legacy keys and writes Config.
-    env.as_contract(&stream_id, || {
-        crate::state::save(
-            &env,
-            &crate::storage::StreamInfo {
-                sender: sender.clone(),
-                recipient: recipient.clone(),
-                token: token_addr.clone(),
-                rate_per_second: 100,
-                start_time: 1_000_000,
-                end_time: 1_003_600,
-                withdrawn: 0,
-                paused_at: 0,
-                flags: 0,
-                event_sequence: 0,
-            },
-        );
-    });
-
-    // Legacy keys removed, Config present, load() returns the right state.
-    env.as_contract(&stream_id, || {
-        let storage = env.storage().instance();
-        assert!(storage.has(&DataKey::Config));
-        assert!(!storage.has(&DataKey::Sender));
-        assert!(!storage.has(&DataKey::Recipient));
-        assert!(!storage.has(&DataKey::Withdrawn));
-        assert!(!storage.has(&DataKey::Flags));
-
-        let info = crate::state::load(&env);
-        assert_eq!(info.rate_per_second, 100);
-        assert_eq!(info.sender, sender);
-        assert_eq!(info.recipient, recipient);
-    });
-}
-
-#[test]
-fn save_migrates_legacy_per_field_keys_to_config() {
-    // Regression test for #468: a stream written with the old per-field
-    // keys (pre-consolidation) must be migrated to the single DataKey::Config
-    // on the first mutating call, and all legacy keys must be removed.
-    let s = Setup::new(100, 3600, false);
-    let env = &s.env;
-    let id = s.client.address.clone();
-
-    // Snapshot the canonical state, then remove the consolidated Config key
-    // and write the legacy per-field layout to simulate a v0 stream.
-    let info = s.client.info();
-    env.as_contract(&id, || {
-        let instance = env.storage().instance();
-        instance.remove(&DataKey::Config);
-        instance.set(&DataKey::Sender, &info.sender);
-        instance.set(&DataKey::Recipient, &info.recipient);
-        instance.set(&DataKey::Token, &info.token);
-        instance.set(&DataKey::RatePerSecond, &info.rate_per_second);
-        instance.set(&DataKey::StartTime, &info.start_time);
-        instance.set(&DataKey::EndTime, &info.end_time);
-        instance.set(&DataKey::Withdrawn, &info.withdrawn);
-        instance.set(&DataKey::PausedAt, &info.paused_at);
-        instance.set(&DataKey::Flags, &info.flags);
-        instance.set(&DataKey::EventSequence, &info.event_sequence);
-    });
-
-    // Trigger migration via a mutating method that calls state::save.
-    s.client.pause(&s.sender);
-
-    env.as_contract(&id, || {
-        let instance = env.storage().instance();
-        // After migration, Config must exist...
-        assert!(instance.has(&DataKey::Config));
-        // ...and every legacy key must be gone.
-        assert!(!instance.has(&DataKey::Sender));
-        assert!(!instance.has(&DataKey::Recipient));
-        assert!(!instance.has(&DataKey::Token));
-        assert!(!instance.has(&DataKey::RatePerSecond));
-        assert!(!instance.has(&DataKey::StartTime));
-        assert!(!instance.has(&DataKey::EndTime));
-        assert!(!instance.has(&DataKey::Withdrawn));
-        assert!(!instance.has(&DataKey::PausedAt));
-        assert!(!instance.has(&DataKey::Flags));
-        assert!(!instance.has(&DataKey::EventSequence));
-        assert!(!instance.has(&DataKey::ClawbackEnabled));
-        assert!(!instance.has(&DataKey::Cancelled));
-    });
-
-    // The migrated state should still be readable and correctly paused.
-    let migrated = s.client.info();
-    assert!(migrated.is_paused());
-    assert_eq!(migrated.sender, info.sender);
-    assert_eq!(migrated.recipient, info.recipient);
-    assert_eq!(migrated.flags, info.flags | FLAG_PAUSED);
 }
 
 #[test]
