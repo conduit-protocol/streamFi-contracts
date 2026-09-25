@@ -36,6 +36,14 @@ case "$TARGET" in
       -- "$FN"
     exit 0
     ;;
+  token-vault)
+    TOKEN_VAULT_ID=$(jq -r '.token_vault' "$IDS_FILE")
+    stellar contract invoke \
+      --id "$TOKEN_VAULT_ID" \
+      --network "$NETWORK" --source "$SOURCE" \
+      -- "$FN"
+    exit 0
+    ;;
 esac
 
 STREAM_ID="$TARGET"

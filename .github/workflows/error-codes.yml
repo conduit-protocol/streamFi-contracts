@@ -1,0 +1,28 @@
+name: Validate Error Codes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'contracts/*/src/errors.rs'
+      - 'scripts/validate-error-codes.py'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'contracts/*/src/errors.rs'
+      - 'scripts/validate-error-codes.py'
+
+jobs:
+  validate-errors:
+    name: Check error code consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Validate error codes
+        run: python scripts/validate-error-codes.py
