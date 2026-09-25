@@ -132,6 +132,17 @@ pub struct OracleConfig {
     /// `min_submit_interval` seconds after that feeder's last accepted
     /// submission, returning [`Error::SubmitTooSoon`].
     pub min_submit_interval: u64,
+    /// Minimum number of distinct feeders with a fresh, non-zero submission
+    /// required before the aggregated TWAP is considered reliable. When fewer
+    /// than this many feeders are contributing, [`TwapOracle::get_twap_price`]
+    /// rejects the read with [`Error::InsufficientQuorum`] instead of
+    /// returning a median backed by too few observations (issue #661).
+    ///
+    /// Must be `>= 1` and `<= [`MAX_SUBMITTERS`]`; [`TwapOracle::configure_oracle`]
+    /// rejects other values with [`Error::InvalidMinSubmitters`]. The
+    /// configured value is exposed on-chain via [`TwapOracle::min_submitters`]
+    /// so callers can check the reliability threshold before trusting a price.
+    pub min_submitters: u32,
 }
 
 #[contracttype]
@@ -162,6 +173,13 @@ pub struct PriceStatus {
     /// `1` means no diversification (any single feeder drives the price),
     /// while several mean the median is genuinely cross-feeder.
     pub fresh_submitter_count: u32,
+    /// The configured minimum-submitter quorum
+    /// (`OracleConfig::min_submitters`) — the reliability threshold
+    /// `get_twap_price` enforces. Compare against `fresh_submitter_count`: the
+    /// TWAP is only returned when `fresh_submitter_count >= min_submitters`,
+    /// otherwise `get_twap_price` errors with `InsufficientQuorum` (issue
+    /// #661).
+    pub min_submitters: u32,
     /// Age in seconds of the newest fresh submission (the youngest individual
     /// observation contributing to the median). `0` when `stale` is `true`.
     pub newest_age: u64,
@@ -208,6 +226,15 @@ pub enum Error {
     /// spam-refreshes of `updated_at` that defeat per-feeder staleness
     /// detection (issue #390).
     SubmitTooSoon = 1018,
+    /// `configure_oracle` was given a `min_submitters` quorum of `0` or one
+    /// larger than `MAX_SUBMITTERS`. A quorum must always be at least one
+    /// feeder (a zero quorum would accept prices nobody backs) and can never
+    /// exceed the capped submitter set (issue #661).
+    InvalidMinSubmitters = 1019,
+    /// `get_twap_price` found fewer fresh, non-zero feeder submissions than
+    /// the configured `min_submitters` quorum requires, so the TWAP median is
+    /// not reliable enough to return (issue #661).
+    InsufficientQuorum = 1020,
 }
 
 #[contract]
@@ -338,6 +365,11 @@ impl TwapOracle {
     ///     `price > max_price` with [`Error::PriceExceedsMaxPrice`]. Set to
     ///     `0` to disable (no ceiling). Catches fat-fingered or malicious
     ///     submissions before they corrupt the TWAP window (#226).
+    ///   - `min_submitters`: Minimum number of distinct feeders whose fresh
+    ///     submissions must back the TWAP before
+    ///     [`get_twap_price`](Self::get_twap_price) returns a median. Below
+    ///     this quorum the read errors with `Error::InsufficientQuorum`
+    ///     (issue #661).
     ///
     /// # Price Cache Invalidation
     ///
@@ -354,6 +386,9 @@ impl TwapOracle {
     ///
     /// - [`Error::NotAuthorized`]: `caller` is not an `Admin` or auth verification fails.
     /// - [`Error::InvalidDecimals`]: `config.decimals` exceeds 19 (u64 price limit).
+    /// - [`Error::InvalidMaxStaleness`]: `config.max_staleness` is `0`.
+    /// - [`Error::InvalidMinSubmitters`]: `config.min_submitters` is `0` or
+    ///   exceeds [`MAX_SUBMITTERS`].
     pub fn configure_oracle(env: Env, caller: Address, config: OracleConfig) -> Result<(), Error> {
         require_role_or_admin(&env, &caller, Role::Admin)?;
 
@@ -363,6 +398,13 @@ impl TwapOracle {
 
         if config.max_staleness == 0 {
             return Err(Error::InvalidMaxStaleness);
+        }
+
+        // The quorum must be at least one (a zero-feeder quorum would let the
+        // oracle report prices nobody backs) and can never exceed the capped
+        // submitter set aggregation iterates over (issue #661).
+        if config.min_submitters == 0 || config.min_submitters > MAX_SUBMITTERS {
+            return Err(Error::InvalidMinSubmitters);
         }
 
         bump_instance(&env);
@@ -523,6 +565,9 @@ impl TwapOracle {
     /// - `NoPriceAvailable` if no price has been submitted yet.
     /// - `OracleStalePrice` if every submission on record is older than the
     ///   configured `max_staleness`.
+    /// - `InsufficientQuorum` if fewer distinct feeders hold a fresh, non-zero
+    ///   submission than the configured `min_submitters` quorum — the TWAP
+    ///   backing set isn't reliable enough to report (issue #661).
     /// - `OracleLocked` if called while the re-entrancy guard is already held
     ///   (see the nested-lock warning on `calculate_fiat_stream_payout`).
     pub fn get_twap_price(env: Env) -> Result<u64, Error> {
@@ -565,17 +610,46 @@ impl TwapOracle {
             return Err(Error::NoPriceAvailable);
         }
 
+        // Enforce the minimum-submitter quorum (issue #661): a median computed
+        // from fewer fresh feeders than `min_submitters` is not reliable
+        // enough to return. `PriceStatus` exposes both counts so callers can
+        // observe how far below quorum the set is.
+        if fresh_prices.len() as u32 < config.min_submitters {
+            return Err(Error::InsufficientQuorum);
+        }
+
         Ok(median(fresh_prices))
+    }
+
+    /// Read-only: the configured minimum-submitter quorum — how many distinct
+    /// feeders with fresh, non-zero submissions must back the TWAP before
+    /// [`get_twap_price`](Self::get_twap_price) considers it reliable enough
+    /// to return (issue #661). Below this count the read errors with
+    /// [`Error::InsufficientQuorum`].
+    ///
+    /// Errors:
+    /// - `OracleNotConfigured` if `configure_oracle` has not been called.
+    pub fn min_submitters(env: Env) -> Result<u32, Error> {
+        let config: OracleConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(Error::OracleNotConfigured)?;
+        Ok(config.min_submitters)
     }
 
     /// Full price health, computed from the same per-feeder submission set
     /// that [`get_twap_price`](Self::get_twap_price) aggregates — never the
     /// legacy `DataKey::Price` scalar.
     ///
-    /// Exposes the quorum (`fresh_submitter_count`) and the spread of fresh
-    /// submission ages (`newest_age` / `oldest_fresh_age`) behind the median, so
-    /// a caller can tell whether "the price is fresh" rests on a single feeder
-    /// or a broad cluster — the information the old boolean could not convey.
+    /// Exposes the quorum (`fresh_submitter_count`), the configured
+    /// reliability threshold (`min_submitters`), and the spread of fresh
+    /// submission ages (`newest_age` / `oldest_fresh_age`) behind the median,
+    /// so a caller can tell whether "the price is fresh" rests on a single
+    /// feeder or a broad cluster — the information the old boolean could not
+    /// convey. The TWAP is only reported by
+    /// [`get_twap_price`](Self::get_twap_price) once
+    /// `fresh_submitter_count >= min_submitters` (issue #661).
     ///
     /// Errors:
     /// - `OracleNotConfigured` if `configure_oracle` has not been called.
@@ -977,6 +1051,7 @@ fn load_price_status(env: &Env) -> Result<PriceStatus, Error> {
 
     Ok(PriceStatus {
         fresh_submitter_count,
+        min_submitters: config.min_submitters,
         newest_age,
         oldest_fresh_age,
         stale: fresh_submitter_count == 0,
@@ -1122,6 +1197,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1141,6 +1217,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         let result = client.try_configure_oracle(&admin, &config);
         assert_eq!(result, Err(Ok(Error::InvalidDecimals)));
@@ -1157,6 +1234,7 @@ mod tests {
             max_staleness: 0,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         let result = client.try_configure_oracle(&admin, &config);
         assert_eq!(result, Err(Ok(Error::InvalidMaxStaleness)));
@@ -1235,6 +1313,7 @@ mod tests {
             max_staleness: 300,
             max_price: 1_000_000_000_000_000_000,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1262,6 +1341,7 @@ mod tests {
             max_staleness: 300,
             max_price: 1_000_000_000_000_000_000,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1286,6 +1366,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1324,6 +1405,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1343,6 +1425,7 @@ mod tests {
             max_staleness: 60,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1375,6 +1458,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1396,6 +1480,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1417,6 +1502,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1438,6 +1524,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
         client.submit_price(&admin, &50_000_000);
@@ -1529,6 +1616,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
         client.submit_price(&admin, &50_000_000);
@@ -1582,6 +1670,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
         client.submit_price(&admin, &50_000_000);
@@ -1795,6 +1884,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         let result = client.try_configure_oracle(&admin, &config);
         assert_eq!(result, Err(Ok(Error::NotAuthorized)));
@@ -1815,6 +1905,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1843,6 +1934,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1868,6 +1960,7 @@ mod tests {
             max_staleness: 60,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1906,6 +1999,7 @@ mod tests {
             max_staleness: 60,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1941,6 +2035,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
         client.submit_price(&admin, &50_000_000);
@@ -1980,6 +2075,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -1999,6 +2095,7 @@ mod tests {
             max_staleness: 60,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
         client.submit_price(&admin, &50_000_000);
@@ -2038,6 +2135,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -2056,6 +2154,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -2103,6 +2202,9 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            // Nominal 2-feeder quorum so a single fresh feeder is below the
+            // reliability threshold.
+            min_submitters: 2,
         };
         client.configure_oracle(&admin, &config);
 
@@ -2129,14 +2231,26 @@ mod tests {
             Err(Ok(Error::OracleStalePrice))
         );
 
-        // One feeder submits fresh; only a single feeder backs the price now.
+        // One feeder submits fresh; only a single feeder backs the price now —
+        // below the configured 2-feeder quorum, so the TWAP is refused.
         client.submit_price(&f2, &250_000_000);
         let status = client.price_status();
         assert!(!status.stale);
         assert_eq!(status.fresh_submitter_count, 1);
+        assert_eq!(status.min_submitters, 2);
         // f2 is the newest fresh submission (age 0).
         assert_eq!(status.newest_age, 0);
         assert_eq!(status.oldest_fresh_age, 0);
+        assert_eq!(
+            client.try_get_twap_price(),
+            Err(Ok(Error::InsufficientQuorum))
+        );
+
+        // A second feeder submitting fresh restores quorum.
+        client.submit_price(&f1, &240_000_000);
+        let status = client.price_status();
+        assert_eq!(status.fresh_submitter_count, 2);
+        assert_eq!(client.get_twap_price(), 245_000_000);
     }
 
     #[test]
@@ -2152,6 +2266,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -2203,6 +2318,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -2235,6 +2351,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
         client.submit_price(&admin, &50_000_000);
@@ -2248,6 +2365,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &new_config);
 
@@ -2267,6 +2385,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
         client.submit_price(&admin, &50_000_000);
@@ -2280,6 +2399,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &new_config);
 
@@ -2299,6 +2419,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
         client.submit_price(&admin, &50_000_000);
@@ -2312,6 +2433,7 @@ mod tests {
             max_staleness: 600,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &new_config);
 
@@ -2332,6 +2454,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -2372,6 +2495,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -2397,6 +2521,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -2432,6 +2557,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -2464,6 +2590,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 60, // feeder must wait 60 s between submissions
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -2504,6 +2631,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 60,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -2545,6 +2673,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 0, // rate-limiting disabled
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -2571,6 +2700,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 60,
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 
@@ -2606,6 +2736,7 @@ mod tests {
             max_staleness: 300,
             max_price: 0,
             min_submit_interval: 3600, // very long interval
+            min_submitters: 1,
         };
         client.configure_oracle(&admin, &config);
 

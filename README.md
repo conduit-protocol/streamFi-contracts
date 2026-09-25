@@ -259,51 +259,9 @@ in each one (e.g. code `1` is `NotAuthorized` in `DripStream` and `DripGovernor`
 `NotInitialized` in `DripFactory`). Match errors against the enum for the contract you called,
 not by number alone.
 
-**`DripStream::Error`**
-
-| Code | Name | Description |
-|------|------|-------------|
-| `1` | `NotAuthorized` | Caller is not the sender or recipient |
-| `2` | `StreamNotFound` | Invalid stream ID |
-| `3` | `StreamCancelled` | Stream has been cancelled |
-| `4` | `StreamNotStarted` | Stream has not started yet |
-| `5` | `StreamEnded` | Stream past its end time |
-| `6` | `NothingToWithdraw` | Zero withdrawable balance |
-| `7` | `InsufficientDeposit` | Deposit too small for the duration |
-| `8` | `InvalidTimeRange` | `end_time` ≤ `start_time` |
-| `9` | `AlreadyPaused` | Cannot pause an already-paused stream |
-| `10` | `NotPaused` | Cannot resume a stream that isn't paused |
-| `11` | `ClawbackDisabled` | Clawback not enabled on this stream |
-| `12` | `ArithmeticOverflow` | Integer overflow in calculation |
-| `13` | `PauseThresholdNotMet` | `force_cancel` called before the pause threshold (30 days) elapsed |
-| `14` | `AlreadyInitialized` | `initialize()` called on a stream that's already been initialized |
-| `15` | `InvalidAmount` | `withdraw`/`top_up` called with `amount <= 0` |
-
-**`DripFactory::Error`**
-
-| Code | Name | Description |
-|------|------|-------------|
-| `1` | `NotInitialized` | Factory hasn't been `initialize()`d |
-| `2` | `InvalidDeposit` | `deposit <= 0` |
-| `3` | `InvalidRate` | `rate_per_sec <= 0` |
-| `4` | `InvalidTimeRange` | `end_time != 0 && end_time <= start_time` |
-| `5` | `InsufficientDeposit` | `deposit < rate_per_sec` (can't fund even 1 second), or deposit doesn't cover the full `end_time - start_time` |
-| `6` | `BackdatedStream` | `start_time < env.ledger().timestamp()` |
-| `7` | `AlreadyInitialized` | `initialize()` called on a factory that's already been initialized |
-| `8` | `RateExceedsMax` | `rate_per_sec` exceeds `DripGovernor::config().max_rate_per_second` |
-| `9` | `DurationTooShort` | `end_time - start_time` is below `DripGovernor::config().min_duration_seconds` |
-| `10` | `ArithmeticOverflow` | Integer overflow validating `rate_per_sec × duration` |
-| `26` | `InvalidWasmHash` | `upgrade_stream_wasm` called with zero WASM hash |
-| `27` | `InvalidDuration` | `end_time != 0 && end_time <= start_time` (stream duration is zero or negative) |
-
-**`DripGovernor::Error`**
-
-| Code | Name | Description |
-|------|------|-------------|
-| `1` | `NotAuthorized` | Caller does not hold the role gating the call |
-| `2` | `InvalidParam` | Setter argument failed validation (e.g. `fee_bps > 10_000`, `0` duration/rate) |
-| `3` | `AlreadyInitialized` | `initialize()` called on a governor that's already been initialized |
-| `4` | `LastAdmin` | `revoke_role` would remove the final `Admin`, freezing governance |
+A complete, authoritative list of every error variant across all contracts — with the numeric
+codes and a short description of when each fires — lives in
+[`docs/contract-errors.md`](./docs/contract-errors.md).
 
 ---
 
@@ -446,8 +404,9 @@ conduit-contracts/
 │   └── query.sh                # read stream state from CLI
 └── docs/
     ├── architecture.md
-    ├── security.md             # threat model
-    └── adr/                    # Architecture Decision Records
+    ├── contract-errors.md       # per-contract Error enums (single source of truth)
+    ├── security.md              # threat model
+    └── adr/                     # Architecture Decision Records
 ```
 
 ---
