@@ -26,9 +26,10 @@ jobs:
 
       - name: Build WASM contracts
         run: |
-          cargo build -p drip-stream   --target wasm32-unknown-unknown --release
-          cargo build -p drip-factory  --target wasm32-unknown-unknown --release
-          cargo build -p drip-governor --target wasm32-unknown-unknown --release
+          cargo build -p drip-stream          --target wasm32-unknown-unknown --release
+          cargo build -p drip-factory         --target wasm32-unknown-unknown --release
+          cargo build -p drip-governor        --target wasm32-unknown-unknown --release
+          cargo build -p drip-batch-processor --target wasm32-unknown-unknown --release
 
       - name: Check gas snapshot
         run: cargo test -p conduit-integration-tests --test gas_snapshot

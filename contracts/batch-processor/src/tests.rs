@@ -148,6 +148,113 @@ fn max_batch_size_reports_the_enforced_cap() {
     assert_eq!(s.client.max_batch_size(), MAX_BATCH_SIZE);
 }
 
+// ── Behaviour version (issue #565) ─────────────────────────────────────────
+
+#[test]
+fn version_reports_the_current_behaviour_version() {
+    let s = Setup::new();
+    // Bumped whenever observable behaviour changes; starts at 1.
+    assert_eq!(s.client.version(), 1);
+}
+
+// ── Validation order (issue #562) ──────────────────────────────────────────
+
+#[test]
+fn documented_validation_order_reports_only_the_first_failing_check() {
+    let s = Setup::new();
+
+    // 1 beats 2: an oversized batch whose vectors disagree on length fails
+    // the length check first.
+    let over_recipients = s.recipients(MAX_BATCH_SIZE + 1);
+    let short_amounts = s.filled(1, MAX_BATCH_SIZE);
+    assert_eq!(
+        s.client
+            .try_process_batch(&s.funder, &s.token_addr, &over_recipients, &short_amounts),
+        Err(Ok(Error::LengthMismatch)),
+    );
+
+    // 2 beats 3: an oversized batch containing a zero amount reports the
+    // size failure, never the amount failure.
+    let recipients = s.recipients(MAX_BATCH_SIZE + 1);
+    let mut oversized_with_zero = s.filled(1, MAX_BATCH_SIZE);
+    oversized_with_zero.push_back(0);
+    assert_eq!(
+        s.client
+            .try_process_batch(&s.funder, &s.token_addr, &recipients, &oversized_with_zero),
+        Err(Ok(Error::BatchTooLarge)),
+    );
+
+    // 3 beats 4: the first non-positive amount is reported before the
+    // accumulation loop can overflow.
+    let recipients = s.recipients(3);
+    let amounts = s.amounts(&[0, i128::MAX, i128::MAX]);
+    assert_eq!(
+        s.client
+            .try_process_batch(&s.funder, &s.token_addr, &recipients, &amounts),
+        Err(Ok(Error::InvalidAmount)),
+    );
+
+    // 4 beats 5: an overflowing total is reported even when the token
+    // address is also invalid.
+    let zero_token = Address::from_string(&soroban_sdk::String::from_str(
+        &s.env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    let recipients = s.recipients(2);
+    let amounts = s.amounts(&[i128::MAX, i128::MAX]);
+    assert_eq!(
+        s.client
+            .try_process_batch(&s.funder, &zero_token, &recipients, &amounts),
+        Err(Ok(Error::ArithmeticOverflow)),
+    );
+}
+
+// ── Token precondition (issue #564) ────────────────────────────────────────
+
+#[test]
+fn zero_address_token_is_rejected_before_auth_or_transfers() {
+    let s = Setup::new();
+    let zero_token = Address::from_string(&soroban_sdk::String::from_str(
+        &s.env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    let recipients = s.recipients(1);
+    let amounts = s.amounts(&[100]);
+
+    let result = s
+        .client
+        .try_process_batch(&s.funder, &zero_token, &recipients, &amounts);
+
+    assert_eq!(result, Err(Ok(Error::InvalidToken)));
+    assert_eq!(s.token.balance(&s.funder), 1_000_000);
+    assert_eq!(s.processor_events().len(), 0);
+}
+
+/// Documents the `# Panics` section of `process_batch`: the zero-address
+/// guard is the only token check, so an address that is a contract but not a
+/// SEP-41 token is only discovered at the first `tk.transfer`, which fails at
+/// the host level — `Err(Err(_))` here, never an `Error` variant — and rolls
+/// the whole call back.
+#[test]
+fn non_sep41_token_fails_at_the_host_level_not_with_a_contract_error() {
+    let s = Setup::new();
+    // A real deployed contract that does not implement SEP-41 `transfer`.
+    let not_a_token = s.env.register_contract(None, super::BatchTransferProcessor);
+    let recipients = s.recipients(1);
+    let amounts = s.amounts(&[100]);
+
+    let result = s
+        .client
+        .try_process_batch(&s.funder, &not_a_token, &recipients, &amounts);
+
+    match result {
+        Err(Err(_)) => {}
+        other => panic!("expected a host-level failure, got {:?}", other),
+    }
+    // The failure rolls back — no `batch_transferred` event was published.
+    assert_eq!(s.processor_events().len(), 0);
+}
+
 // ── Input validation errors ────────────────────────────────────────────────
 
 #[test]
