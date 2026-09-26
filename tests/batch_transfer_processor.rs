@@ -151,6 +151,35 @@ fn max_batch_size_matches_the_enforced_boundary() {
 }
 
 #[test]
+fn version_reports_the_current_behaviour_version() {
+    let f = setup();
+    // Bumped whenever observable behaviour changes; starts at 1.
+    assert_eq!(f.client.version(), 1);
+}
+
+#[test]
+fn process_batch_rejects_zero_address_token() {
+    let f = setup();
+    f.token_admin_client.mint(&f.funder, &100);
+
+    // The all-zero Stellar account address — the same precondition
+    // `DripFactory::create_stream` applies before touching the token.
+    let zero_token = Address::from_string(&soroban_sdk::String::from_str(
+        &f.env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
+    let recipients = addrs(&f.env, 1);
+    let amounts = Vec::from_array(&f.env, [10i128]);
+
+    assert_eq!(
+        f.client
+            .try_process_batch(&f.funder, &zero_token, &recipients, &amounts),
+        Err(Ok(Error::InvalidToken)),
+    );
+    assert_eq!(f.token.balance(&f.funder), 100);
+}
+
+#[test]
 fn process_batch_rejects_length_mismatch() {
     let f = setup();
     let recipients = addrs(&f.env, 2);
@@ -281,4 +310,5 @@ fn error_type_carries_required_traits() {
     assert_eq!(Error::BatchTooLarge as u32, 2);
     assert_eq!(Error::InvalidAmount as u32, 3);
     assert_eq!(Error::ArithmeticOverflow as u32, 4);
+    assert_eq!(Error::InvalidToken as u32, 5);
 }
