@@ -37,6 +37,18 @@ fn vault_balance(env: &Env) -> Result<i128, Error> {
     Ok(token_client(env)?.balance(&env.current_contract_address()))
 }
 
+fn withdraw_cap(env: &Env, caller: &Address, owner: &Address) -> Result<i128, Error> {
+    if caller == owner {
+        return Ok(i128::MAX);
+    }
+
+    if get_operator(env).as_ref() != Some(caller) {
+        return Err(Error::NotAuthorized);
+    }
+
+    get_operator_withdraw_limit(env).ok_or(Error::LimitExceeded)
+}
+
 /// Checks that `caller` is either the vault owner or the currently delegated
 /// operator, then consumes the caller's auth. Returns `NotAuthorized` if
 /// `caller` matches neither role.
@@ -149,11 +161,9 @@ impl TokenVault {
             return Err(Error::InvalidAmount);
         }
 
-        if caller != owner {
-            let limit = get_operator_withdraw_limit(&env).ok_or(Error::LimitExceeded)?;
-            if amount > limit {
-                return Err(Error::LimitExceeded);
-            }
+        let limit = withdraw_cap(&env, &caller, &owner)?;
+        if amount > limit {
+            return Err(Error::LimitExceeded);
         }
 
         let balance = vault_balance(&env)?;
@@ -343,6 +353,19 @@ impl TokenVault {
         get_operator_withdraw_limit(&env)
     }
 
+    /// Read-only: the maximum amount `caller` can withdraw at this moment.
+    ///
+    /// The owner is limited only by the vault's current token balance. The
+    /// delegated operator is limited by both that balance and its per-call cap.
+    /// Returns `NotAuthorized` for any address that is neither the owner nor
+    /// the current operator, and `LimitExceeded` if the operator has no cap.
+    pub fn effective_withdraw_limit(env: Env, caller: Address) -> Result<i128, Error> {
+        assert_not_paused(&env)?;
+        let owner = get_owner(&env).ok_or(Error::NotInitialized)?;
+        let cap = withdraw_cap(&env, &caller, &owner)?;
+        Ok(vault_balance(&env)?.min(cap))
+    }
+
     /// Read-only: the current owner address, if any.
     pub fn owner(env: Env) -> Option<Address> {
         get_owner(&env)
@@ -404,6 +427,7 @@ impl TokenVault {
     /// the owner to re-open the contract or submit a `RestoreFootprint`.
     pub fn keep_alive(env: Env) -> Result<(), Error> {
         bump_instance(&env);
+        events::kept_alive(&env, TTL_EXTEND_TO);
         Ok(())
     }
 

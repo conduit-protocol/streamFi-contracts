@@ -4,7 +4,10 @@
 
 pub mod rbac;
 
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{
+    xdr::{AccountId, Hash, PublicKey, ScAddress, Uint256},
+    Address, Env, TryFromVal,
+};
 
 /// TTL threshold for instance storage extension.
 /// When the remaining TTL falls below this value, extend to `TTL_EXTEND_TO`.
@@ -33,21 +36,23 @@ pub const TTL_EXTEND_TO: u32 = 200_000;
 /// Both literals are hardcoded here once so every contract sharing this
 /// helper uses the exact same values — a duplicated copy would be easy to
 /// typo differently without anyone noticing. The account form is checked
-/// first since it is the more common case, so a real account address never
-/// pays for parsing the contract literal.
+/// first since it is the more common case. Their XDR forms are converted
+/// directly, avoiding repeated StrKey string decoding. Address handles are
+/// tied to an `Env`, so they cannot be cached globally across invocations.
 pub fn is_zero_address(env: &Env, address: &Address) -> bool {
-    let zero_account = Address::from_string(&soroban_sdk::String::from_str(
+    let zero_account = Address::try_from_val(
         env,
-        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-    ));
+        &ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(
+            [0u8; 32],
+        )))),
+    )
+    .unwrap();
     if address == &zero_account {
         return true;
     }
 
-    let zero_contract = Address::from_string(&soroban_sdk::String::from_str(
-        env,
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-    ));
+    let zero_contract =
+        Address::try_from_val(env, &ScAddress::Contract(Hash([0u8; 32]))).unwrap();
 
     address == &zero_contract
 }
