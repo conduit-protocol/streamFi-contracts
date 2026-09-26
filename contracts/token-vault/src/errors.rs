@@ -31,4 +31,6 @@ pub enum Error {
     WithdrawTransferFailed = 14,
     /// The WASM hash provided to `upgrade` is all zeros (invalid).
     InvalidWasmHash = 15,
+    /// `accept_owner` was called after the ownership proposal expired.
+    PendingOwnerExpired = 16,
 }

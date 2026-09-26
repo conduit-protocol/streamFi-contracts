@@ -4,7 +4,7 @@ extern crate std;
 
 use soroban_sdk::{
     symbol_short,
-    testutils::{storage::Instance as _, Address as _, Events as _},
+    testutils::{storage::Instance as _, Address as _, Events as _, Ledger as _},
     token, Address, Env, IntoVal, String, TryIntoVal,
 };
 
@@ -73,6 +73,21 @@ fn deposit_respects_max_limit() {
 }
 
 #[test]
+fn balance_and_max_limit_getters_report_current_state() {
+    let s = Setup::new(1_000_000);
+
+    assert_eq!(s.client.balance(), Some(0));
+    assert_eq!(s.client.max_limit(), Some(1_000_000));
+
+    s.client.deposit(&s.owner, &100);
+    s.token.transfer(&s.user, &s.client.address, &25);
+    assert_eq!(s.client.balance(), Some(125));
+
+    s.client.set_limit(&s.owner, &2_000_000);
+    assert_eq!(s.client.max_limit(), Some(2_000_000));
+}
+
+#[test]
 fn deposit_rejects_amount_that_would_overflow_i128() {
     let s = Setup::new(i128::MAX);
 
@@ -129,6 +144,69 @@ fn withdraw_succeeds_with_real_owner_auth() {
     s.client.withdraw(&s.owner, &recipient, &400);
 
     assert_eq!(s.token.balance(&recipient), 400);
+}
+
+#[test]
+fn batch_withdraw_enforces_aggregate_operator_limit() {
+    let s = Setup::new(1_000_000);
+    s.client.deposit(&s.owner, &1_000);
+
+    let operator = Address::generate(&s.env);
+    let first = Address::generate(&s.env);
+    let second = Address::generate(&s.env);
+    s.client.set_operator(&s.owner, &operator);
+    s.client.set_operator_withdraw_limit(&s.owner, &500);
+
+    let mut payouts = soroban_sdk::Vec::new(&s.env);
+    payouts.push_back((first.clone(), 300));
+    payouts.push_back((second.clone(), 300));
+    assert_eq!(
+        s.client.try_withdraw_batch(&operator, &payouts),
+        Err(Ok(Error::LimitExceeded))
+    );
+    assert_eq!(s.client.balance(), Some(1_000));
+    assert_eq!(s.token.balance(&first), 0);
+    assert_eq!(s.token.balance(&second), 0);
+}
+
+#[test]
+fn batch_withdraw_rejects_empty_payouts() {
+    let s = Setup::new(1_000_000);
+    let payouts = soroban_sdk::Vec::new(&s.env);
+    assert_eq!(
+        s.client.try_withdraw_batch(&s.owner, &payouts),
+        Err(Ok(Error::InvalidAmount))
+    );
+}
+
+#[test]
+fn batch_withdraw_emits_one_event_per_payout() {
+    let s = Setup::new(1_000_000);
+    s.client.deposit(&s.owner, &1_000);
+
+    let operator = Address::generate(&s.env);
+    let first = Address::generate(&s.env);
+    let second = Address::generate(&s.env);
+    s.client.set_operator(&s.owner, &operator);
+    s.client.set_operator_withdraw_limit(&s.owner, &500);
+
+    let mut payouts = soroban_sdk::Vec::new(&s.env);
+    payouts.push_back((first.clone(), 300));
+    payouts.push_back((second.clone(), 200));
+    s.client.withdraw_batch(&operator, &payouts);
+
+    assert_eq!(s.client.balance(), Some(500));
+    assert_eq!(s.token.balance(&first), 300);
+    assert_eq!(s.token.balance(&second), 200);
+
+    let events = vault_events(&s);
+    assert_eq!(events.len(), 6);
+    let first_payload: (Address, i128, i128, bool) =
+        events[4].2.clone().try_into_val(&s.env).unwrap();
+    let second_payload: (Address, i128, i128, bool) =
+        events[5].2.clone().try_into_val(&s.env).unwrap();
+    assert_eq!(first_payload, (first, 300, 700, true));
+    assert_eq!(second_payload, (second, 200, 500, true));
 }
 
 #[test]
@@ -916,6 +994,44 @@ fn owner_can_propose_and_new_owner_accepts() {
     s.client.accept_owner(&new_owner);
 
     assert_eq!(s.client.owner(), Some(new_owner));
+}
+
+#[test]
+fn expired_owner_proposal_requires_a_fresh_proposal() {
+    let s = Setup::new(1_000_000);
+    let new_owner = Address::generate(&s.env);
+    let proposed_at = s.env.ledger().timestamp();
+
+    assert_eq!(s.client.owner_proposal_ttl(), Some(7 * 24 * 60 * 60));
+    s.client.set_owner_proposal_ttl(&s.owner, &60);
+    s.client.propose_owner(&s.owner, &new_owner);
+    s.env.ledger().set_timestamp(proposed_at + 60);
+
+    assert_eq!(
+        s.client.try_accept_owner(&new_owner),
+        Err(Ok(Error::PendingOwnerExpired))
+    );
+    assert_eq!(s.client.owner(), Some(s.owner.clone()));
+    assert_eq!(s.client.pending_owner(), Some(new_owner.clone()));
+
+    s.client.propose_owner(&s.owner, &new_owner);
+    s.client.accept_owner(&new_owner);
+    assert_eq!(s.client.owner(), Some(new_owner));
+    assert_eq!(s.client.pending_owner(), None);
+}
+
+#[test]
+fn zero_owner_proposal_ttl_is_rejected() {
+    let s = Setup::new(1_000_000);
+    let stranger = Address::generate(&s.env);
+    assert_eq!(
+        s.client.try_set_owner_proposal_ttl(&stranger, &60),
+        Err(Ok(Error::NotAuthorized))
+    );
+    assert_eq!(
+        s.client.try_set_owner_proposal_ttl(&s.owner, &0),
+        Err(Ok(Error::InvalidAmount))
+    );
 }
 
 #[test]
