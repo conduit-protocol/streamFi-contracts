@@ -27,12 +27,17 @@ Contracts covered:
 
 Source: [`contracts/batch-processor/src/lib.rs`](../contracts/batch-processor/src/lib.rs)
 
+`process_batch` returns these in numeric order (the first failing check wins).
+`preview_batch` runs the same first four checks and therefore can only ever
+return codes `1`–`4`; it takes no `token`, so it never returns `InvalidToken`.
+
 | Code | Name | Fires when |
 |------|------|------------|
-| `1` | `LengthMismatch` | `process_batch` receives `recipients` and `amounts` vectors of different lengths. |
+| `1` | `LengthMismatch` | `process_batch` / `preview_batch` receive `recipients` and `amounts` vectors of different lengths. |
 | `2` | `BatchTooLarge` | The batch exceeds `MAX_BATCH_SIZE` (100 entries). |
 | `3` | `InvalidAmount` | An individual `amount` is zero or negative. |
 | `4` | `ArithmeticOverflow` | Integer overflow while summing the total to pull from the funder. |
+| `5` | `InvalidToken` | `token` is the all-zero Stellar address, a `G...` wallet, or a contract that does not answer the SEP-41 `balance` probe — this is also what a caller who transposed the `funder` and `token` arguments gets, raised before `require_auth`. |
 
 ---
 

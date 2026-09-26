@@ -1079,7 +1079,6 @@ fn extend_duration_rejects_on_arithmetic_overflow() {
     assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
 }
 
-
 // ── Cancellation CEI / settlement invariants (issue #78) ──────────────────────
 //
 // Issue #78 alleged a reentrancy drain in `cancel_batch_streams`. No such

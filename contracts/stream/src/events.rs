@@ -1,6 +1,6 @@
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env};
 
-use crate::{storage::DataKey, Error};
+use crate::Error;
 
 /// Allocate the next event sequence before publishing its payload.
 ///

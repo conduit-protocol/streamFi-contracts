@@ -5,8 +5,8 @@
 extern crate std;
 
 use soroban_sdk::{
-    testutils::{Address as _, Events as _},
-    token, Address, Env, IntoVal, Symbol, TryIntoVal, Vec,
+    testutils::{storage::Instance as _, Address as _, Events as _},
+    token, Address, Env, IntoVal, Symbol, TryFromVal, TryIntoVal, Vec,
 };
 
 use crate::{BatchTransferProcessorClient, Error};
@@ -99,6 +99,23 @@ impl Setup {
     }
 }
 
+/// A non-zero Stellar *account* address (`G...` strkey) — the shape a real
+/// funder wallet has in production, and what ends up in the `token` slot when
+/// `process_batch`'s `funder` and `token` arguments are transposed.
+///
+/// `Address::generate` produces a contract-shaped address instead, so it
+/// cannot stand in for a wallet here.
+fn account_address(env: &Env) -> Address {
+    use soroban_sdk::xdr::{AccountId, PublicKey, ScAddress, Uint256};
+    Address::try_from_val(
+        env,
+        &ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(
+            [0x11u8; 32],
+        )))),
+    )
+    .unwrap()
+}
+
 // ── Happy path ─────────────────────────────────────────────────────────────
 
 #[test]
@@ -153,8 +170,9 @@ fn max_batch_size_reports_the_enforced_cap() {
 #[test]
 fn version_reports_the_current_behaviour_version() {
     let s = Setup::new();
-    // Bumped whenever observable behaviour changes; starts at 1.
-    assert_eq!(s.client.version(), 1);
+    // v2: SEP-41 token probe before auth, instance-TTL keep-alive, and
+    // `preview_batch` added. Bumped whenever observable behaviour changes.
+    assert_eq!(s.client.version(), 2);
 }
 
 // ── Validation order (issue #562) ──────────────────────────────────────────
@@ -230,15 +248,15 @@ fn zero_address_token_is_rejected_before_auth_or_transfers() {
     assert_eq!(s.processor_events().len(), 0);
 }
 
-/// Documents the `# Panics` section of `process_batch`: the zero-address
-/// guard is the only token check, so an address that is a contract but not a
-/// SEP-41 token is only discovered at the first `tk.transfer`, which fails at
-/// the host level — `Err(Err(_))` here, never an `Error` variant — and rolls
-/// the whole call back.
+/// The token check is no longer just the zero-address guard: a SEP-41
+/// `balance` probe runs as check 5, before `funder.require_auth()`. An
+/// address that is a real contract but does not implement SEP-41 is rejected
+/// with `Error::InvalidToken` instead of blowing up at the first
+/// `tk.transfer` with an opaque host-level error.
 #[test]
-fn non_sep41_token_fails_at_the_host_level_not_with_a_contract_error() {
+fn non_sep41_contract_is_rejected_by_the_balance_probe_before_auth() {
     let s = Setup::new();
-    // A real deployed contract that does not implement SEP-41 `transfer`.
+    // A real deployed contract that does not implement SEP-41 `transfer`/`balance`.
     let not_a_token = s.env.register_contract(None, super::BatchTransferProcessor);
     let recipients = s.recipients(1);
     let amounts = s.amounts(&[100]);
@@ -247,12 +265,53 @@ fn non_sep41_token_fails_at_the_host_level_not_with_a_contract_error() {
         .client
         .try_process_batch(&s.funder, &not_a_token, &recipients, &amounts);
 
-    match result {
-        Err(Err(_)) => {}
-        other => panic!("expected a host-level failure, got {:?}", other),
-    }
-    // The failure rolls back — no `batch_transferred` event was published.
+    assert_eq!(result, Err(Ok(Error::InvalidToken)));
+    // Rejected during validation — the funder's balance is untouched, no
+    // event was published, and no auth was ever requested.
+    assert_eq!(s.token.balance(&s.funder), 1_000_000);
     assert_eq!(s.processor_events().len(), 0);
+}
+
+// ── Argument order (issue #560) ─────────────────────────────────────────────
+
+/// `funder` and `token` are adjacent bare `Address` parameters, so a
+/// transposed call compiles. The realistic mistake — a wallet in the `token`
+/// slot — must fail with a clear contract error, `InvalidToken`, *before*
+/// `require_auth` runs against the token contract and before anything moves.
+#[test]
+fn transposed_funder_and_token_arguments_fail_with_invalid_token_before_auth() {
+    let s = Setup::new();
+    // A real `G...` account: what a funder's wallet actually is on-chain.
+    let wallet = account_address(&s.env);
+    let recipients = s.recipients(2);
+    let amounts = s.amounts(&[100, 200]);
+
+    // Wrong order: the token contract is passed as `funder`, the funder's
+    // wallet as `token`.
+    let result = s
+        .client
+        .try_process_batch(&s.token_addr, &wallet, &recipients, &amounts);
+
+    assert_eq!(result, Err(Ok(Error::InvalidToken)));
+    // Nothing moved, nothing emitted, and no auth was requested (mock_all_auths
+    // records every auth that *is* required — there are none).
+    assert_eq!(s.token.balance(&s.funder), 1_000_000);
+    assert_eq!(s.token.balance(&s.client.address), 0);
+    assert_eq!(s.processor_events().len(), 0);
+    assert!(s.env.auths().is_empty());
+}
+
+/// The account guard that makes the test above possible: `G...` addresses are
+/// wallets (rejected outright as `InvalidToken`), `C...` addresses are
+/// contracts handed to the SEP-41 probe.
+#[test]
+fn is_stellar_account_distinguishes_wallets_from_contracts() {
+    let s = Setup::new();
+
+    assert!(super::is_stellar_account(&account_address(&s.env)));
+    assert!(!super::is_stellar_account(&s.token_addr));
+    // `Address::generate` yields a contract-shaped address, not a wallet.
+    assert!(!super::is_stellar_account(&Address::generate(&s.env)));
 }
 
 // ── Input validation errors ────────────────────────────────────────────────
@@ -394,4 +453,143 @@ fn failed_process_batch_emits_no_event() {
 
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
     assert_eq!(s.processor_events().len(), 0);
+}
+
+// ── preview_batch (issue #561) ─────────────────────────────────────────────
+
+#[test]
+fn preview_batch_returns_the_total_without_auth_or_transfers() {
+    let s = Setup::new();
+    let recipients = s.recipients(3);
+    let amounts = s.amounts(&[100, 200, 300]);
+
+    // Read-only: no funder, no token, no auth, no funds moved, no event.
+    let total = s.client.preview_batch(&recipients, &amounts);
+
+    assert_eq!(total, 600);
+    assert_eq!(s.token.balance(&s.funder), 1_000_000);
+    assert_eq!(s.token.balance(&s.client.address), 0);
+    assert_eq!(s.processor_events().len(), 0);
+    assert!(s.env.auths().is_empty());
+}
+
+#[test]
+fn preview_batch_agrees_with_process_batch_on_the_same_inputs() {
+    let s = Setup::new();
+    let recipients = s.recipients(4);
+    let amounts = s.amounts(&[7, 13, 21, 35]);
+
+    // The preview must be the exact figure process_batch charges — a client
+    // that shows it to a user before signing can never be off by a unit.
+    let previewed = s.client.preview_batch(&recipients, &amounts);
+    let charged = s
+        .client
+        .process_batch(&s.funder, &s.token_addr, &recipients, &amounts);
+
+    assert_eq!(previewed, 76);
+    assert_eq!(charged, previewed);
+}
+
+#[test]
+fn preview_batch_applies_the_same_validation_in_the_same_order() {
+    let s = Setup::new();
+
+    // 1 — length mismatch
+    assert_eq!(
+        s.client
+            .try_preview_batch(&s.recipients(2), &s.filled(1, 1)),
+        Err(Ok(Error::LengthMismatch)),
+    );
+
+    // 2 — batch size cap (beats a zero amount in the same batch)
+    let mut oversized = s.filled(1, MAX_BATCH_SIZE);
+    oversized.push_back(0);
+    assert_eq!(
+        s.client
+            .try_preview_batch(&s.recipients(MAX_BATCH_SIZE + 1), &oversized),
+        Err(Ok(Error::BatchTooLarge)),
+    );
+
+    // 3 — non-positive amount
+    assert_eq!(
+        s.client
+            .try_preview_batch(&s.recipients(1), &s.amounts(&[0])),
+        Err(Ok(Error::InvalidAmount)),
+    );
+    assert_eq!(
+        s.client
+            .try_preview_batch(&s.recipients(1), &s.amounts(&[-5])),
+        Err(Ok(Error::InvalidAmount)),
+    );
+
+    // 4 — checked accumulation overflows the same way
+    assert_eq!(
+        s.client
+            .try_preview_batch(&s.recipients(2), &s.amounts(&[i128::MAX, i128::MAX]),),
+        Err(Ok(Error::ArithmeticOverflow)),
+    );
+}
+
+#[test]
+fn preview_batch_accepts_an_empty_batch_as_zero() {
+    let s = Setup::new();
+    let recipients: Vec<Address> = Vec::new(&s.env);
+    let amounts: Vec<i128> = Vec::new(&s.env);
+
+    assert_eq!(s.client.preview_batch(&recipients, &amounts), 0);
+    assert_eq!(s.processor_events().len(), 0);
+}
+
+// ── Instance TTL keep-alive (issue #559) ───────────────────────────────────
+
+#[test]
+fn process_batch_extends_the_instance_ttl() {
+    let s = Setup::new();
+    let recipients = s.recipients(1);
+    let amounts = s.amounts(&[100]);
+
+    s.client
+        .process_batch(&s.funder, &s.token_addr, &recipients, &amounts);
+
+    // Same threshold/extend-to pair the other three contracts apply on every
+    // state-mutating call (`drip_common::TTL_EXTEND_TO`).
+    let ttl = s
+        .env
+        .as_contract(&s.client.address, || s.env.storage().instance().get_ttl());
+    assert_eq!(ttl, 200_000);
+}
+
+#[test]
+fn read_only_and_validation_failure_paths_do_not_extend_the_instance_ttl() {
+    let s = Setup::new();
+
+    // `preview_batch` is read-only — it must leave the instance TTL alone.
+    s.client.preview_batch(&s.recipients(1), &s.amounts(&[1]));
+    let ttl = s
+        .env
+        .as_contract(&s.client.address, || s.env.storage().instance().get_ttl());
+    assert_ne!(ttl, 200_000);
+
+    // A rejected batch fails early, before the keep-alive runs.
+    let result =
+        s.client
+            .try_process_batch(&s.funder, &s.token_addr, &s.recipients(1), &s.amounts(&[0]));
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+    let ttl = s
+        .env
+        .as_contract(&s.client.address, || s.env.storage().instance().get_ttl());
+    assert_ne!(ttl, 200_000);
+
+    // The empty-batch no-op returns before auth and before the keep-alive.
+    let empty: Vec<Address> = Vec::new(&s.env);
+    let no_amounts: Vec<i128> = Vec::new(&s.env);
+    assert_eq!(
+        s.client
+            .process_batch(&s.funder, &s.token_addr, &empty, &no_amounts),
+        0
+    );
+    let ttl = s
+        .env
+        .as_contract(&s.client.address, || s.env.storage().instance().get_ttl());
+    assert_ne!(ttl, 200_000);
 }

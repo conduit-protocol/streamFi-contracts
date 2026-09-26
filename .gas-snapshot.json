@@ -3,7 +3,8 @@
   "instructions": {
     "aggregate": 51736,
     "batch_processor/max_batch_size": 13384,
-    "batch_processor/process_batch_100": 22005647,
+    "batch_processor/preview_batch_100": 31334,
+    "batch_processor/process_batch_100": 22066828,
     "batch_processor/version": 11863,
     "pause": 111935,
     "protocol_fee_bps": 250899,

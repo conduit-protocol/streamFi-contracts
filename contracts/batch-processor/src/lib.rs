@@ -1,5 +1,7 @@
 #![no_std]
 
+mod ttl;
+
 #[cfg(test)]
 mod tests;
 
@@ -21,7 +23,15 @@ const MAX_BATCH_SIZE: u32 = 100;
 /// instances still need a way to report which behaviour set they run so
 /// clients and upgrade tooling can tell an old build from a new one; see
 /// [`BatchTransferProcessor::version`].
-const VERSION: u32 = 1;
+///
+/// History:
+///
+/// - `1` — original surface: `process_batch`, `max_batch_size`, `version`.
+/// - `2` — `process_batch` gained a real SEP-41 precondition on `token`
+///   (wallet + `balance` probes, so a transposed `funder`/`token` pair fails
+///   with `InvalidToken` before auth) and an instance-TTL keep-alive;
+///   `preview_batch` was added.
+const VERSION: u32 = 2;
 
 /// Instance-storage key space.
 ///
@@ -49,8 +59,13 @@ pub enum Error {
     /// Checked fourth: integer overflow computing the total to pull from the
     /// funder.
     ArithmeticOverflow = 4,
-    /// Checked fifth (last, immediately before auth): `token` is the
-    /// all-zero Stellar address, which cannot be a SEP-41 token contract.
+    /// Checked fifth (last, immediately before auth): `token` does not
+    /// behave like a SEP-41 asset — it is the all-zero Stellar address, a
+    /// `G...` wallet, or a contract that fails the `balance` probe. This is
+    /// also the error a caller gets for transposing the `funder` and `token`
+    /// arguments (see the argument-order example on
+    /// [`BatchTransferProcessor::process_batch`]). Note `preview_batch` takes
+    /// no `token`, so it can only ever return the first four codes.
     InvalidToken = 5,
     /// The caller is not the admin stored by `initialize`, so it may not
     /// replace the contract's WASM.
@@ -66,19 +81,84 @@ pub enum Error {
 #[contract]
 pub struct BatchTransferProcessor;
 
-/// Emitted by `initialize` when the processor's admin is first set.
-fn event_initialized(env: &Env, admin: &Address) {
-    env.events()
-        .publish((symbol_short!("init"), admin.clone()), admin.clone());
+/// Checks 1–4 of the documented `process_batch` validation order: length,
+/// batch size, per-amount sign, and checked accumulation of the total.
+///
+/// Deliberately shared with [`BatchTransferProcessor::preview_batch`] so the
+/// read-only preview can never disagree with the paying call about what a
+/// valid batch is — same checks, same order, same error codes. `token` is not
+/// a parameter here because it is check 5 and only `process_batch` takes one.
+fn validate_total(recipients: &Vec<Address>, amounts: &Vec<i128>) -> Result<i128, Error> {
+    if recipients.len() != amounts.len() {
+        return Err(Error::LengthMismatch);
+    }
+
+    if amounts.len() > MAX_BATCH_SIZE {
+        return Err(Error::BatchTooLarge);
+    }
+
+    // Validate every amount and accumulate the total in one pass so we
+    // pull a single lump sum from the funder instead of N separate auths.
+    let mut total: i128 = 0;
+    for amount in amounts.iter() {
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        total = total.checked_add(amount).ok_or(Error::ArithmeticOverflow)?;
+    }
+
+    Ok(total)
 }
 
-/// Emitted by `upgrade` after the processor's own WASM has been replaced.
+/// Returns true when `address` is a Stellar *account* (a `G...` strkey
+/// wallet) rather than a contract (`C...`).
 ///
-/// Topics: `("upgraded", caller)` — the admin that authorized the swap.
-/// Data:   `upgraded_at` — the ledger timestamp at which the swap took effect.
-fn event_upgraded(env: &Env, caller: &Address, upgraded_at: u64) {
-    env.events()
-        .publish((symbol_short!("upgraded"), caller.clone()), upgraded_at);
+/// There is no `Address::is_contract` in `soroban-sdk` 21, and the
+/// `Address → ScAddress` conversion is compiled out on the wasm target, so
+/// rendering the strkey form — the same encoding `is_zero_address` compares
+/// against — is the only on-chain way to tell a wallet from a contract
+/// without provoking an opaque host-level failure.
+fn is_stellar_account(address: &Address) -> bool {
+    let strkey = address.to_string();
+    // Both strkey variants render as exactly 56 characters. If that ever
+    // changes, skip the check and let the SEP-41 probe below decide rather
+    // than panicking on `copy_into_slice`'s length precondition.
+    let mut buf = [0u8; 56];
+    if strkey.len() as usize != buf.len() {
+        return false;
+    }
+    strkey.copy_into_slice(&mut buf);
+    buf[0] == b'G'
+}
+
+/// Check 5 of the documented `process_batch` validation order: `token` must
+/// behave like a SEP-41 asset. Runs before `funder.require_auth()`.
+///
+/// Three probes, cheapest first:
+///
+/// 1. the all-zero Stellar address can never be a token contract;
+/// 2. a `G...` account is a wallet, not a contract, so it can never expose
+///    SEP-41 `balance` — this is exactly what a transposed `funder`/`token`
+///    call puts in the `token` slot, and rejecting it here turns that mistake
+///    into a clear [`Error::InvalidToken`] instead of an auth request aimed
+///    at the token contract or an opaque host failure; and
+/// 3. a SEP-41 `balance` call asks the remaining case — a contract address —
+///    to answer like a token. A deployed contract without `balance` is
+///    rejected with the same [`Error::InvalidToken`].
+fn validate_token(env: &Env, token: &Address) -> Result<(), Error> {
+    if is_zero_address(env, token) {
+        return Err(Error::InvalidToken);
+    }
+
+    if is_stellar_account(token) {
+        return Err(Error::InvalidToken);
+    }
+
+    let contract_addr = env.current_contract_address();
+    match token::Client::new(env, token).try_balance(&contract_addr) {
+        Ok(Ok(_)) => Ok(()),
+        _ => Err(Error::InvalidToken),
+    }
 }
 
 #[contractimpl]
@@ -105,6 +185,22 @@ impl BatchTransferProcessor {
 
     /// Transfer tokens from `funder` to each address in `recipients`.
     ///
+    /// # Argument order
+    ///
+    /// `funder` comes **before** `token`, and both parameters are bare
+    /// `Address`, so transposing them compiles cleanly and is only caught at
+    /// runtime:
+    ///
+    /// ```ignore
+    /// // Correct — funder first, then token.
+    /// client.process_batch(&funder, &token, &recipients, &amounts);
+    ///
+    /// // Wrong — funder and token swapped. This compiles, but the wallet now
+    /// // sitting in the `token` slot is rejected by check 5 and the call
+    /// // returns `Error::InvalidToken` before any auth request or transfer.
+    /// client.process_batch(&token, &funder, &recipients, &amounts);
+    /// ```
+    ///
     /// # Auth
     /// `funder.require_auth()` is called before any state mutation.  The funder
     /// must have pre-authorised a transfer of at least `sum(amounts)` tokens to
@@ -121,24 +217,42 @@ impl BatchTransferProcessor {
     /// 2. `amounts.len() <= MAX_BATCH_SIZE` (100) — else [`Error::BatchTooLarge`]
     /// 3. every `amount > 0` — else [`Error::InvalidAmount`]
     /// 4. `sum(amounts)` fits in `i128` — else [`Error::ArithmeticOverflow`]
-    /// 5. `token` is not the all-zero Stellar address — else [`Error::InvalidToken`]
+    /// 5. `token` behaves like a SEP-41 asset — else [`Error::InvalidToken`]
+    ///
+    /// Checks 1–4 are shared verbatim with [`Self::preview_batch`], so a
+    /// client can pre-compute the total (and surface the exact error) without
+    /// auth; check 5 needs `token` and therefore only exists here.
     ///
     /// Only the first failing check is returned, so a batch that is both too
     /// large and contains a zero amount always reports `BatchTooLarge`.
     /// Validation then short-circuits an empty batch (`total == 0`) to `Ok(0)`
     /// before auth; `funder.require_auth()` runs only once all checks pass.
     ///
-    /// # Panics
-    /// `token` must be a contract implementing SEP-41. The zero-address
-    /// precondition above is the only token check this contract performs —
-    /// the same guard `DripFactory::create_stream` applies — so an address
-    /// that is not a SEP-41 token contract (a Stellar account, or a contract
-    /// without `transfer`) is discovered at the first
-    /// `tk.transfer(&funder, ...)` call instead, which aborts with an opaque
-    /// host-level error (contract function not found / non-contract address)
-    /// rather than returning an `Error` variant. The abort rolls the entire
-    /// transaction back, so no funds move; clients should probe the token
-    /// off-chain before submitting.
+    /// # Token precondition (check 5)
+    /// `token` must be a contract implementing SEP-41. Three probes run, all
+    /// before `funder.require_auth()`:
+    ///
+    /// 1. the all-zero Stellar address is rejected — the same guard
+    ///    `DripFactory::create_stream` applies;
+    /// 2. a `G...` account is rejected — a wallet can never be a token
+    ///    contract; and
+    /// 3. a SEP-41 `balance` probe asks whatever contract address is left to
+    ///    answer like a token; a contract without `balance` is rejected with
+    ///    the same [`Error::InvalidToken`].
+    ///
+    /// Together these turn a transposed `funder`/`token` pair (see the
+    /// argument-order example above) into a clear [`Error::InvalidToken`]
+    /// raised during validation — no auth request against the wrong address,
+    /// no host-level failure mid-transfer, and no funds moved. Clients should
+    /// still probe the token off-chain before submitting.
+    ///
+    /// # Keep-alive (instance TTL)
+    /// A successful, non-empty call renews this contract's instance storage
+    /// TTL (`ttl::bump`, the same `TTL_THRESHOLD` → `TTL_EXTEND_TO` extension
+    /// `DripStream`, `DripFactory`, and `DripGovernor` apply on every
+    /// state-mutating call), so a processor that keeps processing batches
+    /// cannot be archived out from under its users. Validation failures, the
+    /// empty-batch no-op, and [`Self::preview_batch`] leave TTL untouched.
     ///
     /// # Protocol fee
     /// Batch transfers are **fee-exempt by design**: unlike
@@ -184,35 +298,24 @@ impl BatchTransferProcessor {
     ) -> Result<i128, Error> {
         // ── Input validation (before auth and any token movement) ────────────
 
-        if recipients.len() != amounts.len() {
-            return Err(Error::LengthMismatch);
-        }
+        // Checks 1–4, shared verbatim with `preview_batch`.
+        let total = validate_total(&recipients, &amounts)?;
 
-        if amounts.len() > MAX_BATCH_SIZE {
-            return Err(Error::BatchTooLarge);
-        }
-
-        // Validate every amount and accumulate the total in one pass so we
-        // pull a single lump sum from the funder instead of N separate auths.
-        let mut total: i128 = 0;
-        for amount in amounts.iter() {
-            if amount <= 0 {
-                return Err(Error::InvalidAmount);
-            }
-            total = total.checked_add(amount).ok_or(Error::ArithmeticOverflow)?;
-        }
-
-        // Fifth and final check: a zeroed token address can never be a
-        // SEP-41 contract, so reject it here instead of letting the first
-        // `tk.transfer` below die with an opaque host-level error.
-        if is_zero_address(&env, &token) {
-            return Err(Error::InvalidToken);
-        }
+        // Check 5 — token looks like a SEP-41 asset: zero-address guard,
+        // wallet guard, `balance` probe. See `validate_token`.
+        validate_token(&env, &token)?;
 
         // Empty batch — nothing to do.
         if total == 0 {
             return Ok(0);
         }
+
+        // ── Keep-alive ───────────────────────────────────────────────────────
+        // Renew the instance TTL on the path that actually moves funds, so a
+        // busy processor can never be archived between payouts. Validation
+        // failures and the empty-batch no-op above return without touching
+        // storage, exactly like the other three contracts' fail-early paths.
+        ttl::bump(&env);
 
         // ── Auth ─────────────────────────────────────────────────────────────
         funder.require_auth();
@@ -241,6 +344,39 @@ impl BatchTransferProcessor {
         Ok(total)
     }
 
+    /// Read-only: the total `process_batch` would move for this batch.
+    ///
+    /// Runs the same checks 1–4 as [`Self::process_batch`] — length, batch
+    /// size, per-amount sign, checked accumulation — in the same order and
+    /// with the same error codes, but takes no `funder`, no `token`, requests
+    /// no auth, extends no TTL, and moves no funds. Use it to show a user
+    /// "this batch will cost X tokens" *before* they sign, without
+    /// re-implementing the contract's validation off-chain: a client-side sum
+    /// that disagrees with the contract's (a different overflow boundary, a
+    /// forgotten cap check) would otherwise stay invisible until the
+    /// transaction fails on-chain.
+    ///
+    /// ```ignore
+    /// let total = client.preview_batch(&recipients, &amounts)?; // no auth
+    /// // ... show `total` to the user, then:
+    /// client.process_batch(&funder, &token, &recipients, &amounts);
+    /// ```
+    ///
+    /// Check 5 (`token` behaves like a SEP-41 asset) is not run: this
+    /// function has no `token` parameter and never touches the token, so a
+    /// preview always succeeds or fails purely on the batch's shape. The token
+    /// check still runs in [`Self::process_batch`] before auth or transfer.
+    ///
+    /// An empty batch previews as `Ok(0)`, matching the `process_batch`
+    /// no-op.
+    pub fn preview_batch(
+        _env: Env,
+        recipients: Vec<Address>,
+        amounts: Vec<i128>,
+    ) -> Result<i128, Error> {
+        validate_total(&recipients, &amounts)
+    }
+
     /// Largest number of transfers `process_batch` will accept in one call.
     ///
     /// Exposed as a read-only entry point so a client integrating against a
@@ -262,13 +398,14 @@ impl BatchTransferProcessor {
     /// Bumped whenever any entry point's observable behaviour changes —
     /// validation order, error codes, the `batch_transferred` payload, the
     /// batch cap, or where `require_auth` sits. The processor is stateless
-    /// (nothing to migrate), but future changes such as keep-alive, fee
-    /// deduction, or event-emission updates would otherwise be invisible to a
-    /// client holding only the deployed address: read `version()` first and
-    /// branch on it instead of feature-probing. Mirrors the role
+    /// (nothing to migrate), but changes such as the SEP-41 token probe, the
+    /// instance-TTL keep-alive, `preview_batch`, or future fee-deduction and
+    /// event-emission updates would otherwise be invisible to a client holding
+    /// only the deployed address: read `version()` first and branch on it
+    /// instead of feature-probing. Mirrors the role
     /// `DripStream::storage_version` plays for stored layout.
     ///
-    /// See `VERSION` for the current value; it starts at `1`.
+    /// See `VERSION` for the current value (`2`) and its history.
     pub fn version(_env: Env) -> u32 {
         VERSION
     }

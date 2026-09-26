@@ -39,7 +39,7 @@ pub struct RoleKey {
 }
 
 #[contracttype]
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum DataKey {
     /// Fee in basis points (e.g. 30 = 0.3%)
     FeeBps,
