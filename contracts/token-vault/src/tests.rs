@@ -368,6 +368,40 @@ fn owner_withdraw_is_not_limited_by_operator_cap() {
 }
 
 #[test]
+fn effective_withdraw_limit_reflects_owner_balance_and_operator_cap() {
+    let s = Setup::new(1_000_000);
+    s.client.deposit(&s.owner, &500);
+
+    let op = Address::generate(&s.env);
+    s.client.set_operator(&s.owner, &op);
+    s.client.set_operator_withdraw_limit(&s.owner, &800);
+
+    assert_eq!(s.client.effective_withdraw_limit(&s.owner), Ok(500));
+    assert_eq!(s.client.effective_withdraw_limit(&op), Ok(500));
+
+    s.client.set_operator_withdraw_limit(&s.owner, &200);
+    assert_eq!(s.client.effective_withdraw_limit(&op), Ok(200));
+}
+
+#[test]
+fn effective_withdraw_limit_rejects_unauthorized_and_uncapped_operator() {
+    let s = Setup::new(1_000_000);
+    let op = Address::generate(&s.env);
+    s.client.set_operator(&s.owner, &op);
+
+    assert_eq!(
+        s.client.try_effective_withdraw_limit(&op),
+        Err(Ok(Error::LimitExceeded))
+    );
+
+    let stranger = Address::generate(&s.env);
+    assert_eq!(
+        s.client.try_effective_withdraw_limit(&stranger),
+        Err(Ok(Error::NotAuthorized))
+    );
+}
+
+#[test]
 fn stranger_cannot_withdraw_even_with_operator_set() {
     let s = Setup::new(1_000_000);
     s.client.deposit(&s.owner, &500);
@@ -640,6 +674,21 @@ fn operator_set_and_revoke_emit_events() {
     );
     let payload: () = data.clone().try_into_val(&s.env).unwrap();
     assert_eq!(payload, ());
+}
+
+#[test]
+fn keep_alive_emits_target_ttl() {
+    let s = Setup::new(1_000_000);
+    s.client.keep_alive();
+
+    let events = vault_events(&s);
+    let (_, topics, data) = events.last().unwrap();
+    assert_eq!(
+        topics.clone(),
+        (symbol_short!("kept_alive"),).into_val(&s.env)
+    );
+    let new_ttl: u32 = data.clone().try_into_val(&s.env).unwrap();
+    assert_eq!(new_ttl, crate::TTL_EXTEND_TO);
 }
 
 #[test]

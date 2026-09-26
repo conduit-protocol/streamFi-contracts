@@ -13,6 +13,10 @@ use soroban_sdk::{contracttype, Address};
 ///
 /// A role may be held by any number of accounts, and one account may hold any
 /// combination of roles.
+///
+/// The enum stays governor-specific because role names are part of this
+/// contract's ABI. Shared grant/revoke mechanics live in `drip_common::rbac`;
+/// see ADR-008 for why the role enums are intentionally not shared.
 #[contracttype]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Role {

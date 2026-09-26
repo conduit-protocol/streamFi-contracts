@@ -5,8 +5,11 @@ mod ttl;
 #[cfg(test)]
 mod tests;
 
-use drip_common::is_zero_address;
-use soroban_sdk::{contract, contracterror, contractimpl, token, Address, Env, Symbol, Vec};
+use drip_common::{is_zero_address, ttl};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
+    Symbol, Vec,
+};
 
 /// Maximum number of transfers permitted in a single batch.
 const MAX_BATCH_SIZE: u32 = 100;
@@ -30,19 +33,19 @@ const MAX_BATCH_SIZE: u32 = 100;
 ///   `preview_batch` was added.
 const VERSION: u32 = 2;
 
-/// Errors returned by [`BatchTransferProcessor::process_batch`].
+/// Instance-storage key space.
 ///
-/// # Validation order
-/// The numeric order of the variants **is** the check order: `process_batch`
-/// checks `1`, then `2`, then `3`, and so on, and returns the first failure
-/// without evaluating the rest. A client pre-checking a batch before
-/// submitting it should apply the same sequence (length → size → per-amount →
-/// total → token), mirroring the validation list the README documents for
-/// `DripFactory::create_stream`. A batch that is both too large and contains
-/// a zero amount always reports `BatchTooLarge`, never `InvalidAmount`.
-///
-/// All five checks run before `funder.require_auth()` and before any token
-/// movement.
+/// The processor is stateless with respect to transfers — every call recomputes
+/// its batch total from the arguments — but it does hold one durable value: the
+/// admin that may replace the contract's own WASM (issue #651). Without a
+/// stored authority an `upgrade` entry point would have to be permissionless,
+/// which would let anyone replace the code that custodies funds in flight.
+#[contracttype]
+#[derive(Clone)]
+pub enum DataKey {
+    /// Address allowed to call `upgrade`. Set by `initialize`.
+    Admin,
+}
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -64,6 +67,15 @@ pub enum Error {
     /// [`BatchTransferProcessor::process_batch`]). Note `preview_batch` takes
     /// no `token`, so it can only ever return the first four codes.
     InvalidToken = 5,
+    /// The caller is not the admin stored by `initialize`, so it may not
+    /// replace the contract's WASM.
+    NotAuthorized = 6,
+    /// The WASM hash provided to `upgrade` is all zeros (invalid).
+    InvalidWasmHash = 7,
+    /// `initialize` was called on a processor that already has an admin.
+    AlreadyInitialized = 8,
+    /// `upgrade` was called before `initialize` has set an admin.
+    NotInitialized = 9,
 }
 
 #[contract]
@@ -151,6 +163,26 @@ fn validate_token(env: &Env, token: &Address) -> Result<(), Error> {
 
 #[contractimpl]
 impl BatchTransferProcessor {
+    /// One-time setup: record the admin allowed to `upgrade` this contract.
+    ///
+    /// `process_batch` is permissionless and works without initialization; this
+    /// call only establishes who may replace the implementation. Guarded
+    /// against re-initialization so a second call cannot hand the upgrade
+    /// authority to a different address after the fact.
+    ///
+    /// # Errors
+    ///
+    /// - `AlreadyInitialized` — an admin is already recorded.
+    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
+        if env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::AlreadyInitialized);
+        }
+        ttl::bump_instance(&env);
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        event_initialized(&env, &admin);
+        Ok(())
+    }
+
     /// Transfer tokens from `funder` to each address in `recipients`.
     ///
     /// # Argument order
@@ -376,5 +408,41 @@ impl BatchTransferProcessor {
     /// See `VERSION` for the current value (`2`) and its history.
     pub fn version(_env: Env) -> u32 {
         VERSION
+    }
+
+    // ── Self-upgrade (admin-gated) ──────────────────────────────────────────
+
+    /// Replace this contract's own WASM bytecode.
+    ///
+    /// The new WASM must already be uploaded to the ledger (via
+    /// `stellar contract upload`); only the hash is passed here. Gated on the
+    /// admin recorded by [`Self::initialize`], mirroring
+    /// `DripGovernor::upgrade` and `DripFactory::upgrade_self` — which this
+    /// contract previously lacked entirely (issue #651). The gate matters here
+    /// for the same reason it does elsewhere: the processor custodies the whole
+    /// batch total between the inbound pull and the outbound fan-out, so a
+    /// replaced implementation runs with funds in flight.
+    ///
+    /// An all-zero hash is rejected: `update_current_contract_wasm` with it
+    /// would replace the contract with something that cannot transfer.
+    pub fn upgrade(env: Env, caller: Address, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        if caller != admin {
+            return Err(Error::NotAuthorized);
+        }
+        caller.require_auth();
+
+        if new_wasm_hash == BytesN::from_array(&env, &[0u8; 32]) {
+            return Err(Error::InvalidWasmHash);
+        }
+
+        ttl::bump_instance(&env);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        event_upgraded(&env, &caller, env.ledger().timestamp());
+        Ok(())
     }
 }

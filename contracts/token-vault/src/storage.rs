@@ -98,14 +98,11 @@ pub fn get_operator_withdraw_limit(env: &Env) -> Option<i128> {
 }
 
 pub fn set_paused(env: &Env, paused: bool) {
-    env.storage().instance().set(&DataKey::Paused, &paused);
+    drip_common::pause::set_paused(env, &DataKey::Paused, paused);
 }
 
 pub fn is_paused(env: &Env) -> bool {
-    env.storage()
-        .instance()
-        .get(&DataKey::Paused)
-        .unwrap_or(false)
+    drip_common::pause::is_paused(env, &DataKey::Paused)
 }
 
 pub fn set_pending_owner(env: &Env, owner: &Address) {

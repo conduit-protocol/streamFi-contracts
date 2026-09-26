@@ -5,28 +5,21 @@ mod events;
 mod storage;
 #[cfg(test)]
 mod tests;
+mod ttl;
 
-use drip_common::{is_zero_address, TTL_EXTEND_TO, TTL_THRESHOLD};
+use drip_common::is_zero_address;
 use errors::Error;
-use soroban_sdk::{contract, contractimpl, token, Address, Env};
+use soroban_sdk::{contract, contractimpl, token, Address, BytesN, Env};
 use storage::{
     get_max_limit, get_operator, get_operator_withdraw_limit, get_owner, get_pending_owner,
     get_pending_owner_proposer, get_token, is_paused, remove_operator, remove_pending_owner,
     remove_pending_owner_proposer, set_max_limit, set_operator, set_operator_withdraw_limit,
-    set_owner, set_paused, set_pending_owner, set_pending_owner_proposer, set_token,
+    set_owner, set_paused, set_pending_owner, set_pending_owner_proposer, set_token, DataKey,
 };
+use ttl::bump_instance;
 
 #[contract]
 pub struct TokenVault;
-
-/// Extends the instance storage TTL to ensure vault state remains active and
-/// does not archive during idle periods. Matches the TTL management pattern
-/// across sibling contracts (DripFactory, DripGovernor, TwapOracle).
-fn bump_instance(env: &Env) {
-    env.storage()
-        .instance()
-        .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
-}
 
 fn token_client(env: &Env) -> Result<token::Client<'_>, Error> {
     let token_addr = get_token(env).ok_or(Error::NotInitialized)?;
@@ -35,6 +28,18 @@ fn token_client(env: &Env) -> Result<token::Client<'_>, Error> {
 
 fn vault_balance(env: &Env) -> Result<i128, Error> {
     Ok(token_client(env)?.balance(&env.current_contract_address()))
+}
+
+fn withdraw_cap(env: &Env, caller: &Address, owner: &Address) -> Result<i128, Error> {
+    if caller == owner {
+        return Ok(i128::MAX);
+    }
+
+    if get_operator(env).as_ref() != Some(caller) {
+        return Err(Error::NotAuthorized);
+    }
+
+    get_operator_withdraw_limit(env).ok_or(Error::LimitExceeded)
 }
 
 /// Checks that `caller` is either the vault owner or the currently delegated
@@ -57,12 +62,12 @@ fn require_owner_or_operator(env: &Env, caller: &Address, owner: &Address) -> Re
 }
 
 /// Short-circuit helper: reject any state-mutating call while paused.
+///
+/// Delegates to the protocol-wide gate in [`drip_common::pause`], mapping the
+/// shared `PausedError` onto the vault's own `Error::ContractPaused` — the same
+/// gate `DripFactory`, `DripGovernor`, and `TwapOracle` run.
 fn assert_not_paused(env: &Env) -> Result<(), Error> {
-    if is_paused(env) {
-        Err(Error::ContractPaused)
-    } else {
-        Ok(())
-    }
+    drip_common::pause::require_not_paused(env, &DataKey::Paused).map_err(|_| Error::ContractPaused)
 }
 
 #[contractimpl]
@@ -149,11 +154,9 @@ impl TokenVault {
             return Err(Error::InvalidAmount);
         }
 
-        if caller != owner {
-            let limit = get_operator_withdraw_limit(&env).ok_or(Error::LimitExceeded)?;
-            if amount > limit {
-                return Err(Error::LimitExceeded);
-            }
+        let limit = withdraw_cap(&env, &caller, &owner)?;
+        if amount > limit {
+            return Err(Error::LimitExceeded);
         }
 
         let balance = vault_balance(&env)?;
@@ -343,6 +346,19 @@ impl TokenVault {
         get_operator_withdraw_limit(&env)
     }
 
+    /// Read-only: the maximum amount `caller` can withdraw at this moment.
+    ///
+    /// The owner is limited only by the vault's current token balance. The
+    /// delegated operator is limited by both that balance and its per-call cap.
+    /// Returns `NotAuthorized` for any address that is neither the owner nor
+    /// the current operator, and `LimitExceeded` if the operator has no cap.
+    pub fn effective_withdraw_limit(env: Env, caller: Address) -> Result<i128, Error> {
+        assert_not_paused(&env)?;
+        let owner = get_owner(&env).ok_or(Error::NotInitialized)?;
+        let cap = withdraw_cap(&env, &caller, &owner)?;
+        Ok(vault_balance(&env)?.min(cap))
+    }
+
     /// Read-only: the current owner address, if any.
     pub fn owner(env: Env) -> Option<Address> {
         get_owner(&env)
@@ -404,11 +420,50 @@ impl TokenVault {
     /// the owner to re-open the contract or submit a `RestoreFootprint`.
     pub fn keep_alive(env: Env) -> Result<(), Error> {
         bump_instance(&env);
+        events::kept_alive(&env, TTL_EXTEND_TO);
         Ok(())
     }
 
     /// Read-only: whether the vault is currently under an emergency pause.
     pub fn is_paused(env: Env) -> bool {
         is_paused(&env)
+    }
+
+    // ── Self-upgrade (owner-gated) ──────────────────────────────────────────
+
+    /// Replace this contract's own WASM bytecode.
+    ///
+    /// The new WASM must already be uploaded to the ledger (via
+    /// `stellar contract upload`); only the hash is passed here. Gated on the
+    /// vault owner — the same authority that can already drain the vault via
+    /// `withdraw`, so an owner able to take the funds can also replace the
+    /// contract. A delegated `operator` is deliberately *not* enough, matching
+    /// `set_operator`'s documented scope (day-to-day ops, not ownership).
+    ///
+    /// Mirrors `DripGovernor::upgrade` and `TwapOracle::upgrade`, which the
+    /// vault previously lacked entirely (issue #651).
+    ///
+    /// Blocked while the vault is paused, matching those two — a halted
+    /// contract should accept no code changes.
+    ///
+    /// An all-zero hash is rejected: `update_current_contract_wasm` with it
+    /// would replace the contract with something that cannot release escrowed
+    /// funds.
+    pub fn upgrade(env: Env, caller: Address, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        let owner = get_owner(&env).ok_or(Error::NotInitialized)?;
+        if caller != owner {
+            return Err(Error::NotAuthorized);
+        }
+        caller.require_auth();
+        assert_not_paused(&env)?;
+
+        if new_wasm_hash == BytesN::from_array(&env, &[0u8; 32]) {
+            return Err(Error::InvalidWasmHash);
+        }
+
+        bump_instance(&env);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        events::upgraded(&env, &caller, env.ledger().timestamp());
+        Ok(())
     }
 }

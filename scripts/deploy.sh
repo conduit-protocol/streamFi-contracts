@@ -307,8 +307,17 @@ else
     --admin "$AUTHORITY"
 fi
 
-# BatchTransferProcessor is stateless — it has no `initialize` entry point,
-# so uploading + deploying is the whole setup.
+echo "⚙️   Initialising BatchTransferProcessor…"
+# `process_batch` is permissionless and works uninitialised; `initialize` only
+# records the admin allowed to call `upgrade` on the processor (issue #651).
+if state_has batchProcessorInitialized; then
+  echo "    already done on a previous run — skipped."
+else
+  initialize_contract "BatchTransferProcessor" batchProcessorInitialized \
+    --id "$BATCH_PROCESSOR_ID" \
+    -- initialize \
+    --admin "$AUTHORITY"
+fi
 
 TOKEN_ADDRESS="${TOKEN_ADDRESS:-}"
 if [[ -z "$TOKEN_ADDRESS" ]]; then
