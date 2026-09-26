@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useMutation, gql, useApolloClient } from '@apollo/client';
-import { validateStreamPayload } from './lib/validateStreamPayload';
-import { useFeeEstimate } from './lib/useFeeEstimate';
+import { validateStreamPayload } from '../lib/validateStreamPayload';
+import { useFeeEstimate } from '../lib/useFeeEstimate';
 
 const SUBMIT_STREAM_REQUEST_MOBILE = gql`
   mutation SubmitStreamRequestMobile($recipient: String!, $amount: String!, $ratePerSecond: String!) {

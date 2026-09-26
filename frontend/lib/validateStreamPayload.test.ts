@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { validateStreamPayload } from './validateStreamPayload';
 
 const VALID_RECIPIENT = 'G'.padEnd(56, 'A');
+const VALID_CONTRACT_RECIPIENT = 'C'.padEnd(56, 'A');
 
 function payload(overrides: Partial<{ recipient: string; amount: string; ratePerSecond: string }> = {}) {
   return {
@@ -27,7 +28,25 @@ describe('validateStreamPayload', () => {
   it('rejects a malformed recipient', () => {
     const result = validateStreamPayload(payload({ recipient: 'not-an-address' }));
     expect(result.valid).toBe(false);
-    expect(result.errors[0]).toContain('Stellar public address');
+    expect(result.errors[0]).toContain('Stellar address');
+  });
+
+  /**
+   * Coverage for issue #582: a Soroban contract address (`C...`) is a
+   * legitimate stream recipient — e.g. a treasury or splitter contract — so
+   * the validator must not reject it the way it only used to accept `G...`
+   * classic account addresses.
+   */
+  it('accepts a Soroban contract address (C...) as recipient', () => {
+    const result = validateStreamPayload(payload({ recipient: VALID_CONTRACT_RECIPIENT }));
+    expect(result.valid).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('rejects a recipient with a valid length but an invalid leading character', () => {
+    const result = validateStreamPayload(payload({ recipient: 'A'.padEnd(56, 'A') }));
+    expect(result.valid).toBe(false);
+    expect(result.errors[0]).toContain('Stellar address');
   });
 
   it.each([
