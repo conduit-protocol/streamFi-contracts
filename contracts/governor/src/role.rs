@@ -25,6 +25,12 @@ fn members_key(role: Role) -> DataKey {
 // ── Public API (delegates to drip_common::rbac) ────────────────────────────
 
 /// Whether `account` currently holds `role`.
+///
+/// **Storage note:** Role membership is stored per (role, account) key in instance storage
+/// (see `role_key` and `DataKey::Role`). Lookup is O(1) — a direct storage read, not a
+/// traversal of role members. This remains efficient regardless of the number of accounts
+/// holding the role, so `require_role` (called on every role-gated write) has constant-time
+/// cost independent of membership size.
 pub fn has_role(env: &Env, role: Role, account: &Address) -> bool {
     rbac::has_role(env, &role_key(role, account))
 }
