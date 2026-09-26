@@ -30,6 +30,10 @@ pub enum DataKey {
     /// The current owner who proposed the transfer.
     /// Used to hand ownership over when the pending owner accepts.
     PendingOwnerProposer,
+    /// Ledger timestamp when the pending owner was proposed.
+    PendingOwnerProposedAt,
+    /// Validity period for pending owner proposals, in seconds.
+    OwnerProposalTtl,
 }
 
 pub fn set_owner(env: &Env, a: &Address) {
@@ -131,4 +135,32 @@ pub fn remove_pending_owner_proposer(env: &Env) {
     env.storage()
         .instance()
         .remove(&DataKey::PendingOwnerProposer);
+}
+
+pub fn set_pending_owner_proposed_at(env: &Env, timestamp: u64) {
+    env.storage()
+        .instance()
+        .set(&DataKey::PendingOwnerProposedAt, &timestamp);
+}
+
+pub fn get_pending_owner_proposed_at(env: &Env) -> Option<u64> {
+    env.storage()
+        .instance()
+        .get(&DataKey::PendingOwnerProposedAt)
+}
+
+pub fn remove_pending_owner_proposed_at(env: &Env) {
+    env.storage()
+        .instance()
+        .remove(&DataKey::PendingOwnerProposedAt);
+}
+
+pub fn set_owner_proposal_ttl(env: &Env, ttl_seconds: u64) {
+    env.storage()
+        .instance()
+        .set(&DataKey::OwnerProposalTtl, &ttl_seconds);
+}
+
+pub fn get_owner_proposal_ttl(env: &Env) -> Option<u64> {
+    env.storage().instance().get(&DataKey::OwnerProposalTtl)
 }

@@ -151,3 +151,10 @@ pub fn owner_accepted(env: &Env, caller: &Address, old_owner: &Address) {
     env.events()
         .publish((symbol_short!("accept"), caller.clone()), old_owner.clone());
 }
+
+pub fn owner_proposal_ttl_set(env: &Env, caller: &Address, old_ttl: u64, new_ttl: u64) {
+    env.events().publish(
+        (symbol_short!("owner_ttl"), caller.clone()),
+        (old_ttl, new_ttl),
+    );
+}

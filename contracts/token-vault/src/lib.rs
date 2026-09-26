@@ -9,17 +9,21 @@ mod ttl;
 
 use drip_common::is_zero_address;
 use errors::Error;
-use soroban_sdk::{contract, contractimpl, token, Address, BytesN, Env};
+use soroban_sdk::{contract, contractimpl, token, Address, BytesN, Env, Vec};
 use storage::{
-    get_max_limit, get_operator, get_operator_withdraw_limit, get_owner, get_pending_owner,
-    get_pending_owner_proposer, get_token, is_paused, remove_operator, remove_pending_owner,
+    get_max_limit, get_operator, get_operator_withdraw_limit, get_owner, get_owner_proposal_ttl,
+    get_pending_owner, get_pending_owner_proposed_at, get_pending_owner_proposer, get_token,
+    is_paused, remove_operator, remove_pending_owner, remove_pending_owner_proposed_at,
     remove_pending_owner_proposer, set_max_limit, set_operator, set_operator_withdraw_limit,
-    set_owner, set_paused, set_pending_owner, set_pending_owner_proposer, set_token, DataKey,
+    set_owner, set_owner_proposal_ttl as store_owner_proposal_ttl, set_paused, set_pending_owner,
+    set_pending_owner_proposed_at, set_pending_owner_proposer, set_token, DataKey,
 };
 use ttl::bump_instance;
 
 #[contract]
 pub struct TokenVault;
+
+const OWNER_PROPOSAL_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
 
 fn token_client(env: &Env) -> Result<token::Client<'_>, Error> {
     let token_addr = get_token(env).ok_or(Error::NotInitialized)?;
@@ -70,6 +74,57 @@ fn assert_not_paused(env: &Env) -> Result<(), Error> {
     drip_common::pause::require_not_paused(env, &DataKey::Paused).map_err(|_| Error::ContractPaused)
 }
 
+fn withdraw_payouts(
+    env: &Env,
+    caller: &Address,
+    payouts: &Vec<(Address, i128)>,
+) -> Result<(), Error> {
+    assert_not_paused(env)?;
+    let owner = get_owner(env).ok_or(Error::NotInitialized)?;
+    require_owner_or_operator(env, caller, &owner)?;
+
+    if payouts.len() == 0 {
+        return Err(Error::InvalidAmount);
+    }
+
+    let mut total = 0_i128;
+    for index in 0..payouts.len() {
+        let (_, amount) = payouts.get(index).ok_or(Error::InvalidAmount)?;
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        total = total.checked_add(amount).ok_or(Error::ArithmeticOverflow)?;
+    }
+
+    if total > withdraw_cap(env, caller, &owner)? {
+        return Err(Error::LimitExceeded);
+    }
+
+    let balance = vault_balance(env)?;
+    if total > balance {
+        return Err(Error::LimitExceeded);
+    }
+
+    let tk = token_client(env)?;
+    let mut expected_balance = balance;
+    let by_operator = caller != &owner;
+    for index in 0..payouts.len() {
+        let (to, amount) = payouts.get(index).ok_or(Error::InvalidAmount)?;
+        expected_balance = expected_balance
+            .checked_sub(amount)
+            .ok_or(Error::ArithmeticOverflow)?;
+        tk.transfer(&env.current_contract_address(), &to, &amount);
+        let new_balance = vault_balance(env)?;
+        if new_balance != expected_balance {
+            return Err(Error::WithdrawTransferFailed);
+        }
+        events::withdrawn(env, caller, &to, amount, new_balance, by_operator);
+    }
+
+    bump_instance(env);
+    Ok(())
+}
+
 #[contractimpl]
 impl TokenVault {
     /// Initialise the vault.
@@ -105,6 +160,7 @@ impl TokenVault {
         set_owner(&env, &owner);
         set_token(&env, &token);
         set_max_limit(&env, &max_limit);
+        store_owner_proposal_ttl(&env, OWNER_PROPOSAL_TTL_SECONDS);
 
         events::initialized(&env, &owner, &token, max_limit);
         Ok(())
@@ -146,38 +202,19 @@ impl TokenVault {
     }
 
     pub fn withdraw(env: Env, caller: Address, to: Address, amount: i128) -> Result<(), Error> {
-        assert_not_paused(&env)?;
-        let owner = get_owner(&env).ok_or(Error::NotInitialized)?;
-        require_owner_or_operator(&env, &caller, &owner)?;
+        let mut payouts = Vec::new(&env);
+        payouts.push_back((to, amount));
+        withdraw_payouts(&env, &caller, &payouts)
+    }
 
-        if amount <= 0 {
-            return Err(Error::InvalidAmount);
-        }
-
-        let limit = withdraw_cap(&env, &caller, &owner)?;
-        if amount > limit {
-            return Err(Error::LimitExceeded);
-        }
-
-        let balance = vault_balance(&env)?;
-        let expected_balance = balance
-            .checked_sub(amount)
-            .ok_or(Error::ArithmeticOverflow)?;
-
-        let tk = token_client(&env)?;
-        tk.transfer(&env.current_contract_address(), &to, &amount);
-        let new_balance = vault_balance(&env)?;
-        if new_balance != expected_balance {
-            return Err(Error::DepositTransferFailed);
-        }
-
-        // Record which signing role authorized the payout (issue #662): the
-        // ownership-transfer path above can change `owner`, so consumers of
-        // the event can't reliably infer role from the `caller` address.
-        let by_operator = caller != owner;
-        bump_instance(&env);
-        events::withdrawn(&env, &caller, &to, amount, new_balance, by_operator);
-        Ok(())
+    /// Atomically pay several recipients, enforcing the operator's limit
+    /// against the sum of all payouts before transferring any tokens.
+    pub fn withdraw_batch(
+        env: Env,
+        caller: Address,
+        payouts: Vec<(Address, i128)>,
+    ) -> Result<(), Error> {
+        withdraw_payouts(&env, &caller, &payouts)
     }
 
     /// Owner sets the per-call cap that bounds how much a delegated operator
@@ -306,6 +343,7 @@ impl TokenVault {
         bump_instance(&env);
         set_pending_owner(&env, &new_owner);
         set_pending_owner_proposer(&env, &caller);
+        set_pending_owner_proposed_at(&env, env.ledger().timestamp());
         events::owner_proposed(&env, &caller, &new_owner);
         Ok(())
     }
@@ -326,11 +364,20 @@ impl TokenVault {
             return Err(Error::NotPendingOwner);
         }
         caller.require_auth();
+        let proposed_at = get_pending_owner_proposed_at(&env).ok_or(Error::PendingOwnerExpired)?;
+        let proposal_ttl = get_owner_proposal_ttl(&env).unwrap_or(OWNER_PROPOSAL_TTL_SECONDS);
+        let expires_at = proposed_at
+            .checked_add(proposal_ttl)
+            .ok_or(Error::ArithmeticOverflow)?;
+        if env.ledger().timestamp() >= expires_at {
+            return Err(Error::PendingOwnerExpired);
+        }
         let proposer = get_pending_owner_proposer(&env).ok_or(Error::NoPendingOwner)?;
         bump_instance(&env);
         set_owner(&env, &caller);
         remove_pending_owner(&env);
         remove_pending_owner_proposer(&env);
+        remove_pending_owner_proposed_at(&env);
         events::owner_accepted(&env, &caller, &proposer);
         Ok(())
     }
@@ -344,6 +391,17 @@ impl TokenVault {
     /// execute before the owner raises or removes the cap.
     pub fn operator_withdraw_limit(env: Env) -> Option<i128> {
         get_operator_withdraw_limit(&env)
+    }
+
+    /// Read-only: the token contract's current balance held by this vault.
+    /// Includes direct token transfers that bypass `deposit`.
+    pub fn balance(env: Env) -> Option<i128> {
+        vault_balance(&env).ok()
+    }
+
+    /// Read-only: the maximum token balance the vault accepts.
+    pub fn max_limit(env: Env) -> Option<i128> {
+        get_max_limit(&env)
     }
 
     /// Read-only: the maximum amount `caller` can withdraw at this moment.
@@ -374,6 +432,33 @@ impl TokenVault {
     /// Returns `None` when no transfer has been proposed.
     pub fn pending_owner_proposer(env: Env) -> Option<Address> {
         get_pending_owner_proposer(&env)
+    }
+
+    /// Read-only: how long a pending owner proposal remains valid, in seconds.
+    pub fn owner_proposal_ttl(env: Env) -> Option<u64> {
+        get_owner_proposal_ttl(&env)
+    }
+
+    /// Configure the validity period for pending and future owner proposals.
+    pub fn set_owner_proposal_ttl(
+        env: Env,
+        caller: Address,
+        ttl_seconds: u64,
+    ) -> Result<(), Error> {
+        let owner = get_owner(&env).ok_or(Error::NotInitialized)?;
+        if caller != owner {
+            return Err(Error::NotAuthorized);
+        }
+        caller.require_auth();
+        if ttl_seconds == 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let old_ttl = get_owner_proposal_ttl(&env).unwrap_or(OWNER_PROPOSAL_TTL_SECONDS);
+        bump_instance(&env);
+        store_owner_proposal_ttl(&env, ttl_seconds);
+        events::owner_proposal_ttl_set(&env, &caller, old_ttl, ttl_seconds);
+        Ok(())
     }
 
     // ── Emergency pause (owner-gated) ─────────────────────────────────────
