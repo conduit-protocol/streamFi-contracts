@@ -40,6 +40,10 @@ fn bump_instance(env: &Env) {
 /// - `Pauser`      — call `pause`/`unpause` without needing full `Admin`.
 ///                   Mirrors `DripGovernor::Role::Pauser`, closing the
 ///                   delegation gap noted in issue #203.
+///
+/// This enum remains oracle-specific because its roles and exact-role price
+/// submission policy differ from the governor. Shared RBAC mechanics live in
+/// `drip_common::rbac`; see ADR-008 for the design rationale.
 #[contracttype]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Role {
