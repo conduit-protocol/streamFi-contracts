@@ -229,7 +229,9 @@ Soroban has three storage tiers. Each has different persistence and TTL semantic
 env.storage().instance().extend_ttl(threshold, extend_to);
 env.storage().persistent().extend_ttl(&key, threshold, extend_to);
 ```
-Pure read-only functions (`withdrawable`, `streamed_total`, `info`, `config`, `stream_address`, etc.) do not bump TTL themselves — an entry only stays alive if something actually mutates it. A long-idle stream that nobody touches can still expire; a `keep_alive`-style function anyone could call without mutating state remains a possible future addition.
+The stateless `BatchTransferProcessor` applies the same instance extension on `process_batch`, so all four production-track contracts keep themselves alive while in use.
+
+Pure read-only functions (`withdrawable`, `streamed_total`, `info`, `config`, `stream_address`, `preview_batch`, etc.) do not bump TTL themselves — an entry only stays alive if something actually mutates it. A long-idle stream that nobody touches can still expire; a `keep_alive`-style function anyone could call without mutating state remains a possible future addition.
 
 ---
 

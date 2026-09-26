@@ -153,8 +153,9 @@ fn max_batch_size_matches_the_enforced_boundary() {
 #[test]
 fn version_reports_the_current_behaviour_version() {
     let f = setup();
-    // Bumped whenever observable behaviour changes; starts at 1.
-    assert_eq!(f.client.version(), 1);
+    // v2: SEP-41 token probe before auth, instance-TTL keep-alive, and
+    // `preview_batch`. Bumped whenever observable behaviour changes.
+    assert_eq!(f.client.version(), 2);
 }
 
 #[test]
@@ -311,4 +312,160 @@ fn error_type_carries_required_traits() {
     assert_eq!(Error::InvalidAmount as u32, 3);
     assert_eq!(Error::ArithmeticOverflow as u32, 4);
     assert_eq!(Error::InvalidToken as u32, 5);
+}
+
+// ── preview_batch (issue #561) ─────────────────────────────────────────────
+
+#[test]
+fn preview_batch_returns_the_total_without_auth_or_moving_funds() {
+    let f = setup();
+    f.token_admin_client.mint(&f.funder, &100);
+
+    let recipients = addrs(&f.env, 3);
+    let amounts = Vec::from_array(&f.env, [10i128, 20, 30]);
+
+    // No funder, no token: the preview cannot pull funds or ask for auth.
+    let previewed = f.client.preview_batch(&recipients, &amounts);
+
+    assert_eq!(previewed, 60);
+    assert_eq!(f.token.balance(&f.funder), 100);
+    assert_eq!(f.token.balance(&f.client.address), 0);
+}
+
+#[test]
+fn preview_batch_agrees_with_process_batch_on_the_same_inputs() {
+    let f = setup();
+    f.token_admin_client.mint(&f.funder, &100);
+
+    let recipients = addrs(&f.env, 3);
+    let amounts = Vec::from_array(&f.env, [10i128, 20, 30]);
+
+    // What the user is shown before signing is exactly what they are charged.
+    let previewed = f.client.preview_batch(&recipients, &amounts);
+    let charged = f
+        .client
+        .process_batch(&f.funder, &f.token.address, &recipients, &amounts);
+
+    assert_eq!(previewed, charged);
+    assert_eq!(f.token.balance(&f.funder), 100 - previewed);
+}
+
+#[test]
+fn preview_batch_applies_the_same_validation_as_process_batch() {
+    let f = setup();
+
+    // Length mismatch
+    assert_eq!(
+        f.client
+            .try_preview_batch(&addrs(&f.env, 2), &Vec::from_array(&f.env, [1i128])),
+        Err(Ok(Error::LengthMismatch)),
+    );
+
+    // Batch cap
+    assert_eq!(
+        f.client
+            .try_preview_batch(&addrs(&f.env, 101), &Vec::from_array(&f.env, [1i128; 101]),),
+        Err(Ok(Error::BatchTooLarge)),
+    );
+
+    // Non-positive amount
+    assert_eq!(
+        f.client
+            .try_preview_batch(&addrs(&f.env, 1), &Vec::from_array(&f.env, [0i128]),),
+        Err(Ok(Error::InvalidAmount)),
+    );
+
+    // Checked accumulation
+    assert_eq!(
+        f.client.try_preview_batch(
+            &addrs(&f.env, 2),
+            &Vec::from_array(&f.env, [i128::MAX, i128::MAX]),
+        ),
+        Err(Ok(Error::ArithmeticOverflow)),
+    );
+}
+
+#[test]
+fn preview_batch_accepts_an_empty_batch_as_zero() {
+    let f = setup();
+    let recipients: Vec<Address> = Vec::new(&f.env);
+    let amounts: Vec<i128> = Vec::new(&f.env);
+
+    assert_eq!(f.client.preview_batch(&recipients, &amounts), 0);
+}
+
+// ── Argument order (issue #560) ─────────────────────────────────────────────
+
+#[test]
+fn transposed_funder_and_token_arguments_fail_with_invalid_token() {
+    use soroban_sdk::xdr::{AccountId, PublicKey, ScAddress, Uint256};
+    use soroban_sdk::TryFromVal;
+
+    let f = setup();
+    f.token_admin_client.mint(&f.funder, &100);
+
+    // A real `G...` account — what a funder's wallet actually is on-chain —
+    // so the transposed case is exercised with an address of the same shape
+    // a production caller would produce.
+    let wallet = Address::try_from_val(
+        &f.env,
+        &ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(
+            [0x11u8; 32],
+        )))),
+    )
+    .unwrap();
+
+    // Wrong order: the token contract in the `funder` slot, the funder's
+    // wallet in the `token` slot. Check 5 rejects the wallet, so the call
+    // returns InvalidToken before `require_auth` against the token contract
+    // and before any transfer.
+    let recipients = addrs(&f.env, 1);
+    let amounts = Vec::from_array(&f.env, [10i128]);
+
+    assert_eq!(
+        f.client
+            .try_process_batch(&f.token.address, &wallet, &recipients, &amounts),
+        Err(Ok(Error::InvalidToken)),
+    );
+    assert_eq!(f.token.balance(&f.funder), 100);
+}
+
+#[test]
+fn non_sep41_contract_as_token_is_rejected_with_invalid_token() {
+    let f = setup();
+
+    // A deployed contract that does not implement SEP-41 — previously this
+    // died host-level at the first `transfer`, now the `balance` probe in
+    // check 5 rejects it with a contract error before auth.
+    let not_a_token = f.env.register_contract(None, BatchTransferProcessor);
+    let recipients = addrs(&f.env, 1);
+    let amounts = Vec::from_array(&f.env, [10i128]);
+
+    assert_eq!(
+        f.client
+            .try_process_batch(&f.funder, &not_a_token, &recipients, &amounts),
+        Err(Ok(Error::InvalidToken)),
+    );
+}
+
+// ── Instance TTL keep-alive (issue #559) ───────────────────────────────────
+
+#[test]
+fn process_batch_extends_the_instance_ttl() {
+    use soroban_sdk::testutils::storage::Instance as _;
+
+    let f = setup();
+    f.token_admin_client.mint(&f.funder, &100);
+
+    let recipients = addrs(&f.env, 1);
+    let amounts = Vec::from_array(&f.env, [10i128]);
+    f.client
+        .process_batch(&f.funder, &f.token.address, &recipients, &amounts);
+
+    // Same TTL window the stream, factory, and governor contracts apply on
+    // every state-mutating call (drip_common::TTL_EXTEND_TO).
+    let ttl = f
+        .env
+        .as_contract(&f.client.address, || f.env.storage().instance().get_ttl());
+    assert_eq!(ttl, 200_000);
 }

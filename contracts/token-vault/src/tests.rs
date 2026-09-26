@@ -582,9 +582,11 @@ fn operator_withdraw_emits_by_operator_flag() {
     s.client.withdraw(&op, &recipient, &300);
 
     let events = vault_events(&s);
-    assert_eq!(events.len(), 4);
+    // initialized (from Setup::new) + deposited + operator_set +
+    // operator_withdraw_limit_set + withdrawn.
+    assert_eq!(events.len(), 5);
 
-    let (_, topics, data) = &events[3];
+    let (_, topics, data) = &events[4];
     assert_eq!(
         topics.clone(),
         (symbol_short!("withdrawn"), op.clone()).into_val(&s.env)

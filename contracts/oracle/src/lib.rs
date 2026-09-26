@@ -614,7 +614,7 @@ impl TwapOracle {
         // from fewer fresh feeders than `min_submitters` is not reliable
         // enough to return. `PriceStatus` exposes both counts so callers can
         // observe how far below quorum the set is.
-        if fresh_prices.len() as u32 < config.min_submitters {
+        if fresh_prices.len() < config.min_submitters {
             return Err(Error::InsufficientQuorum);
         }
 

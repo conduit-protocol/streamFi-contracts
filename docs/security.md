@@ -56,7 +56,7 @@ All arithmetic uses Rust's `checked_*` methods. Overflow returns `Error::Arithme
 
 Soroban `persistent()` storage entries expire after a configurable number of ledgers if their TTL is not extended. The scaffold did not include TTL extension calls beyond the factory's `StreamAddr` registry entry.
 
-**Resolved:** every state-mutating call on all three contracts now extends instance TTL (`DripStream`, `DripFactory`, `DripGovernor`), and `DripFactory::create_stream` extends the `BySender`/`ByRecipient` persistent entries the same way `StreamAddr` already was. A `keep_alive(stream_id)`-style function anyone can call to refresh an inactive stream's TTL without touching its state is still a possible future addition, but is not required for the archival risk itself to be closed.
+**Resolved:** every state-mutating call on all three contracts now extends instance TTL (`DripStream`, `DripFactory`, `DripGovernor`), and `DripFactory::create_stream` extends the `BySender`/`ByRecipient` persistent entries the same way `StreamAddr` already was. The fourth contract, `BatchTransferProcessor`, extends its own instance TTL on `process_batch` the same way (the processor holds no persistent keys of its own, so instance TTL is the only archival surface it has). A `keep_alive(stream_id)`-style function anyone can call to refresh an inactive stream's TTL without touching its state is still a possible future addition, but is not required for the archival risk itself to be closed.
 
 ### 2. BySender / ByRecipient indices are unbounded vecs
 
