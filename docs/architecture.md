@@ -123,6 +123,15 @@ modify oracle state. Typical use: displaying the fiat-equivalent value of a
 stream's remaining balance or accrued payout without requiring the caller to
 fetch and scale the price themselves.
 
+**Historical price data:** The oracle holds only the current state — the most recent
+submissions from each feeder and the computed current TWAP. It does not retain a
+historical log of past price windows or historical TWAP snapshots on-chain. Any
+use case requiring historical prices (e.g., charting price history, reconstructing
+"what was the oracle-reported rate at time T" for past stream payouts) must rely
+on off-chain indexing of `price_submitted` events. This is intentional to minimize
+on-chain storage cost; historical reconstruction is delegated to the indexer and
+application layer.
+
 ### DripFactory
 
 The factory is a singleton deployed once per network. It owns no token balance for longer than one transaction — funds enter from the sender, then immediately forward to the new stream contract.

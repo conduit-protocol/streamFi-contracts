@@ -691,6 +691,40 @@ impl TwapOracle {
         load_price_status(&env).map(|s| s.stale)
     }
 
+    /// Read-only: the most recent raw price submission from any feeder.
+    ///
+    /// Returns the single most recent `PriceData` across all feeders, without any
+    /// TWAP aggregation or staleness checking. Useful for detecting anomalies in the
+    /// latest raw feed signal (e.g., a price spike) independently of the smoothed TWAP.
+    ///
+    /// The `updated_at` timestamp is the ledger time of the submission.
+    /// If multiple feeders submitted at the same block, returns one of them (order unspecified).
+    ///
+    /// Errors:
+    /// - `NoPriceAvailable` if no price has ever been submitted.
+    pub fn latest_price(env: Env) -> Result<PriceData, Error> {
+        let submitters: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Submitters)
+            .unwrap_or(Vec::new(&env));
+
+        let mut latest: Option<PriceData> = None;
+        for feeder in submitters.iter() {
+            if let Some(data) = env
+                .storage()
+                .persistent()
+                .get::<_, PriceData>(&DataKey::Submission(feeder))
+            {
+                if latest.is_none() || data.updated_at > latest.as_ref().unwrap().updated_at {
+                    latest = Some(data);
+                }
+            }
+        }
+
+        latest.ok_or(Error::NoPriceAvailable)
+    }
+
     /// Converts a nominal token amount into its fiat equivalent.
     ///
     /// **Nested-lock warning:** The public entrypoint takes the oracle

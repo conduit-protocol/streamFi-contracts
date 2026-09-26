@@ -376,6 +376,15 @@ impl TokenVault {
         get_pending_owner_proposer(&env)
     }
 
+    /// Read-only: the SEP-41 token address this vault holds.
+    ///
+    /// Allows external callers and contracts to verify which token a given vault
+    /// instance manages before routing deposits or displaying vault information.
+    /// Returns `None` if the vault has not been initialized.
+    pub fn token(env: Env) -> Option<Address> {
+        get_token(&env)
+    }
+
     // ── Emergency pause (owner-gated) ─────────────────────────────────────
 
     /// Emergency halt: freeze all state-mutating operations.
