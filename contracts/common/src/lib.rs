@@ -2,7 +2,9 @@
 
 //! Shared constants and utilities for the Drip protocol contracts.
 
+pub mod pause;
 pub mod rbac;
+pub mod ttl;
 
 use soroban_sdk::{Address, Env};
 

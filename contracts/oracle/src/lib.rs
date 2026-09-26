@@ -1,17 +1,9 @@
 #![no_std]
 
-use drip_common::rbac;
+use drip_common::{pause, rbac, ttl};
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Vec,
 };
-
-/// TTL extension constants matching the convention used across sibling
-/// contracts (factory, governor, stream). `bump_instance` is called from
-/// every state-mutating entry point so instance storage entries
-/// (`DataKey::Admin`, `DataKey::Config`, `DataKey::Price`, etc.) never
-/// silently archive during idle periods.
-const THRESHOLD: u32 = 100_000;
-const EXTEND_TO: u32 = 200_000;
 
 /// Maximum number of distinct price feeders the oracle will track. Caps the
 /// `DataKey::Submitters` list and the per-feeder `Submission` loop in
@@ -25,8 +17,16 @@ const EXTEND_TO: u32 = 200_000;
 /// (32 gets + insertion sort).
 const MAX_SUBMITTERS: u32 = 32;
 
+/// Extends the instance storage TTL so the oracle's entries
+/// (`DataKey::Admin`, `DataKey::Config`, `DataKey::Price`, etc.) never silently
+/// archive during idle periods. Called from every state-mutating entry point.
+///
+/// The threshold/extend-to pair is protocol-wide policy and lives in
+/// [`drip_common::ttl`] — the oracle previously restated it as its own
+/// hardcoded literals, which could drift away from the sibling contracts'
+/// values (issue #649).
 fn bump_instance(env: &Env) {
-    env.storage().instance().extend_ttl(THRESHOLD, EXTEND_TO);
+    ttl::bump_instance(env);
 }
 
 /// Protocol administration roles for the oracle.
@@ -235,6 +235,8 @@ pub enum Error {
     /// the configured `min_submitters` quorum requires, so the TWAP median is
     /// not reliable enough to return (issue #661).
     InsufficientQuorum = 1020,
+    /// The WASM hash provided to `upgrade` is all zeros (invalid).
+    InvalidWasmHash = 1021,
 }
 
 #[contract]
@@ -475,7 +477,7 @@ impl TwapOracle {
     /// malicious submissions at submission time rather than letting them
     /// propagate into the TWAP window — see issue #226.
     pub fn submit_price(env: Env, caller: Address, price: u64) -> Result<(), Error> {
-        if is_paused(&env) {
+        if require_not_paused(&env).is_err() {
             events::price_rejected(&env, &caller, price, symbol_short!("paused"));
             return Err(Error::ContractPaused);
         }
@@ -542,11 +544,7 @@ impl TwapOracle {
         env.storage()
             .persistent()
             .set(&DataKey::Submission(caller.clone()), &data);
-        env.storage().persistent().extend_ttl(
-            &DataKey::Submission(caller.clone()),
-            THRESHOLD,
-            EXTEND_TO,
-        );
+        ttl::bump_persistent(&env, &DataKey::Submission(caller.clone()));
         add_submitter(&env, &caller)?;
 
         events::price_submitted(&env, &caller, price, now);
@@ -769,6 +767,40 @@ impl TwapOracle {
     pub fn is_paused(env: Env) -> bool {
         is_paused(&env)
     }
+
+    // ── Self-upgrade (Admin-gated) ─────────────────────────────────────────
+
+    /// Replace this contract's own WASM bytecode.
+    ///
+    /// The new WASM must already be uploaded to the ledger (via
+    /// `stellar contract upload`); only the hash is passed here. Gated on
+    /// `Role::Admin` (not `Pauser`, and not a bare `PriceFeeder`) so a
+    /// compromised or abandoned ops key cannot silently swap the
+    /// implementation — the oracle is the price source for
+    /// `calculate_fiat_stream_payout`, so a substituted build can misprice
+    /// every downstream payout.
+    ///
+    /// Mirrors `DripGovernor::upgrade` and `DripFactory::upgrade_self`, which
+    /// the oracle previously lacked entirely (issue #651).
+    ///
+    /// Blocked while the oracle is paused, matching those two — a halted
+    /// protocol should accept no code changes.
+    ///
+    /// An all-zero hash is rejected: `update_current_contract_wasm` with it
+    /// would replace the contract with something that cannot serve a price.
+    pub fn upgrade(env: Env, caller: Address, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        require_role(&env, &caller, Role::Admin)?;
+        require_not_paused(&env)?;
+
+        if new_wasm_hash == BytesN::from_array(&env, &[0u8; 32]) {
+            return Err(Error::InvalidWasmHash);
+        }
+
+        bump_instance(&env);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        events::upgraded(&env, &caller, env.ledger().timestamp());
+        Ok(())
+    }
 }
 
 // ── Internal RBAC helpers (delegate to drip_common::rbac) ─────────────────
@@ -888,9 +920,7 @@ fn add_submitter(env: &Env, account: &Address) -> Result<(), Error> {
     env.storage()
         .persistent()
         .set(&DataKey::Submitters, &submitters);
-    env.storage()
-        .persistent()
-        .extend_ttl(&DataKey::Submitters, THRESHOLD, EXTEND_TO);
+    ttl::bump_persistent(env, &DataKey::Submitters);
     Ok(())
 }
 
@@ -925,9 +955,7 @@ fn remove_submitter(env: &Env, account: &Address) {
             env.storage()
                 .persistent()
                 .set(&DataKey::Submitters, &updated);
-            env.storage()
-                .persistent()
-                .extend_ttl(&DataKey::Submitters, THRESHOLD, EXTEND_TO);
+            ttl::bump_persistent(env, &DataKey::Submitters);
 
             // Refresh legacy single-value price slot to the most recent remaining submission
             let mut latest: Option<PriceData> = None;
@@ -1058,15 +1086,27 @@ fn load_price_status(env: &Env) -> Result<PriceStatus, Error> {
     })
 }
 
+/// Reads the emergency-pause flag (absent ⇒ running normally).
+///
+/// Delegates to [`drip_common::pause::is_paused`], which owns the flag read so
+/// every sibling contract reads it identically (issue #650).
 fn is_paused(env: &Env) -> bool {
-    env.storage()
-        .instance()
-        .get(&DataKey::Paused)
-        .unwrap_or(false)
+    pause::is_paused(env, &DataKey::Paused)
 }
 
+/// Writes the emergency-pause flag. Only `pause`/`unpause` call this, and both
+/// have already gated the caller and the transition.
 fn set_paused(env: &Env, paused: bool) {
-    env.storage().instance().set(&DataKey::Paused, &paused);
+    pause::set_paused(env, &DataKey::Paused, paused);
+}
+
+/// The pause gate: `Err(ContractPaused)` while the oracle is halted.
+///
+/// Delegates to the protocol-wide gate [`drip_common::pause::require_not_paused`]
+/// and maps the shared `PausedError` onto the oracle's own `Error` — the same
+/// gate `DripFactory`, `DripGovernor`, and `TokenVault` run.
+fn require_not_paused(env: &Env) -> Result<(), Error> {
+    pause::require_not_paused(env, &DataKey::Paused).map_err(|_| Error::ContractPaused)
 }
 
 /// Execute `f` under the re-entrancy guard, releasing the lock afterwards.
@@ -1126,6 +1166,11 @@ mod events {
             (symbol_short!("adm_xfer"), old_admin.clone()),
             new_admin.clone(),
         );
+    }
+
+    pub fn upgraded(env: &Env, caller: &Address, upgraded_at: u64) {
+        env.events()
+            .publish((symbol_short!("upgraded"), caller.clone()), upgraded_at);
     }
 
     pub fn price_submitted(env: &Env, caller: &Address, price: u64, timestamp: u64) {

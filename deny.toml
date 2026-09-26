@@ -1,7 +1,10 @@
 # cargo-deny configuration
 #
 # Run locally: cargo deny check
-# CI runs: cargo deny check licenses advisories
+# CI runs: cargo deny check advisories bans licenses
+#            (`.github/workflows/deny.yml` — every section configured here must
+#            be listed in that workflow's matrix, or it silently stops being
+#            enforced; see issue #656.)
 
 [graph]
 targets = [
@@ -31,5 +34,9 @@ confidence-threshold = 0.8
 
 [bans]
 # No crate bans configured yet; the goal is license/advisory checking.
+# Enforced in CI since issue #656 — `cargo deny check bans` fails the build on
+# a denied crate or wildcard hit. `multiple-versions` stays a warning because
+# the dependency tree legitimately carries several semver-compatible versions
+# of transitive crates (e.g. `syn`), and failing on that would be noise.
 multiple-versions = "warn"
 wildcards = "allow"

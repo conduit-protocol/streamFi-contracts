@@ -11,13 +11,25 @@ mod ttl;
 
 use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env};
 
-use drip_common::is_zero_address;
+use drip_common::{is_zero_address, pause};
 
 pub use errors::Error;
 use storage::{DataKey, StreamInfo, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED};
 
 #[contract]
 pub struct DripStream;
+
+/// The pause gate: `Err(NotPaused)` while the stream is halted.
+///
+/// A stream keeps its pause bit inside the consolidated `StreamInfo` record
+/// rather than under a standalone instance key, so this delegates to the
+/// flag-based form of the protocol-wide gate
+/// ([`drip_common::pause::require_not_paused_flag`]) on the already-loaded
+/// record — the same gate the factory, governor, oracle, and vault run
+/// (issue #650).
+fn require_not_paused(info: &StreamInfo) -> Result<(), Error> {
+    pause::require_not_paused_flag(info.is_paused()).map_err(|_| Error::NotPaused)
+}
 
 /// Check that `caller` is either the stream's `sender` or a delegated
 /// `operator`, then consume the caller's auth. Returns `NotAuthorized`
@@ -628,9 +640,7 @@ impl DripStream {
 
         let info = state::load(env);
         state::assert_not_cancelled(&info)?;
-        if info.is_paused() {
-            return Err(Error::NotPaused);
-        }
+        require_not_paused(&info)?;
         if !info.is_clawback_enabled() {
             return Err(Error::ClawbackDisabled);
         }

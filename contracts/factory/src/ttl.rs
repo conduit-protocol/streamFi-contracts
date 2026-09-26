@@ -1,11 +1,19 @@
+//! Instance and persistent TTL management for `DripFactory`.
+//!
+//! The threshold/extend-to values are protocol-wide policy and live in
+//! [`drip_common::ttl`], so every contract renews storage on the same
+//! schedule. This module only keeps the crate-local call-site names
+//! (`ttl::bump_instance`, `ttl::bump_persistent`) unchanged — it must not
+//! restate the constants (issue #649).
+
 use soroban_sdk::Env;
 
 use crate::storage::DataKey;
 
 // Exposed as `pub` so callers can reuse the same threshold/extend-to values
 // for the persistent BySender/ByRecipient/StreamAddr registry entries.
-pub use drip_common::TTL_EXTEND_TO as EXTEND_TO;
-pub use drip_common::TTL_THRESHOLD as THRESHOLD;
+pub use drip_common::ttl::{bump_instance, bump_persistent};
+pub use drip_common::{TTL_EXTEND_TO as EXTEND_TO, TTL_THRESHOLD as THRESHOLD};
 
 /// How many persistent entries the bounded walker bumps per call. Sized so
 /// the gas cost of any single `pause`/`unpause`/`upgrade_stream_wasm`
@@ -13,10 +21,6 @@ pub use drip_common::TTL_THRESHOLD as THRESHOLD;
 /// IDs. The walker wraps around modulo `StreamCount` so every live ID is
 /// eventually covered across calls.
 pub const BATCH_LIMIT: u32 = 8;
-
-pub fn bump_instance(env: &Env) {
-    env.storage().instance().extend_ttl(THRESHOLD, EXTEND_TO);
-}
 
 /// Bounded TTL walker.
 ///
@@ -64,9 +68,7 @@ pub fn bump_persistent_bucket(env: &Env) -> u32 {
         let id: u64 = next % count;
         let key = DataKey::StreamAddr(id);
         if env.storage().persistent().has(&key) {
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, THRESHOLD, EXTEND_TO);
+            bump_persistent(env, &key);
             touched += 1;
         }
         new_last = id;
