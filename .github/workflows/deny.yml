@@ -11,8 +11,13 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
+        # Every check configured in deny.toml must appear here, or a section can
+        # silently stop being enforced: `[bans]` was configured but never listed
+        # in the matrix, so duplicate-crate / banned-crate regressions reached
+        # main unblocked (issue #656).
         checks:
           - advisories
+          - bans
           - licenses
     steps:
       - uses: actions/checkout@v4

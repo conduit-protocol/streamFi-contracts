@@ -38,20 +38,26 @@ use storage::DataKey;
 /// Defaults to `false` when the key has never been set — e.g. a governor
 /// that was initialized before this feature existed. This keeps the flag
 /// backward-compatible: an absent entry means "running normally".
+///
+/// Delegates to [`drip_common::pause::is_paused`], which owns the flag
+/// read so every sibling contract reads it identically.
 fn is_paused(env: &Env) -> bool {
-    env.storage()
-        .instance()
-        .get(&DataKey::Paused)
-        .unwrap_or(false)
+    drip_common::pause::is_paused(env, &DataKey::Paused)
+}
+
+/// Writes the emergency-pause flag. Only `governor_pause`/`governor_unpause`
+/// call this, and both have already gated the caller and the transition.
+fn set_paused(env: &Env, paused: bool) {
+    drip_common::pause::set_paused(env, &DataKey::Paused, paused);
 }
 
 /// Assert that the governor is not paused. Returns `ContractPaused` if it is.
+///
+/// Delegates to the protocol-wide gate [`drip_common::pause::require_not_paused`]
+/// and maps the shared `PausedError` onto the governor's own `Error` — the same
+/// gate `DripFactory`, `TwapOracle`, and `TokenVault` run.
 fn assert_not_paused(env: &Env) -> Result<(), Error> {
-    if is_paused(env) {
-        Err(Error::ContractPaused)
-    } else {
-        Ok(())
-    }
+    drip_common::pause::require_not_paused(env, &DataKey::Paused).map_err(|_| Error::ContractPaused)
 }
 
 #[contract]
@@ -172,7 +178,7 @@ impl DripGovernor {
         if is_paused(&env) {
             return Err(Error::AlreadyPaused);
         }
-        env.storage().instance().set(&DataKey::Paused, &true);
+        set_paused(&env, true);
         events::paused(&env, &caller, env.ledger().timestamp());
         Ok(())
     }
@@ -185,7 +191,7 @@ impl DripGovernor {
         if !is_paused(&env) {
             return Err(Error::NotPaused);
         }
-        env.storage().instance().set(&DataKey::Paused, &false);
+        set_paused(&env, false);
         events::unpaused(&env, &caller, env.ledger().timestamp());
         Ok(())
     }

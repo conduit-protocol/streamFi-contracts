@@ -118,16 +118,15 @@ pub fn unpaused(env: &Env, caller: &Address, resumed_at: u64) {
         .publish((symbol_short!("unpaused"), caller.clone()), resumed_at);
 }
 
-/// Emitted by `keep_alive` after requesting an instance TTL extension.
+/// Emitted by `upgrade` after the vault's own WASM has been replaced.
 ///
-/// Topics: `("kept_alive")`.
-/// Data: `new_ttl` — the target instance TTL in ledgers.
-///
-/// Soroban SDK 21 does not expose the invocation address to the contract, so
-/// this permissionless endpoint cannot truthfully attribute an event to one.
-pub fn kept_alive(env: &Env, new_ttl: u32) {
+/// Topics: `("upgraded", caller)` — the owner that authorized the swap.
+/// Data:   `upgraded_at` — the ledger timestamp at which the swap took effect.
+/// Mirrors `DripGovernor`/`TwapOracle`, so indexers can follow the vault's
+/// implementation history (issue #651).
+pub fn upgraded(env: &Env, caller: &Address, upgraded_at: u64) {
     env.events()
-        .publish((symbol_short!("kept_alive"),), new_ttl);
+        .publish((symbol_short!("upgraded"), caller.clone()), upgraded_at);
 }
 
 /// Emitted by `propose_owner` (step 1 of the 2-step owner transfer).

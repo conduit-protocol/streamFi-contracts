@@ -113,9 +113,7 @@ impl DripFactory {
         // rejects new streams immediately, without pulling a deposit or paying
         // a TTL extension. Already-deployed streams are independent contracts
         // and are unaffected by this flag.
-        if pause::is_paused(&env) {
-            return Err(Error::ContractPaused);
-        }
+        pause::require_not_paused(&env)?;
 
         // ── Validation ───────────────────────────────────────────────────
         let now = Self::validate_stream_request(
@@ -420,9 +418,7 @@ impl DripFactory {
 
         // ── Auth / pause ─────────────────────────────────────────────────
         sender.require_auth();
-        if pause::is_paused(&env) {
-            return Err(Error::ContractPaused);
-        }
+        pause::require_not_paused(&env)?;
 
         // ── Fetch governor config once for the whole batch ───────────────
         let governor: Address = env
@@ -737,9 +733,7 @@ impl DripFactory {
         // Block upgrades while the factory is under an emergency pause.
         // A paused factory should accept no state mutations at all, even
         // from the governor, so the halt remains comprehensive.
-        if pause::is_paused(&env) {
-            return Err(Error::ContractPaused);
-        }
+        pause::require_not_paused(&env)?;
 
         ttl::bump_instance(&env);
         ttl::bump_persistent_bucket(&env);
@@ -783,9 +777,7 @@ impl DripFactory {
             return Err(Error::InvalidWasmHash);
         }
 
-        if pause::is_paused(&env) {
-            return Err(Error::ContractPaused);
-        }
+        pause::require_not_paused(&env)?;
 
         let stored_version: u32 = env
             .storage()
