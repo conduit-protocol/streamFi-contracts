@@ -299,7 +299,7 @@ fn sender_cannot_clawback_while_paused() {
         &rate,
         &now,
         &(now + duration),
-        &true,  // clawback_enabled = true
+        &true, // clawback_enabled = true
         &2_592_000_u64,
     );
 

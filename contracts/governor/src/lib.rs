@@ -31,8 +31,8 @@ use drip_common::is_zero_address;
 pub use config::GovernorConfig;
 pub use errors::Error;
 pub use role::Role;
-pub use storage::{Proposal, ProposalStatus};
 use storage::DataKey;
+pub use storage::{Proposal, ProposalStatus};
 
 /// Returns `true` when the governor is under an emergency pause.
 ///
@@ -582,11 +582,7 @@ impl DripGovernor {
     /// Only an `Admin` may create proposals. The proposal has an execution
     /// window (in seconds) within which it must be executed after passing.
     /// If not executed within the window, the proposal expires.
-    pub fn propose(
-        env: Env,
-        caller: Address,
-        execution_window_secs: u64,
-    ) -> Result<u64, Error> {
+    pub fn propose(env: Env, caller: Address, execution_window_secs: u64) -> Result<u64, Error> {
         role::require_role(&env, &caller, Role::Admin)?;
         if execution_window_secs == 0 {
             return Err(Error::InvalidParam);

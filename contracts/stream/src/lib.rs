@@ -15,7 +15,7 @@ use drip_common::{is_zero_address, pause};
 
 pub use errors::Error;
 use storage::{DataKey, StreamInfo, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED};
-pub use storage::{SplitConfig, StreamConfig};
+pub use storage::{SplitConfig, StreamConfig, StreamStatus, StreamSummary};
 
 #[contract]
 pub struct DripStream;
@@ -1049,5 +1049,48 @@ impl DripStream {
             .instance()
             .get(&DataKey::StorageVersion)
             .unwrap_or(0)
+    }
+
+    /// Read-only: consolidated stream summary in a single call.
+    pub fn get_summary(env: Env) -> StreamSummary {
+        let info = state::load(&env);
+        let now = env.ledger().timestamp();
+
+        let status = if info.is_cancelled() {
+            StreamStatus::Cancelled
+        } else if info.is_paused() {
+            StreamStatus::Paused
+        } else if now < info.start_time {
+            StreamStatus::Pending
+        } else if info.end_time > 0 && now >= info.end_time {
+            StreamStatus::Completed
+        } else {
+            StreamStatus::Active
+        };
+
+        let streamed_amount = Self::streamed_total(env.clone()).unwrap_or(0);
+
+        let total_amount = if info.end_time > info.start_time {
+            (info.end_time - info.start_time) as i128 * info.rate_per_second
+        } else {
+            let tk = soroban_sdk::token::Client::new(&env, &info.token);
+            tk.balance(&env.current_contract_address()) + info.withdrawn
+        };
+
+        StreamSummary {
+            sender: info.sender,
+            recipient: info.recipient,
+            token: info.token,
+            total_amount,
+            streamed_amount,
+            status,
+            start_time: info.start_time,
+            stop_time: info.end_time,
+        }
+    }
+
+    /// Read-only alias for `get_summary`.
+    pub fn get_stream_summary(env: Env) -> StreamSummary {
+        Self::get_summary(env)
     }
 }

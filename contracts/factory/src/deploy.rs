@@ -1,5 +1,8 @@
 use soroban_sdk::{Address, BytesN, Env, Symbol, Val, Vec};
 
+use crate::errors::Error;
+use crate::storage::DataKey;
+
 /// Deploy a new DripStream instance and call its `initialize` function.
 ///
 /// `deploy_v2` in soroban-sdk is specifically for contracts that use a
@@ -18,7 +21,7 @@ pub fn deploy_stream(
     wasm_hash: &BytesN<32>,
     stream_id: u64,
     init_args: Vec<Val>,
-) -> Address {
+) -> Result<Address, Error> {
     // Derive a deterministic salt from the stream ID so each stream gets a
     // unique, reproducible contract address.
     let salt: BytesN<32> = env
@@ -29,14 +32,21 @@ pub fn deploy_stream(
         ))
         .into();
 
+    let salt_key = DataKey::SaltUsed(salt.clone());
+    if env.storage().persistent().has(&salt_key) {
+        return Err(Error::SaltAlreadyUsed);
+    }
+
     // Step 1: deploy the WASM — no constructor called yet.
     let addr = env
         .deployer()
         .with_current_contract(salt)
         .deploy(wasm_hash.clone());
 
+    env.storage().persistent().set(&salt_key, &true);
+
     // Step 2: call `initialize` on the freshly deployed contract.
     let _: () = env.invoke_contract(&addr, &Symbol::new(env, "initialize"), init_args);
 
-    addr
+    Ok(addr)
 }

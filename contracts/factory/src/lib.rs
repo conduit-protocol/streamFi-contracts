@@ -1,6 +1,6 @@
 #![no_std]
 
-mod deploy;
+pub mod deploy;
 mod errors;
 mod events;
 mod governance;
@@ -319,7 +319,13 @@ impl DripFactory {
             config.force_cancel_pause_secs.into_val(&env),
         ];
 
-        let stream_addr = deploy::deploy_stream(&env, &wasm_hash, stream_id, init_args);
+        let stream_addr = match deploy::deploy_stream(&env, &wasm_hash, stream_id, init_args) {
+            Ok(addr) => addr,
+            Err(e) => {
+                env.storage().instance().set(&DataKey::CreateLock, &false);
+                return Err(e);
+            }
+        };
 
         // Forward the deposit into the newly deployed stream contract.
         let stream_balance_before = tk.balance(&stream_addr);

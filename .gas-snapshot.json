@@ -4,13 +4,13 @@
     "aggregate": 51736,
     "batch_processor/max_batch_size": 13384,
     "batch_processor/preview_batch_100": 31334,
-    "batch_processor/process_batch_100": 22066828,
+    "batch_processor/process_batch_100": 22205202,
     "batch_processor/version": 11863,
-    "pause": 111935,
+    "pause": 115513,
     "protocol_fee_bps": 250899,
     "stream_count": 50700,
     "streams_by_recipient": 71188,
     "streams_by_sender": 60883,
-    "unpause": 119858
+    "unpause": 134075
   }
 }

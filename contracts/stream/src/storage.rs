@@ -61,6 +61,31 @@ pub struct SplitConfig {
 /// Alias for SplitConfig to support split recipients.
 pub type StreamConfig = SplitConfig;
 
+/// Operational status of a stream.
+#[contracttype]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StreamStatus {
+    Pending = 0,
+    Active = 1,
+    Paused = 2,
+    Cancelled = 3,
+    Completed = 4,
+}
+
+/// Consolidated state summary for a stream.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamSummary {
+    pub sender: Address,
+    pub recipient: Address,
+    pub token: Address,
+    pub total_amount: i128,
+    pub streamed_amount: i128,
+    pub status: StreamStatus,
+    pub start_time: u64,
+    pub stop_time: u64,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamInfo {

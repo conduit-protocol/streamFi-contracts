@@ -5,7 +5,7 @@ mod ttl;
 #[cfg(test)]
 mod tests;
 
-use drip_common::{is_zero_address, ttl};
+use drip_common::is_zero_address;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
     Symbol, Vec,
@@ -45,6 +45,8 @@ const VERSION: u32 = 2;
 pub enum DataKey {
     /// Address allowed to call `upgrade`. Set by `initialize`.
     Admin,
+    /// Temporary lock during batch execution to prevent reentrancy loops.
+    ReentrancyLock,
 }
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -76,10 +78,27 @@ pub enum Error {
     AlreadyInitialized = 8,
     /// `upgrade` was called before `initialize` has set an admin.
     NotInitialized = 9,
+    /// Another batch execution or reentrant call is already in progress.
+    ReentrancyForbidden = 10,
 }
 
 #[contract]
 pub struct BatchTransferProcessor;
+
+/// Emitted by `initialize` when the processor's admin is first set.
+fn event_initialized(env: &Env, admin: &Address) {
+    env.events()
+        .publish((symbol_short!("init"), admin.clone()), admin.clone());
+}
+
+/// Emitted by `upgrade` after the processor's own WASM has been replaced.
+///
+/// Topics: `("upgraded", caller)` — the admin that authorized the swap.
+/// Data:   `upgraded_at` — the ledger timestamp at which the swap took effect.
+fn event_upgraded(env: &Env, caller: &Address, upgraded_at: u64) {
+    env.events()
+        .publish((symbol_short!("upgraded"), caller.clone()), upgraded_at);
+}
 
 /// Checks 1–4 of the documented `process_batch` validation order: length,
 /// batch size, per-amount sign, and checked accumulation of the total.
@@ -177,7 +196,7 @@ impl BatchTransferProcessor {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
-        ttl::bump_instance(&env);
+        ttl::bump(&env);
         env.storage().instance().set(&DataKey::Admin, &admin);
         event_initialized(&env, &admin);
         Ok(())
@@ -317,6 +336,14 @@ impl BatchTransferProcessor {
         // storage, exactly like the other three contracts' fail-early paths.
         ttl::bump(&env);
 
+        // ── Reentrancy guard ─────────────────────────────────────────────────
+        if env.storage().temporary().has(&DataKey::ReentrancyLock) {
+            return Err(Error::ReentrancyForbidden);
+        }
+        env.storage()
+            .temporary()
+            .set(&DataKey::ReentrancyLock, &true);
+
         // ── Auth ─────────────────────────────────────────────────────────────
         funder.require_auth();
 
@@ -332,6 +359,8 @@ impl BatchTransferProcessor {
         for (recipient, amount) in recipients.iter().zip(amounts.iter()) {
             tk.transfer(&contract_addr, &recipient, &amount);
         }
+
+        env.storage().temporary().remove(&DataKey::ReentrancyLock);
 
         // Emitted only after the fan-out above succeeds: a reverted transfer
         // rolls the whole transaction back, so this event never describes a
@@ -440,7 +469,7 @@ impl BatchTransferProcessor {
             return Err(Error::InvalidWasmHash);
         }
 
-        ttl::bump_instance(&env);
+        ttl::bump(&env);
         env.deployer().update_current_contract_wasm(new_wasm_hash);
         event_upgraded(&env, &caller, env.ledger().timestamp());
         Ok(())

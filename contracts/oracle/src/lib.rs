@@ -2,7 +2,8 @@
 
 use drip_common::{pause, rbac, ttl};
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
+    Symbol, Vec,
 };
 
 /// Maximum number of distinct price feeders the oracle will track. Caps the
@@ -15,6 +16,9 @@ use soroban_sdk::{
 /// bounded to keep aggregation within the transaction budget. 32 feeders is
 /// ample for a TWAP median and keeps `get_twap_price` well under budget
 /// (32 gets + insertion sort).
+/// Standard precision scale for pair price calculations (8 decimals).
+pub const PRICE_PRECISION: u128 = 100_000_000;
+
 const MAX_SUBMITTERS: u32 = 32;
 
 /// Extends the instance storage TTL so the oracle's entries
@@ -93,6 +97,10 @@ pub enum DataKey {
     /// `DripGovernor::DataKey::RoleMembers`, closing the gap noted in the
     /// off-chain tooling audit.
     RoleMembers(Role),
+    /// Direct pair price by token Address (base, quote).
+    PairPrice(Address, Address),
+    /// Direct pair price by Symbol (base, quote).
+    PairPriceSymbol(Symbol, Symbol),
 }
 
 /// Configuration parameters for the TWAP oracle.
@@ -241,6 +249,8 @@ pub enum Error {
     InsufficientQuorum = 1020,
     /// The WASM hash provided to `upgrade` is all zeros (invalid).
     InvalidWasmHash = 1021,
+    /// Price feed not found for requested pair.
+    PriceNotFound = 1022,
 }
 
 #[contract]
@@ -761,6 +771,132 @@ impl TwapOracle {
         }
 
         Ok(value as u64)
+    }
+
+    /// Sets the price for a token pair (base/quote) identified by `Address`.
+    ///
+    /// Requires that caller is an authorized PriceFeeder or Admin, and that
+    /// the oracle is not paused. Rejects zero price with [`Error::InvalidPrice`].
+    pub fn set_price(
+        env: Env,
+        caller: Address,
+        base: Address,
+        quote: Address,
+        price: u128,
+    ) -> Result<(), Error> {
+        require_not_paused(&env)?;
+        require_role_or_admin(&env, &caller, Role::PriceFeeder)?;
+        if price == 0 {
+            return Err(Error::InvalidPrice);
+        }
+        bump_instance(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::PairPrice(base, quote), &price);
+        Ok(())
+    }
+
+    /// Fetches the direct price for a token pair (base/quote) identified by `Address`.
+    ///
+    /// Returns [`Error::PriceNotFound`] if no direct feed exists.
+    pub fn get_price(env: Env, base: Address, quote: Address) -> Result<u128, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::PairPrice(base, quote))
+            .ok_or(Error::PriceNotFound)
+    }
+
+    /// Fetches the inverted price for a token pair (base/quote) identified by `Address`.
+    ///
+    /// Returns the direct feed price if found; otherwise, if the reciprocal
+    /// feed (quote/base) is found, calculates and returns:
+    /// `(PRICE_PRECISION^2 / price)`
+    /// Returns [`Error::PriceNotFound`] if neither feed exists.
+    pub fn get_price_inverted(env: Env, base: Address, quote: Address) -> Result<u128, Error> {
+        if let Some(price) = env
+            .storage()
+            .instance()
+            .get::<_, u128>(&DataKey::PairPrice(base.clone(), quote.clone()))
+        {
+            return Ok(price);
+        }
+
+        if let Some(price) = env
+            .storage()
+            .instance()
+            .get::<_, u128>(&DataKey::PairPrice(quote, base))
+        {
+            if price == 0 {
+                return Err(Error::InvalidPrice);
+            }
+            let precision_sq = PRICE_PRECISION
+                .checked_mul(PRICE_PRECISION)
+                .ok_or(Error::ArithmeticOverflow)?;
+            let inverted = precision_sq
+                .checked_div(price)
+                .ok_or(Error::ArithmeticOverflow)?;
+            return Ok(inverted);
+        }
+
+        Err(Error::PriceNotFound)
+    }
+
+    /// Sets the price for a pair identified by `Symbol` (e.g. XLM/USDC).
+    pub fn set_price_symbol(
+        env: Env,
+        caller: Address,
+        base: Symbol,
+        quote: Symbol,
+        price: u128,
+    ) -> Result<(), Error> {
+        require_not_paused(&env)?;
+        require_role_or_admin(&env, &caller, Role::PriceFeeder)?;
+        if price == 0 {
+            return Err(Error::InvalidPrice);
+        }
+        bump_instance(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::PairPriceSymbol(base, quote), &price);
+        Ok(())
+    }
+
+    /// Fetches the direct price for a symbol pair.
+    pub fn get_price_symbol(env: Env, base: Symbol, quote: Symbol) -> Result<u128, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::PairPriceSymbol(base, quote))
+            .ok_or(Error::PriceNotFound)
+    }
+
+    /// Fetches the inverted price for a symbol pair.
+    pub fn get_price_inverted_symbol(env: Env, base: Symbol, quote: Symbol) -> Result<u128, Error> {
+        if let Some(price) = env
+            .storage()
+            .instance()
+            .get::<_, u128>(&DataKey::PairPriceSymbol(base.clone(), quote.clone()))
+        {
+            return Ok(price);
+        }
+
+        if let Some(price) = env
+            .storage()
+            .instance()
+            .get::<_, u128>(&DataKey::PairPriceSymbol(quote, base))
+        {
+            if price == 0 {
+                return Err(Error::InvalidPrice);
+            }
+            let precision_sq = PRICE_PRECISION
+                .checked_mul(PRICE_PRECISION)
+                .ok_or(Error::ArithmeticOverflow)?;
+            let inverted = precision_sq
+                .checked_div(price)
+                .ok_or(Error::ArithmeticOverflow)?;
+            return Ok(inverted);
+        }
+
+        Err(Error::PriceNotFound)
     }
 
     // ── Emergency pause (Pauser or Admin-gated) ──────────────────────────
@@ -2831,6 +2967,122 @@ mod tests {
         assert!(
             result.is_ok(),
             "first-ever submission must bypass the interval check"
+        );
+    }
+
+    // ── Pair price and inverted price calculation tests ───────────────────
+
+    #[test]
+    fn get_price_returns_direct_price_or_price_not_found() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let token_a = Address::generate(&env);
+        let token_b = Address::generate(&env);
+
+        // Not set yet
+        assert_eq!(
+            client.try_get_price(&token_a, &token_b),
+            Err(Ok(Error::PriceNotFound))
+        );
+
+        // Admin sets price
+        client.set_price(&admin, &token_a, &token_b, &20_000_000u128);
+
+        // Direct lookup returns stored price
+        assert_eq!(client.get_price(&token_a, &token_b), 20_000_000u128);
+
+        // Reverse lookup on get_price returns PriceNotFound
+        assert_eq!(
+            client.try_get_price(&token_b, &token_a),
+            Err(Ok(Error::PriceNotFound))
+        );
+    }
+
+    #[test]
+    fn get_price_inverted_calculates_reciprocal_when_direct_feed_absent() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let xlm = Address::generate(&env);
+        let usdc = Address::generate(&env);
+
+        // When neither feed exists, get_price_inverted returns PriceNotFound
+        assert_eq!(
+            client.try_get_price_inverted(&xlm, &usdc),
+            Err(Ok(Error::PriceNotFound))
+        );
+
+        // Set XLM/USDC price = 0.20 (20_000_000 with 8 decimals)
+        let xlm_price = 20_000_000u128;
+        client.set_price(&admin, &xlm, &usdc, &xlm_price);
+
+        // Direct feed query via get_price_inverted returns direct price
+        assert_eq!(client.get_price_inverted(&xlm, &usdc), xlm_price);
+
+        // Reverse query USDC/XLM via get_price_inverted:
+        // (PRICE_PRECISION^2 / price) = (10^16 / 20_000_000) = 500_000_000 (5.00 XLM per USDC)
+        let expected_inverted = 500_000_000u128;
+        assert_eq!(client.get_price_inverted(&usdc, &xlm), expected_inverted);
+    }
+
+    #[test]
+    fn pair_price_symbols_direct_and_inverted() {
+        let (_env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let xlm = symbol_short!("XLM");
+        let usdc = symbol_short!("USDC");
+
+        // Set XLM/USDC = 0.20
+        client.set_price_symbol(&admin, &xlm, &usdc, &20_000_000u128);
+
+        // Direct
+        assert_eq!(client.get_price_symbol(&xlm, &usdc), 20_000_000u128);
+        assert_eq!(
+            client.get_price_inverted_symbol(&xlm, &usdc),
+            20_000_000u128
+        );
+
+        // Reverse get_price_symbol gives PriceNotFound
+        assert_eq!(
+            client.try_get_price_symbol(&usdc, &xlm),
+            Err(Ok(Error::PriceNotFound))
+        );
+
+        // Reverse get_price_inverted_symbol gives inverted price: 10^16 / 20_000_000 = 500_000_000
+        assert_eq!(
+            client.get_price_inverted_symbol(&usdc, &xlm),
+            500_000_000u128
+        );
+    }
+
+    #[test]
+    fn set_price_guards_auth_zero_and_pause() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let token_a = Address::generate(&env);
+        let token_b = Address::generate(&env);
+        let unauth = Address::generate(&env);
+
+        // Unauthorized caller rejected
+        assert_eq!(
+            client.try_set_price(&unauth, &token_a, &token_b, &100_000_000u128),
+            Err(Ok(Error::NotAuthorized))
+        );
+
+        // Zero price rejected
+        assert_eq!(
+            client.try_set_price(&admin, &token_a, &token_b, &0u128),
+            Err(Ok(Error::InvalidPrice))
+        );
+
+        // Pause blocks setting price
+        client.pause(&admin);
+        assert_eq!(
+            client.try_set_price(&admin, &token_a, &token_b, &100_000_000u128),
+            Err(Ok(Error::ContractPaused))
         );
     }
 }

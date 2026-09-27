@@ -61,4 +61,6 @@ pub enum Error {
     /// governor, which would leave every `create_stream` call pointing at a
     /// non-existent governor contract.
     InvalidGovernor = 31,
+    /// The salt used for deploying the stream contract has already been used.
+    SaltAlreadyUsed = 32,
 }

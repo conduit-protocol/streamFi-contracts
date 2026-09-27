@@ -2409,3 +2409,56 @@ fn split_recipient_validation_rejects_invalid_inputs() {
         Err(Ok(Error::InvalidRecipient))
     );
 }
+
+#[test]
+fn test_get_summary_returns_consolidated_state() {
+    let s = Setup::new(100, 3600, false);
+    let now = s.env.ledger().timestamp();
+    let summary = s.client.get_summary();
+    assert_eq!(summary.sender, s.sender);
+    assert_eq!(summary.recipient, s.recipient);
+    assert_eq!(summary.token, s.token.address);
+    assert_eq!(summary.total_amount, 360_000);
+    assert_eq!(summary.streamed_amount, 0);
+    assert_eq!(summary.status, crate::storage::StreamStatus::Active);
+    assert_eq!(summary.start_time, now);
+    assert_eq!(summary.stop_time, now + 3600);
+
+    // Also verify get_stream_summary alias
+    let alias_summary = s.client.get_stream_summary();
+    assert_eq!(summary, alias_summary);
+
+    // Advance 100 seconds
+    s.advance_secs(100);
+    let summary2 = s.client.get_summary();
+    assert_eq!(summary2.streamed_amount, 10_000);
+    assert_eq!(summary2.status, crate::storage::StreamStatus::Active);
+
+    // Pause the stream
+    s.client.pause(&s.sender);
+    let paused_summary = s.client.get_summary();
+    assert_eq!(paused_summary.status, crate::storage::StreamStatus::Paused);
+
+    // Resume the stream
+    s.client.resume(&s.sender);
+    let active_summary = s.client.get_summary();
+    assert_eq!(active_summary.status, crate::storage::StreamStatus::Active);
+
+    // Advance past end time
+    s.advance_secs(4000);
+    let completed_summary = s.client.get_summary();
+    assert_eq!(
+        completed_summary.status,
+        crate::storage::StreamStatus::Completed
+    );
+    assert_eq!(completed_summary.streamed_amount, 360_000);
+
+    // Cancel test on new setup
+    let s2 = Setup::new(100, 3600, false);
+    s2.client.cancel(&s2.sender);
+    let cancelled_summary = s2.client.get_summary();
+    assert_eq!(
+        cancelled_summary.status,
+        crate::storage::StreamStatus::Cancelled
+    );
+}

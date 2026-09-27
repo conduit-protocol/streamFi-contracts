@@ -593,3 +593,23 @@ fn read_only_and_validation_failure_paths_do_not_extend_the_instance_ttl() {
         .as_contract(&s.client.address, || s.env.storage().instance().get_ttl());
     assert_ne!(ttl, 200_000);
 }
+
+#[test]
+fn test_reentrancy_lock_blocks_concurrent_execution() {
+    let s = Setup::new();
+    let recipients = s.recipients(1);
+    let amounts = s.amounts(&[100]);
+
+    // Simulate lock already acquired in temporary storage
+    s.env.as_contract(&s.client.address, || {
+        s.env
+            .storage()
+            .temporary()
+            .set(&crate::DataKey::ReentrancyLock, &true);
+    });
+
+    let result = s
+        .client
+        .try_process_batch(&s.funder, &s.token_addr, &recipients, &amounts);
+    assert_eq!(result, Err(Ok(Error::ReentrancyForbidden)));
+}

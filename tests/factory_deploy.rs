@@ -886,3 +886,30 @@ fn create_stream_charges_and_routes_protocol_fee() {
     }
     assert_eq!(fee_events, 1, "expected exactly one fee event");
 }
+
+#[test]
+fn test_deploy_stream_duplicate_salt_fails() {
+    let env = base_env();
+    let client = deploy_factory(&env);
+    let stream_id = 1u64;
+    let dummy_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let init_args = soroban_sdk::vec![&env];
+
+    let salt: BytesN<32> = env
+        .crypto()
+        .sha256(&soroban_sdk::Bytes::from_array(
+            &env,
+            &stream_id.to_be_bytes(),
+        ))
+        .into();
+
+    env.as_contract(&client.address, || {
+        env.storage().persistent().set(
+            &drip_factory::storage::DataKey::SaltUsed(salt.clone()),
+            &true,
+        );
+
+        let result = drip_factory::deploy::deploy_stream(&env, &dummy_hash, stream_id, init_args);
+        assert_eq!(result, Err(Error::SaltAlreadyUsed));
+    });
+}
