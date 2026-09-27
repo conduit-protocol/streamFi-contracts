@@ -27,4 +27,10 @@ pub enum Error {
     NotPendingAuthority = 11,
     /// The WASM hash provided to `upgrade` is all zeros (invalid).
     InvalidWasmHash = 12,
+    /// Proposal not found.
+    ProposalNotFound = 13,
+    /// Proposal has expired (execution window elapsed).
+    ProposalExpired = 14,
+    /// Proposal has already been executed or cancelled.
+    ProposalNotPending = 15,
 }

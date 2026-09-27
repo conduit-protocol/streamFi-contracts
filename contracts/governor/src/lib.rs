@@ -31,6 +31,7 @@ use drip_common::is_zero_address;
 pub use config::GovernorConfig;
 pub use errors::Error;
 pub use role::Role;
+pub use storage::{Proposal, ProposalStatus};
 use storage::DataKey;
 
 /// Returns `true` when the governor is under an emergency pause.
@@ -571,6 +572,107 @@ impl DripGovernor {
             .instance()
             .set(&DataKey::ForceCancelPauseSecs, &seconds);
         events::set_force_cancel_pause_threshold(&env, &caller, seconds);
+        Ok(())
+    }
+
+    // ── Proposals (Admin-gated) ──────────────────────────────────────────────
+
+    /// Create a new governance proposal.
+    ///
+    /// Only an `Admin` may create proposals. The proposal has an execution
+    /// window (in seconds) within which it must be executed after passing.
+    /// If not executed within the window, the proposal expires.
+    pub fn propose(
+        env: Env,
+        caller: Address,
+        execution_window_secs: u64,
+    ) -> Result<u64, Error> {
+        role::require_role(&env, &caller, Role::Admin)?;
+        if execution_window_secs == 0 {
+            return Err(Error::InvalidParam);
+        }
+        ttl::bump(&env);
+
+        let counter: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProposalCounter)
+            .unwrap_or(0);
+        let proposal_id = counter + 1;
+
+        let proposal = storage::Proposal {
+            author: caller.clone(),
+            created_at: env.ledger().timestamp(),
+            execution_window_secs,
+            status: storage::ProposalStatus::Pending,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Proposal(proposal_id), &proposal);
+        env.storage()
+            .instance()
+            .set(&DataKey::ProposalCounter, &proposal_id);
+
+        Ok(proposal_id)
+    }
+
+    /// Execute a proposal that has passed voting.
+    ///
+    /// Fails with `ProposalExpired` if the execution window has elapsed.
+    /// Fails with `ProposalNotPending` if the proposal has been executed or cancelled.
+    pub fn execute_proposal(env: Env, proposal_id: u64) -> Result<(), Error> {
+        ttl::bump(&env);
+
+        let mut proposal: storage::Proposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::Proposal(proposal_id))
+            .ok_or(Error::ProposalNotFound)?;
+
+        if proposal.status != storage::ProposalStatus::Pending {
+            return Err(Error::ProposalNotPending);
+        }
+
+        let elapsed = env.ledger().timestamp().saturating_sub(proposal.created_at);
+        if elapsed > proposal.execution_window_secs {
+            return Err(Error::ProposalExpired);
+        }
+
+        proposal.status = storage::ProposalStatus::Executed;
+        env.storage()
+            .instance()
+            .set(&DataKey::Proposal(proposal_id), &proposal);
+
+        Ok(())
+    }
+
+    /// Cancel a proposal before voting starts.
+    ///
+    /// Only the proposal author may cancel. Fails with `ProposalNotPending`
+    /// if the proposal has been executed or cancelled.
+    pub fn cancel_proposal(env: Env, caller: Address, proposal_id: u64) -> Result<(), Error> {
+        ttl::bump(&env);
+
+        let mut proposal: storage::Proposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::Proposal(proposal_id))
+            .ok_or(Error::ProposalNotFound)?;
+
+        if caller != proposal.author {
+            return Err(Error::NotAuthorized);
+        }
+
+        if proposal.status != storage::ProposalStatus::Pending {
+            return Err(Error::ProposalNotPending);
+        }
+
+        proposal.status = storage::ProposalStatus::Cancelled;
+        env.storage()
+            .instance()
+            .set(&DataKey::Proposal(proposal_id), &proposal);
+
         Ok(())
     }
 }

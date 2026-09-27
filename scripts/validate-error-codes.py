@@ -37,6 +37,7 @@ def main():
     ]
 
     conflicts = []
+    all_codes = {}  # Track all error codes across contracts
 
     # Validate each contract has no duplicate error codes
     for contract_file in contract_dirs:
@@ -56,12 +57,25 @@ def main():
                 )
             code_to_variant[code] = variant
 
+            # Track code across contracts
+            if code not in all_codes:
+                all_codes[code] = []
+            all_codes[code].append((contract_name, variant))
+
+    # Check for duplicate codes across contracts
+    for code, occurrences in all_codes.items():
+        if len(occurrences) > 1:
+            locations = ", ".join([f"{contract}::{variant}" for contract, variant in occurrences])
+            conflicts.append(
+                f"ERROR: error code {code} defined in multiple contracts: {locations}"
+            )
+
     if conflicts:
         for conflict in conflicts:
             print(conflict)
         sys.exit(1)
     else:
-        print("[OK] All error codes are valid (no duplicates within contracts)")
+        print("[OK] All error codes are valid (no duplicates within or across contracts)")
         sys.exit(0)
 
 if __name__ == '__main__':
