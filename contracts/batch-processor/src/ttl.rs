@@ -18,3 +18,7 @@ pub fn bump(env: &Env) {
         .instance()
         .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
 }
+
+pub fn bump_instance(env: &Env) {
+    bump(env);
+}

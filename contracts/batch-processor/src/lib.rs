@@ -5,14 +5,14 @@ mod ttl;
 #[cfg(test)]
 mod tests;
 
-use drip_common::{is_zero_address, ttl};
+use drip_common::is_zero_address;
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
+    contract, contracterror, contractimpl, contracttype, token, Address, BytesN, Env,
     Symbol, Vec,
 };
 
-/// Maximum number of transfers permitted in a single batch.
-const MAX_BATCH_SIZE: u32 = 100;
+/// Maximum number of transfers permitted in a single batch (CPU instruction limit constraint).
+pub const MAX_BATCH_SIZE: u32 = 30;
 
 /// Behaviour version of this deployment.
 ///
@@ -76,6 +76,21 @@ pub enum Error {
     AlreadyInitialized = 8,
     /// `upgrade` was called before `initialize` has set an admin.
     NotInitialized = 9,
+}
+
+impl Error {
+    /// Alias for BatchTooLarge per issue #677.
+    #[allow(non_upper_case_globals)]
+    pub const BatchSizeExceeded: Error = Error::BatchTooLarge;
+    pub const BATCH_SIZE_EXCEEDED: Error = Error::BatchTooLarge;
+}
+
+fn event_initialized(env: &Env, admin: &Address) {
+    env.events().publish((Symbol::new(env, "initialized"), admin.clone()), ());
+}
+
+fn event_upgraded(env: &Env, caller: &Address, timestamp: u64) {
+    env.events().publish((Symbol::new(env, "upgraded"), caller.clone()), timestamp);
 }
 
 #[contract]
