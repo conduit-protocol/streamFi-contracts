@@ -47,7 +47,19 @@ pub enum DataKey {
     /// path free of cross-contract calls; a stream deployed directly
     /// (bypassing the factory) falls back to the historical 30-day default.
     ForceCancelPauseThresholdSecs,
+    /// Optional split configuration dividing claims between recipient and secondary recipient.
+    SplitConfig,
 }
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SplitConfig {
+    pub secondary_recipient: Address,
+    pub split_bps: u32,
+}
+
+/// Alias for SplitConfig to support split recipients.
+pub type StreamConfig = SplitConfig;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]

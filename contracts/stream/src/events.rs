@@ -175,3 +175,27 @@ pub fn operator_revoked(env: &Env, sender: &Address) {
     env.events()
         .publish((symbol_short!("rm_op"), sender.clone(), sequence), ());
 }
+
+pub fn split_recipient_set(
+    env: &Env,
+    caller: &Address,
+    secondary_recipient: &Address,
+    split_bps: u32,
+) {
+    let sequence = next_sequence(env);
+    env.events().publish(
+        (
+            symbol_short!("set_split"),
+            caller.clone(),
+            secondary_recipient.clone(),
+            sequence,
+        ),
+        split_bps,
+    );
+}
+
+pub fn split_recipient_removed(env: &Env, caller: &Address) {
+    let sequence = next_sequence(env);
+    env.events()
+        .publish((symbol_short!("rm_split"), caller.clone(), sequence), ());
+}

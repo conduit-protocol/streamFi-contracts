@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { getCursor, saveCursor, ingestPage, pollOnce } from "../src/poller.js";
+import { getCursor, saveCursor, ingestPage, pollOnce, startPollLoop } from "../src/poller.js";
+import { setupGracefulShutdown } from "../src/worker.js";
 import type { RawEvent } from "../src/handlers.js";
 
 // ---------------------------------------------------------------------------
@@ -190,4 +191,68 @@ describe("poller", () => {
       expect(calls[1][0]).toContain("GREATEST");
     });
   });
+
+  describe("startPollLoop & graceful shutdown", () => {
+    it("exits startPollLoop when AbortSignal is triggered", async () => {
+      const fetchEvents = vi.fn(async () => []);
+      const pool = mockPool(client);
+      client.query = vi.fn(async (sql: string) => {
+        if (sql.includes("SELECT last_ledger")) return { rows: [{ last_ledger: 10 }], rowCount: 1 } as never;
+        return { rows: [], rowCount: 0 } as never;
+      }) as never;
+
+      const abortController = new AbortController();
+      // Abort after 50ms
+      setTimeout(() => abortController.abort(), 50);
+
+      const loopPromise = startPollLoop(pool, fetchEvents, {
+        intervalMs: 1000,
+        signal: abortController.signal,
+      });
+
+      await expect(loopPromise).resolves.toBeUndefined();
+      expect(abortController.signal.aborted).toBe(true);
+    });
+
+    it("setupGracefulShutdown awaits in-flight batch and releases advisory lock", async () => {
+      const lockClient = mockClient();
+      const pool = {
+        connect: vi.fn(),
+        end: vi.fn(async () => undefined),
+      } as unknown as Pool;
+
+      const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+      const abortController = new AbortController();
+
+      let batchFinished = false;
+      const fakeBatchPromise = new Promise<void>((resolve) => {
+        setTimeout(() => {
+          batchFinished = true;
+          resolve();
+        }, 30);
+      });
+
+      const handleShutdown = setupGracefulShutdown(
+        pool,
+        lockClient,
+        abortController,
+        () => fakeBatchPromise
+      );
+
+      await handleShutdown("SIGTERM");
+
+      expect(abortController.signal.aborted).toBe(true);
+      expect(batchFinished).toBe(true);
+      expect(lockClient.query).toHaveBeenCalledWith(
+        expect.stringContaining("SELECT pg_advisory_unlock"),
+        expect.any(Array)
+      );
+      expect(lockClient.release).toHaveBeenCalled();
+      expect(pool.end).toHaveBeenCalled();
+      expect(exitSpy).toHaveBeenCalledWith(0);
+
+      exitSpy.mockRestore();
+    });
+  });
 });
+

@@ -264,7 +264,6 @@ fn pause_before_start_rejected() {
 // ── Cancel ────────────────────────────────────────────────────────────────────
 
 #[test]
-#[test]
 fn pause_after_end_rejected() {
     let s = Setup::new(100, 3600, false);
     // Advance past the end time.
@@ -276,6 +275,7 @@ fn pause_after_end_rejected() {
     assert_eq!(result, Err(Ok(Error::StreamEnded)));
 }
 
+#[test]
 fn cancel_before_start_refunds_full_deposit() {
     let s = Setup::new(100, 3600, false);
     let deposit = 100 * 3600;
@@ -1890,6 +1890,7 @@ fn flag_getters_map_to_correct_bit() {
         event_sequence: 0,
     };
 
+    #[allow(clippy::type_complexity)]
     let cases: [(u32, fn(&StreamInfo) -> bool, &str); 3] = [
         (FLAG_PAUSED, StreamInfo::is_paused, "paused"),
         (
@@ -2292,4 +2293,119 @@ fn stream_exposes_exactly_one_reentrancy_guard_api() {
 
     let _lock: fn(&Env) -> Result<(), Error> = crate::state::lock;
     let _unlock: fn(&Env) = crate::state::unlock;
+}
+
+// ── Split recipient tests ─────────────────────────────────────────────────
+
+#[test]
+fn set_split_recipient_and_withdraw_splits_proportionally() {
+    let s = Setup::new(100, 3600, false);
+    let secondary = Address::generate(&s.env);
+
+    // Sender configures split of 2000 bps (20%)
+    s.client.set_split_recipient(&s.sender, &secondary, &2000);
+
+    let split = s.client.split_recipient().unwrap();
+    assert_eq!(split.secondary_recipient, secondary);
+    assert_eq!(split.split_bps, 2000);
+
+    // Advance 10 seconds -> 1000 tokens accrued
+    s.advance_secs(10);
+
+    let recipient_before = s.token.balance(&s.recipient);
+    let secondary_before = s.token.balance(&secondary);
+
+    s.client.withdraw(&1000);
+
+    let recipient_after = s.token.balance(&s.recipient);
+    let secondary_after = s.token.balance(&secondary);
+
+    // 80% to primary (800), 20% to secondary (200)
+    assert_eq!(recipient_after - recipient_before, 800);
+    assert_eq!(secondary_after - secondary_before, 200);
+}
+
+#[test]
+fn recipient_can_configure_and_remove_split() {
+    let s = Setup::new(100, 3600, false);
+    let secondary = Address::generate(&s.env);
+
+    // Recipient configures split of 3000 bps (30%)
+    s.client
+        .set_split_recipient(&s.recipient, &secondary, &3000);
+    assert_eq!(s.client.split_recipient().unwrap().split_bps, 3000);
+
+    // Recipient removes split
+    s.client.remove_split_recipient(&s.recipient);
+    assert_eq!(s.client.split_recipient(), None);
+
+    s.advance_secs(10);
+    let recipient_before = s.token.balance(&s.recipient);
+    let secondary_before = s.token.balance(&secondary);
+
+    s.client.withdraw(&1000);
+
+    assert_eq!(s.token.balance(&s.recipient) - recipient_before, 1000);
+    assert_eq!(s.token.balance(&secondary) - secondary_before, 0);
+}
+
+#[test]
+fn cancel_stream_splits_accrued_tokens_proportionally() {
+    let s = Setup::new(100, 3600, false);
+    let secondary = Address::generate(&s.env);
+
+    s.client.set_split_recipient(&s.sender, &secondary, &2500); // 25%
+
+    // Advance 20 seconds -> 2000 tokens accrued
+    s.advance_secs(20);
+
+    let recipient_before = s.token.balance(&s.recipient);
+    let secondary_before = s.token.balance(&secondary);
+
+    s.client.cancel(&s.sender);
+
+    // 75% to primary (1500), 25% to secondary (500)
+    assert_eq!(s.token.balance(&s.recipient) - recipient_before, 1500);
+    assert_eq!(s.token.balance(&secondary) - secondary_before, 500);
+}
+
+#[test]
+fn split_recipient_validation_rejects_invalid_inputs() {
+    let s = Setup::new(100, 3600, false);
+    let stranger = Address::generate(&s.env);
+    let secondary = Address::generate(&s.env);
+
+    // Unauthorized caller
+    assert_eq!(
+        s.client
+            .try_set_split_recipient(&stranger, &secondary, &2000),
+        Err(Ok(Error::NotAuthorized))
+    );
+
+    // Zero basis points
+    assert_eq!(
+        s.client.try_set_split_recipient(&s.sender, &secondary, &0),
+        Err(Ok(Error::InvalidAmount))
+    );
+
+    // >= 10_000 basis points
+    assert_eq!(
+        s.client
+            .try_set_split_recipient(&s.sender, &secondary, &10000),
+        Err(Ok(Error::InvalidAmount))
+    );
+
+    // Secondary cannot be sender
+    assert_eq!(
+        s.client
+            .try_set_split_recipient(&s.sender, &s.sender, &2000),
+        Err(Ok(Error::InvalidRecipient))
+    );
+
+    // Secondary cannot be recipient
+    assert_eq!(
+        s.client
+            .try_set_split_recipient(&s.sender, &s.recipient, &2000),
+        Err(Ok(Error::InvalidRecipient))
+    );
 }

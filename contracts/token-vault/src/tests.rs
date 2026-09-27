@@ -5,12 +5,12 @@ extern crate std;
 use soroban_sdk::{
     symbol_short,
     testutils::{storage::Instance as _, Address as _, Events as _},
-    token, Address, Env, IntoVal, String, TryIntoVal,
+    token, Address, Env, IntoVal, String, Symbol, TryIntoVal,
 };
 
 use crate::errors::Error;
 use crate::storage;
-use crate::TokenVaultClient;
+use crate::{DepositSpec, TokenVaultClient};
 
 struct Setup {
     env: Env,
@@ -376,11 +376,11 @@ fn effective_withdraw_limit_reflects_owner_balance_and_operator_cap() {
     s.client.set_operator(&s.owner, &op);
     s.client.set_operator_withdraw_limit(&s.owner, &800);
 
-    assert_eq!(s.client.effective_withdraw_limit(&s.owner), Ok(500));
-    assert_eq!(s.client.effective_withdraw_limit(&op), Ok(500));
+    assert_eq!(s.client.effective_withdraw_limit(&s.owner), 500);
+    assert_eq!(s.client.effective_withdraw_limit(&op), 500);
 
     s.client.set_operator_withdraw_limit(&s.owner, &200);
-    assert_eq!(s.client.effective_withdraw_limit(&op), Ok(200));
+    assert_eq!(s.client.effective_withdraw_limit(&op), 200);
 }
 
 #[test]
@@ -685,7 +685,7 @@ fn keep_alive_emits_target_ttl() {
     let (_, topics, data) = events.last().unwrap();
     assert_eq!(
         topics.clone(),
-        (symbol_short!("kept_alive"),).into_val(&s.env)
+        (Symbol::new(&s.env, "kept_alive"),).into_val(&s.env)
     );
     let new_ttl: u32 = data.clone().try_into_val(&s.env).unwrap();
     assert_eq!(new_ttl, crate::TTL_EXTEND_TO);
@@ -1052,7 +1052,6 @@ fn owner_transfer_emits_events() {
 }
 
 #[test]
-#[test]
 fn re_propose_overwrites_pending_owner() {
     let s = Setup::new(1_000_000);
     let first_pending = Address::generate(&s.env);
@@ -1107,6 +1106,7 @@ fn operations_during_pending_transfer_succeed() {
     assert_eq!(s.client.owner(), Some(new_owner));
 }
 
+#[test]
 fn uninitialized_vault_rejects_owner_transfer() {
     let env = Env::default();
     env.mock_all_auths();
@@ -1123,5 +1123,127 @@ fn uninitialized_vault_rejects_owner_transfer() {
     assert_eq!(
         client.try_accept_owner(&caller),
         Err(Ok(Error::NoPendingOwner))
+    );
+}
+
+// ── Batch deposit tests ───────────────────────────────────────────────────
+
+#[test]
+fn batch_deposit_multiple_accounts_succeeds() {
+    let s = Setup::new(1_000_000);
+    let sponsor1 = Address::generate(&s.env);
+    let sponsor2 = Address::generate(&s.env);
+
+    let asset = token::StellarAssetClient::new(&s.env, &s.token.address);
+    asset.mint(&sponsor1, &10_000);
+    asset.mint(&sponsor2, &20_000);
+
+    let deposits = soroban_sdk::vec![
+        &s.env,
+        DepositSpec {
+            from: sponsor1.clone(),
+            amount: 5_000,
+        },
+        DepositSpec {
+            from: sponsor2.clone(),
+            amount: 15_000,
+        },
+    ];
+
+    s.client.batch_deposit(&deposits);
+
+    assert_eq!(s.token.balance(&s.client.address), 20_000);
+    assert_eq!(s.token.balance(&sponsor1), 5_000);
+    assert_eq!(s.token.balance(&sponsor2), 5_000);
+}
+
+#[test]
+fn batch_deposit_empty_fails() {
+    let s = Setup::new(1_000_000);
+    let empty_deposits = soroban_sdk::vec![&s.env];
+
+    assert_eq!(
+        s.client.try_batch_deposit(&empty_deposits),
+        Err(Ok(Error::InvalidAmount))
+    );
+}
+
+#[test]
+fn batch_deposit_zero_or_negative_amount_fails() {
+    let s = Setup::new(1_000_000);
+    let sponsor1 = Address::generate(&s.env);
+    let sponsor2 = Address::generate(&s.env);
+
+    let asset = token::StellarAssetClient::new(&s.env, &s.token.address);
+    asset.mint(&sponsor1, &10_000);
+    asset.mint(&sponsor2, &10_000);
+
+    let deposits = soroban_sdk::vec![
+        &s.env,
+        DepositSpec {
+            from: sponsor1,
+            amount: 5_000,
+        },
+        DepositSpec {
+            from: sponsor2,
+            amount: 0,
+        },
+    ];
+
+    assert_eq!(
+        s.client.try_batch_deposit(&deposits),
+        Err(Ok(Error::InvalidAmount))
+    );
+}
+
+#[test]
+fn batch_deposit_limit_exceeded_fails() {
+    let s = Setup::new(10_000);
+    let sponsor1 = Address::generate(&s.env);
+    let sponsor2 = Address::generate(&s.env);
+
+    let asset = token::StellarAssetClient::new(&s.env, &s.token.address);
+    asset.mint(&sponsor1, &10_000);
+    asset.mint(&sponsor2, &10_000);
+
+    let deposits = soroban_sdk::vec![
+        &s.env,
+        DepositSpec {
+            from: sponsor1,
+            amount: 6_000,
+        },
+        DepositSpec {
+            from: sponsor2,
+            amount: 5_000,
+        },
+    ];
+
+    assert_eq!(
+        s.client.try_batch_deposit(&deposits),
+        Err(Ok(Error::LimitExceeded))
+    );
+}
+
+#[test]
+fn batch_deposit_while_paused_fails() {
+    let s = Setup::new(1_000_000);
+    let sponsor = Address::generate(&s.env);
+
+    let asset = token::StellarAssetClient::new(&s.env, &s.token.address);
+    asset.mint(&sponsor, &10_000);
+
+    s.client.pause(&s.owner);
+
+    let deposits = soroban_sdk::vec![
+        &s.env,
+        DepositSpec {
+            from: sponsor,
+            amount: 5_000,
+        },
+    ];
+
+    assert_eq!(
+        s.client.try_batch_deposit(&deposits),
+        Err(Ok(Error::ContractPaused))
     );
 }

@@ -7,9 +7,9 @@ mod storage;
 mod tests;
 mod ttl;
 
-use drip_common::is_zero_address;
+use drip_common::{is_zero_address, TTL_EXTEND_TO};
 use errors::Error;
-use soroban_sdk::{contract, contractimpl, token, Address, BytesN, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, Env, Vec};
 use storage::{
     get_max_limit, get_operator, get_operator_withdraw_limit, get_owner, get_pending_owner,
     get_pending_owner_proposer, get_token, is_paused, remove_operator, remove_pending_owner,
@@ -17,6 +17,13 @@ use storage::{
     set_owner, set_paused, set_pending_owner, set_pending_owner_proposer, set_token, DataKey,
 };
 use ttl::bump_instance;
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DepositSpec {
+    pub from: Address,
+    pub amount: i128,
+}
 
 #[contract]
 pub struct TokenVault;
@@ -142,6 +149,57 @@ impl TokenVault {
 
         bump_instance(&env);
         events::deposited(&env, &from, amount, new_balance);
+        Ok(())
+    }
+
+    /// Consolidates deposits from multiple accounts in a single transaction.
+    ///
+    /// Requires authorization from each depositor individually.
+    pub fn batch_deposit(env: Env, deposits: Vec<DepositSpec>) -> Result<(), Error> {
+        assert_not_paused(&env)?;
+        if deposits.is_empty() {
+            return Err(Error::InvalidAmount);
+        }
+        let _owner = get_owner(&env).ok_or(Error::NotInitialized)?;
+        let max = get_max_limit(&env).ok_or(Error::NotInitialized)?;
+
+        let mut total_deposit: i128 = 0;
+        for deposit in deposits.iter() {
+            if deposit.amount <= 0 {
+                return Err(Error::InvalidAmount);
+            }
+            deposit.from.require_auth();
+            total_deposit = total_deposit
+                .checked_add(deposit.amount)
+                .ok_or(Error::ArithmeticOverflow)?;
+        }
+
+        let balance = vault_balance(&env)?;
+        let expected_balance = balance
+            .checked_add(total_deposit)
+            .ok_or(Error::ArithmeticOverflow)?;
+        if expected_balance > max {
+            return Err(Error::LimitExceeded);
+        }
+
+        let tk = token_client(&env)?;
+        let contract_addr = env.current_contract_address();
+
+        for deposit in deposits.iter() {
+            tk.transfer(&deposit.from, &contract_addr, &deposit.amount);
+            let current_balance = tk.balance(&contract_addr);
+            events::deposited(&env, &deposit.from, deposit.amount, current_balance);
+        }
+
+        let final_balance = tk.balance(&contract_addr);
+        if final_balance > max {
+            return Err(Error::LimitExceeded);
+        }
+        if final_balance != expected_balance {
+            return Err(Error::DepositTransferFailed);
+        }
+
+        bump_instance(&env);
         Ok(())
     }
 

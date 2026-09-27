@@ -15,6 +15,7 @@ use drip_common::{is_zero_address, pause};
 
 pub use errors::Error;
 use storage::{DataKey, StreamInfo, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED};
+pub use storage::{SplitConfig, StreamConfig};
 
 #[contract]
 pub struct DripStream;
@@ -261,10 +262,29 @@ impl DripStream {
         state::save(env, &updated);
 
         // Perform the transfer, then derive `remaining` from the single balance
-        // captured above. `checked_sub` (rather than a bare `-`) guarantees no
-        // underflow panic even if a fee-on-transfer / rebasing token leaves the
-        // contract with less than `to_send`; the withdrawal is reverted instead.
-        tk.transfer(&contract_addr, &info.recipient, &to_send);
+        let split_opt: Option<SplitConfig> = env.storage().instance().get(&DataKey::SplitConfig);
+        if let Some(split) = split_opt {
+            let secondary_amount = to_send
+                .checked_mul(split.split_bps as i128)
+                .ok_or(Error::ArithmeticOverflow)?
+                / 10_000;
+            let primary_amount = to_send
+                .checked_sub(secondary_amount)
+                .ok_or(Error::ArithmeticOverflow)?;
+
+            if primary_amount > 0 {
+                tk.transfer(&contract_addr, &info.recipient, &primary_amount);
+            }
+            if secondary_amount > 0 {
+                tk.transfer(
+                    &contract_addr,
+                    &split.secondary_recipient,
+                    &secondary_amount,
+                );
+            }
+        } else {
+            tk.transfer(&contract_addr, &info.recipient, &to_send);
+        }
 
         let remaining = balance
             .checked_sub(to_send)
@@ -324,7 +344,29 @@ impl DripStream {
 
         // Pay the recipient their earned-but-unwithdrawn portion.
         if owed_to_recipient > 0 {
-            tk.transfer(&contract_addr, &info.recipient, &owed_to_recipient);
+            let split_opt: Option<SplitConfig> =
+                env.storage().instance().get(&DataKey::SplitConfig);
+            if let Some(split) = split_opt {
+                let secondary_amount = owed_to_recipient
+                    .checked_mul(split.split_bps as i128)
+                    .ok_or(Error::ArithmeticOverflow)?
+                    / 10_000;
+                let primary_amount = owed_to_recipient
+                    .checked_sub(secondary_amount)
+                    .ok_or(Error::ArithmeticOverflow)?;
+                if primary_amount > 0 {
+                    tk.transfer(&contract_addr, &info.recipient, &primary_amount);
+                }
+                if secondary_amount > 0 {
+                    tk.transfer(
+                        &contract_addr,
+                        &split.secondary_recipient,
+                        &secondary_amount,
+                    );
+                }
+            } else {
+                tk.transfer(&contract_addr, &info.recipient, &owed_to_recipient);
+            }
         }
 
         // Refund the unstreamed remainder to the sender.
@@ -747,7 +789,29 @@ impl DripStream {
         state::save(env, &cancelled_info);
 
         if owed_to_recipient > 0 {
-            tk.transfer(&contract_addr, &info.recipient, &owed_to_recipient);
+            let split_opt: Option<SplitConfig> =
+                env.storage().instance().get(&DataKey::SplitConfig);
+            if let Some(split) = split_opt {
+                let secondary_amount = owed_to_recipient
+                    .checked_mul(split.split_bps as i128)
+                    .ok_or(Error::ArithmeticOverflow)?
+                    / 10_000;
+                let primary_amount = owed_to_recipient
+                    .checked_sub(secondary_amount)
+                    .ok_or(Error::ArithmeticOverflow)?;
+                if primary_amount > 0 {
+                    tk.transfer(&contract_addr, &info.recipient, &primary_amount);
+                }
+                if secondary_amount > 0 {
+                    tk.transfer(
+                        &contract_addr,
+                        &split.secondary_recipient,
+                        &secondary_amount,
+                    );
+                }
+            } else {
+                tk.transfer(&contract_addr, &info.recipient, &owed_to_recipient);
+            }
         }
         if refund_to_sender > 0 {
             tk.transfer(&contract_addr, &info.sender, &refund_to_sender);
@@ -854,6 +918,91 @@ impl DripStream {
     /// Read-only: the current operator address, if any.
     pub fn operator(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::Operator)
+    }
+
+    /// Configure a secondary recipient and basis point split (e.g. 2000 for 20%).
+    ///
+    /// Callable by sender, delegated operator, or current recipient.
+    pub fn set_split_recipient(
+        env: Env,
+        caller: Address,
+        secondary_recipient: Address,
+        split_bps: u32,
+    ) -> Result<(), Error> {
+        state::with_guard(&env, |env| {
+            Self::_set_split_recipient(env, &caller, &secondary_recipient, split_bps)
+        })
+    }
+
+    fn _set_split_recipient(
+        env: &Env,
+        caller: &Address,
+        secondary_recipient: &Address,
+        split_bps: u32,
+    ) -> Result<(), Error> {
+        ttl::bump(env);
+        let info = state::load(env);
+        state::assert_not_cancelled(&info)?;
+
+        let operator = env.storage().instance().get(&DataKey::Operator);
+        let is_sender = caller == &info.sender;
+        let is_op = operator.as_ref().map(|op| caller == op).unwrap_or(false);
+        let is_recipient = caller == &info.recipient;
+
+        if !is_sender && !is_op && !is_recipient {
+            return Err(Error::NotAuthorized);
+        }
+        caller.require_auth();
+
+        if split_bps == 0 || split_bps >= 10_000 {
+            return Err(Error::InvalidAmount);
+        }
+
+        if is_zero_address(env, secondary_recipient)
+            || secondary_recipient == &info.sender
+            || secondary_recipient == &info.recipient
+        {
+            return Err(Error::InvalidRecipient);
+        }
+
+        let config = SplitConfig {
+            secondary_recipient: secondary_recipient.clone(),
+            split_bps,
+        };
+        env.storage().instance().set(&DataKey::SplitConfig, &config);
+
+        events::split_recipient_set(env, caller, secondary_recipient, split_bps);
+        Ok(())
+    }
+
+    /// Remove the configured split recipient, directing 100% of future claims to the primary recipient.
+    pub fn remove_split_recipient(env: Env, caller: Address) -> Result<(), Error> {
+        state::with_guard(&env, |env| Self::_remove_split_recipient(env, &caller))
+    }
+
+    fn _remove_split_recipient(env: &Env, caller: &Address) -> Result<(), Error> {
+        ttl::bump(env);
+        let info = state::load(env);
+        state::assert_not_cancelled(&info)?;
+
+        let operator = env.storage().instance().get(&DataKey::Operator);
+        let is_sender = caller == &info.sender;
+        let is_op = operator.as_ref().map(|op| caller == op).unwrap_or(false);
+        let is_recipient = caller == &info.recipient;
+
+        if !is_sender && !is_op && !is_recipient {
+            return Err(Error::NotAuthorized);
+        }
+        caller.require_auth();
+
+        env.storage().instance().remove(&DataKey::SplitConfig);
+        events::split_recipient_removed(env, caller);
+        Ok(())
+    }
+
+    /// Read-only: get the configured split configuration, if any.
+    pub fn split_recipient(env: Env) -> Option<SplitConfig> {
+        env.storage().instance().get(&DataKey::SplitConfig)
     }
 
     /// Read-only: total tokens streamed so far (regardless of withdrawals).
