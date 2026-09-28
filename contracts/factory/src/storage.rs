@@ -297,4 +297,6 @@ pub enum DataKey {
     FactoryStorageVersion,
     /// **Persistent storage.** Tracks salts used for stream deployments.
     SaltUsed(BytesN<32>),
+    /// **Persistent storage.** Set to true for stream contracts deployed by this factory (Issue #691).
+    IsKnownStream(Address),
 }

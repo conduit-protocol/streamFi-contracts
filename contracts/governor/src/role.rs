@@ -48,6 +48,25 @@ pub fn admin_count(env: &Env) -> u32 {
 /// Idempotent: re-granting a role the account already holds is a no-op, so the
 /// admin count can never be inflated by repeated grants. Returns `true` if the
 /// role was newly granted, or `false` if the account already held it.
+
+/// Grants `role` to `account` with an optional expiration timestamp (Issue #692).
+pub fn grant_with_expiration(
+    env: &Env,
+    role: Role,
+    account: &Address,
+    expires_at: Option<u64>,
+) -> bool {
+    rbac::grant_with_expiration(
+        env,
+        &role_key(role, account),
+        &DataKey::AdminCount,
+        &members_key(role),
+        role == Role::Admin,
+        account,
+        expires_at,
+    )
+}
+
 pub fn grant(env: &Env, role: Role, account: &Address) -> bool {
     rbac::grant(
         env,

@@ -644,3 +644,10 @@ fn read_index_cpu_instruction_regression() {
         "streams_by_sender full-page read consumed {cpu} CPU instructions, exceeds 2M regression threshold"
     );
 }
+
+#[test]
+fn test_is_known_stream_returns_false_for_unknown_address() {
+    let s = Setup::new();
+    let random_addr = Address::generate(&s.env);
+    assert_eq!(s.client.is_known_stream(&random_addr), false);
+}

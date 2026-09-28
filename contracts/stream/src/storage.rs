@@ -51,6 +51,10 @@ pub enum DataKey {
     SplitConfig,
     /// Optional cliff configuration with upfront unlock amount (Issue #719).
     CliffConfig,
+    /// Configurable minimum interval in seconds between consecutive withdrawals (Issue #693).
+    MinWithdrawalInterval,
+    /// Timestamp of the last withdrawal.
+    LastWithdrawalTime,
 }
 
 #[contracttype]

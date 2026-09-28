@@ -348,9 +348,17 @@ impl DripFactory {
         env.storage()
             .persistent()
             .set(&DataKey::StreamAddr(stream_id), &stream_addr);
+        env.storage()
+            .persistent()
+            .set(&DataKey::IsKnownStream(stream_addr.clone()), &true);
         // Extend TTL on the stream address entry so it outlives ledger pruning.
         env.storage().persistent().extend_ttl(
             &DataKey::StreamAddr(stream_id),
+            ttl::THRESHOLD,
+            ttl::EXTEND_TO,
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::IsKnownStream(stream_addr.clone()),
             ttl::THRESHOLD,
             ttl::EXTEND_TO,
         );
@@ -1027,5 +1035,17 @@ impl DripFactory {
             cpu_instructions,
             ledger_entries,
         }
+    }
+
+    /// Read-only: checks if a specific address was deployed as a stream by this factory (Issue #691).
+    pub fn is_known_stream(env: Env, address: Address) -> bool {
+        let key = DataKey::IsKnownStream(address);
+        let is_known: bool = env.storage().persistent().get(&key).unwrap_or(false);
+        if is_known {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, ttl::THRESHOLD, ttl::EXTEND_TO);
+        }
+        is_known
     }
 }

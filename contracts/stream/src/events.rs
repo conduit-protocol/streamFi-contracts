@@ -208,3 +208,12 @@ pub fn cliff_configured(env: &Env, sender: &Address, cliff_time: u64, cliff_unlo
         (cliff_time, cliff_unlock_amount),
     );
 }
+
+pub fn min_withdrawal_interval_set(env: &Env, sender: &Address, interval_seconds: u64) {
+    let sequence = next_sequence(env);
+    env.events().publish(
+        (symbol_short!("min_w_int"), sender.clone(), sequence),
+        interval_seconds,
+    );
+}
+

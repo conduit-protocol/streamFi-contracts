@@ -2501,3 +2501,46 @@ fn test_cliff_unlock_percentage_and_linear_streaming() {
     s.advance_secs(100);
     assert_eq!(s.client.streamed_total().unwrap(), 82_000);
 }
+
+#[test]
+fn test_min_withdrawal_interval_enforcement() {
+    let s = Setup::new(100, 3600, false);
+    // Set 60 seconds minimum interval
+    assert!(s
+        .client
+        .try_set_min_withdrawal_interval(&s.sender, &60)
+        .is_ok());
+    assert_eq!(s.client.min_withdrawal_interval(), 60);
+
+    // Advance 100s, withdraw
+    s.advance_secs(100);
+    assert_eq!(s.client.withdraw(&1000), 1000);
+    assert_eq!(s.client.last_withdrawal_time(), s.env.ledger().timestamp());
+
+    // Advance 30s (< 60s), second withdrawal should fail with WithdrawalTooFrequent
+    s.advance_secs(30);
+    let res = s.client.try_withdraw(&1000);
+    assert_eq!(
+        res.err().unwrap().unwrap(),
+        crate::errors::Error::WithdrawalTooFrequent
+    );
+
+    // Advance another 30s (total 60s elapsed since last withdrawal), should succeed
+    s.advance_secs(30);
+    assert_eq!(s.client.withdraw(&1000), 1000);
+}
+
+#[test]
+fn test_set_min_withdrawal_interval_auth() {
+    let s = Setup::new(100, 3600, false);
+    let unauthorized = Address::generate(&s.env);
+
+    let res = s
+        .client
+        .try_set_min_withdrawal_interval(&unauthorized, &60);
+    assert_eq!(
+        res.err().unwrap().unwrap(),
+        crate::errors::Error::NotAuthorized
+    );
+}
+

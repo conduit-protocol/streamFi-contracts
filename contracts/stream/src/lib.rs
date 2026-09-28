@@ -222,6 +222,23 @@ impl DripStream {
         state::assert_not_cancelled(&info)?;
         info.recipient.require_auth();
 
+        let min_interval: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinWithdrawalInterval)
+            .unwrap_or(0);
+        if min_interval > 0 {
+            let now = env.ledger().timestamp();
+            let last_withdrawal: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::LastWithdrawalTime)
+                .unwrap_or(0);
+            if last_withdrawal > 0 && now < last_withdrawal.saturating_add(min_interval) {
+                return Err(Error::WithdrawalTooFrequent);
+            }
+        }
+
         // `available` is the recipient's accrued-but-unwithdrawn entitlement
         // (rate * elapsed - withdrawn). If nothing has accrued yet there is
         // genuinely nothing to send.
@@ -285,6 +302,11 @@ impl DripStream {
         } else {
             tk.transfer(&contract_addr, &info.recipient, &to_send);
         }
+
+        let now = env.ledger().timestamp();
+        env.storage()
+            .instance()
+            .set(&DataKey::LastWithdrawalTime, &now);
 
         let remaining = balance
             .checked_sub(to_send)
@@ -1143,4 +1165,49 @@ impl DripStream {
     pub fn cliff_config(env: Env) -> Option<CliffConfig> {
         env.storage().instance().get(&DataKey::CliffConfig)
     }
+
+    /// Set a configurable minimum withdrawal interval in seconds (Issue #693).
+    pub fn set_min_withdrawal_interval(
+        env: Env,
+        caller: Address,
+        interval_seconds: u64,
+    ) -> Result<(), Error> {
+        state::with_guard(&env, |env| {
+            Self::_set_min_withdrawal_interval(env, &caller, interval_seconds)
+        })
+    }
+
+    fn _set_min_withdrawal_interval(
+        env: &Env,
+        caller: &Address,
+        interval_seconds: u64,
+    ) -> Result<(), Error> {
+        ttl::bump(env);
+        let info = state::load(env);
+        state::assert_not_cancelled(&info)?;
+        require_sender_or_operator(env, caller, &info.sender)?;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::MinWithdrawalInterval, &interval_seconds);
+        events::min_withdrawal_interval_set(env, caller, interval_seconds);
+        Ok(())
+    }
+
+    /// Read-only: get configured minimum withdrawal interval in seconds.
+    pub fn min_withdrawal_interval(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MinWithdrawalInterval)
+            .unwrap_or(0)
+    }
+
+    /// Read-only: get timestamp of last withdrawal.
+    pub fn last_withdrawal_time(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::LastWithdrawalTime)
+            .unwrap_or(0)
+    }
 }
+

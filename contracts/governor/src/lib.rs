@@ -266,6 +266,22 @@ impl DripGovernor {
     // ── Role administration (Admin-gated) ────────────────────────────────
 
     /// Grants `role` to `account`. Only an `Admin` may call this.
+    
+    /// Grants `role` to `account` with an optional expiration timestamp (Issue #692). Only an `Admin` may call this.
+    pub fn grant_role_with_expiration(
+        env: Env,
+        caller: Address,
+        role: Role,
+        account: Address,
+        expires_at: Option<u64>,
+    ) -> Result<(), Error> {
+        role::require_role(&env, &caller, Role::Admin)?;
+        if role::grant_with_expiration(&env, role, &account, expires_at) {
+            events::grant_role(&env, &caller, role, &account);
+        }
+        Ok(())
+    }
+
     pub fn grant_role(
         env: Env,
         caller: Address,
