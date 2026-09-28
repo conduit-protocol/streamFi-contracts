@@ -2550,3 +2550,95 @@ fn test_set_min_withdrawal_interval_auth() {
     );
 }
 
+
+// ── Issue #621: validate_withdraw dry-run query ─────────────────────────────
+
+#[test]
+fn validate_withdraw_success_and_does_not_mutate_state() {
+    let s = Setup::new(100, 3600, false);
+    s.advance_secs(10);
+
+    let withdrawable = s.client.withdrawable();
+    assert_eq!(withdrawable, 1000);
+
+    // Validate a partial withdrawal amount
+    assert_eq!(s.client.try_validate_withdraw(&500), Ok(Ok(())));
+
+    // Validate the exact withdrawable amount
+    assert_eq!(s.client.try_validate_withdraw(&1000), Ok(Ok(())));
+
+    // Verify dry-run did not mutate withdrawn amount or transfer tokens
+    let info = s.client.info();
+    assert_eq!(info.withdrawn, 0);
+    assert_eq!(s.token.balance(&s.recipient), 0);
+
+    // Actual withdraw succeeds afterwards
+    assert_eq!(s.client.withdraw(&500), 500);
+    assert_eq!(s.token.balance(&s.recipient), 500);
+}
+
+#[test]
+fn validate_withdraw_rejects_zero_and_negative_amount() {
+    let s = Setup::new(100, 3600, false);
+    s.advance_secs(10);
+
+    let res_zero = s.client.try_validate_withdraw(&0);
+    assert_eq!(
+        res_zero.err().unwrap().unwrap(),
+        crate::errors::Error::InvalidAmount
+    );
+
+    let res_neg = s.client.try_validate_withdraw(&-100);
+    assert_eq!(
+        res_neg.err().unwrap().unwrap(),
+        crate::errors::Error::InvalidAmount
+    );
+}
+
+#[test]
+fn validate_withdraw_rejects_before_any_elapsed() {
+    let s = Setup::new(100, 3600, false);
+    // At start timestamp 0, nothing has accrued yet
+    let res = s.client.try_validate_withdraw(&100);
+    assert_eq!(
+        res.err().unwrap().unwrap(),
+        crate::errors::Error::NothingToWithdraw
+    );
+}
+
+#[test]
+fn validate_withdraw_rejects_after_cancelled() {
+    let s = Setup::new(100, 3600, false);
+    s.advance_secs(10);
+    s.client.cancel(&s.sender);
+
+    let res = s.client.try_validate_withdraw(&100);
+    assert_eq!(
+        res.err().unwrap().unwrap(),
+        crate::errors::Error::StreamCancelled
+    );
+}
+
+#[test]
+fn validate_withdraw_respects_min_interval() {
+    let s = Setup::new(100, 3600, false);
+    assert!(s
+        .client
+        .try_set_min_withdrawal_interval(&s.sender, &60)
+        .is_ok());
+
+    s.advance_secs(100);
+    assert_eq!(s.client.withdraw(&1000), 1000);
+
+    // 30s elapsed (< 60s min interval)
+    s.advance_secs(30);
+    let res = s.client.try_validate_withdraw(&500);
+    assert_eq!(
+        res.err().unwrap().unwrap(),
+        crate::errors::Error::WithdrawalTooFrequent
+    );
+
+    // 30s more elapsed (total 60s)
+    s.advance_secs(30);
+    assert_eq!(s.client.try_validate_withdraw(&500), Ok(Ok(())));
+}

@@ -80,28 +80,21 @@ The factory validated `deposit >= rate_per_sec` (at least 1 second of streaming)
 
 A malicious sender pausing a stream indefinitely, blocking further accrual for the recipient while retaining full control of unstreamed tokens, is mitigated by `force_cancel()`: the recipient can unilaterally settle the stream once it's been paused for more than `PAUSE_THRESHOLD_SECS` (30 days). See `docs/architecture.md` for the settlement details.
 
-### 6. Factory `record_cancel` is permissionless
+### 6. Factory `record_cancel` requires deployed stream verification
 
-`DripFactory::record_cancel()` takes no caller address and performs no
-authentication. Anyone can invoke it to decrement the `active_streams` aggregate
-counter by one (via `saturating_sub`, so it floors at zero).
+`DripFactory::record_cancel(env, stream)` is a permissionless hook requiring the
+stream address. It verifies that `stream` was deployed by this factory
+(`IsKnownStream`), has not already had its cancellation recorded (`CancelledStream`),
+and is currently in a cancelled state (`stream.info().is_cancelled()`) before
+decrementing `active_streams`.
 
-**Impact:** The `active_streams` field is a display metric used by off-chain
-consumers (indexer, frontend dashboards). It does not gate any on-chain logic --
-no access control, fee calculation, or settlement path depends on it. An
-attacker calling `record_cancel` repeatedly can zero out the counter but cannot
-move funds, alter stream state, or affect protocol correctness.
+**Impact:** Gated against arbitrary decrement loops. Unverified addresses, active
+streams, and repeated invocations for the same stream are idempotent no-ops,
+ensuring `active_streams` reflects actual deployed cancellations.
 
-**Design rationale:** `record_cancel` exists as a permissionless hook so that
-stream contracts cancelling outside the factory's `cancel_batch_streams` path
-can report the cancellation without requiring the factory to grant caller-level
-trust. The factory counted each stream at creation time; the decrement is a
-best-effort bookkeeping signal, not a security-critical state transition.
-
-**Accepted tradeoff:** The counter can be driven to zero by a griefer, making
-it unreliable as a source of truth. Off-chain consumers that need an accurate
-active-stream count should derive it from event logs (stream-created minus
-stream-cancelled) rather than relying on this aggregate.
+**Design rationale:** `record_cancel` enables stream contracts cancelled directly
+(outside `cancel_batch_streams`) to sync aggregate bookkeeping without requiring
+privileged factory administrative access.
 
 ### 7. Clawback can be used adversarially
 

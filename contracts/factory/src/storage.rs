@@ -299,4 +299,6 @@ pub enum DataKey {
     SaltUsed(BytesN<32>),
     /// **Persistent storage.** Set to true for stream contracts deployed by this factory (Issue #691).
     IsKnownStream(Address),
+    /// **Persistent storage.** Set to true once a stream's cancellation has been recorded in the aggregate counter (Issue #622).
+    CancelledStream(Address),
 }

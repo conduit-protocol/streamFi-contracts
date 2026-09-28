@@ -738,6 +738,67 @@ impl DripStream {
         math::withdrawable(&env, &info)
     }
 
+    /// Read-only: dry-run validation for a proposed withdrawal amount.
+    ///
+    /// Runs all pre-transfer validation checks performed by `withdraw()`
+    /// (amount positivity, stream state, rate limits, accrual, and token balance)
+    /// without mutating state or performing token transfers.
+    pub fn validate_withdraw(env: Env, amount: i128) -> Result<(), Error> {
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        let info = state::load(&env);
+        state::assert_not_cancelled(&info)?;
+
+        let min_interval: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinWithdrawalInterval)
+            .unwrap_or(0);
+        if min_interval > 0 {
+            let now = env.ledger().timestamp();
+            let last_withdrawal: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::LastWithdrawalTime)
+                .unwrap_or(0);
+            if last_withdrawal > 0 && now < last_withdrawal.saturating_add(min_interval) {
+                return Err(Error::WithdrawalTooFrequent);
+            }
+        }
+
+        let available = math::withdrawable(&env, &info)?;
+        if available == 0 {
+            return Err(Error::NothingToWithdraw);
+        }
+
+        let tk = token::Client::new(&env, &info.token);
+        let contract_addr = env.current_contract_address();
+        let balance = tk.balance(&contract_addr);
+        let to_send = amount.min(available).min(balance);
+        if to_send == 0 {
+            return Err(Error::StreamUnderfunded);
+        }
+
+        let _new_withdrawn = info
+            .withdrawn
+            .checked_add(to_send)
+            .ok_or(Error::ArithmeticOverflow)?;
+
+        let split_opt: Option<SplitConfig> = env.storage().instance().get(&DataKey::SplitConfig);
+        if let Some(split) = split_opt {
+            let secondary_amount = to_send
+                .checked_mul(split.split_bps as i128)
+                .ok_or(Error::ArithmeticOverflow)?
+                / 10_000;
+            to_send
+                .checked_sub(secondary_amount)
+                .ok_or(Error::ArithmeticOverflow)?;
+        }
+
+        Ok(())
+    }
+
     /// Read-only: whether clawback is enabled for this stream.
     ///
     /// Returns the `clawback_enabled` flag that was set at initialization time.

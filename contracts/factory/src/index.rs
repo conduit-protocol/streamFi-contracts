@@ -8,6 +8,7 @@ use crate::{
 
 const PAGE_SIZE: u32 = query::MAX_PAGE_SIZE;
 const MIGRATION_PAGES_PER_APPEND: u32 = 1;
+pub const MAX_MIGRATION_PAGES: u32 = 20;
 
 fn extend_ttl(env: &Env, key: &DataKey) {
     env.storage()
@@ -46,6 +47,12 @@ fn migrate_legacy_index(
     mut make_page_key: impl FnMut(u32) -> DataKey,
     max_pages: u32,
 ) -> u32 {
+    // If there is no legacy key (already migrated or never had legacy entries),
+    // short-circuit immediately with a cheap no-op read.
+    if !env.storage().persistent().has(legacy_key) {
+        return env.storage().persistent().get(count_key).unwrap_or(0);
+    }
+
     let legacy: Option<Vec<u64>> = env.storage().persistent().get(legacy_key);
     let Some(entries) = legacy else {
         return env.storage().persistent().get(count_key).unwrap_or(0);
@@ -62,9 +69,20 @@ fn migrate_legacy_index(
         .get(count_key)
         .unwrap_or(legacy_count);
     let mut cursor = env.storage().persistent().get(cursor_key).unwrap_or(0_u32);
-    let mut migrated_pages = 0_u32;
 
-    while cursor < legacy_count && migrated_pages < max_pages {
+    if cursor >= legacy_count {
+        env.storage().persistent().remove(legacy_key);
+        env.storage().persistent().remove(cursor_key);
+        return total_count;
+    }
+
+    let capped_pages = max_pages.min(MAX_MIGRATION_PAGES);
+    if capped_pages == 0 {
+        return total_count;
+    }
+
+    let mut migrated_pages = 0_u32;
+    while cursor < legacy_count && migrated_pages < capped_pages {
         let page_index = cursor / PAGE_SIZE;
         let end = cursor.saturating_add(PAGE_SIZE).min(legacy_count);
         let mut page = Vec::new(env);

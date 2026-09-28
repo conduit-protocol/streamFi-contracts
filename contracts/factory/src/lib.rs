@@ -555,20 +555,35 @@ impl DripFactory {
             stream_client.cancel(&sender);
 
             // Decrement the active-stream counter for every factory-routed
-            // cancellation. Direct cancellations that bypass the factory can
-            // be accounted for via `record_cancel` below.
-            let mut aggregate: Aggregate = env
+            // cancellation and record its cancellation to prevent double decrement.
+            let already_recorded: bool = env
                 .storage()
-                .instance()
-                .get(&DataKey::Aggregate)
-                .unwrap_or(Aggregate {
-                    total_supply: 0,
-                    active_streams: 0,
-                });
-            aggregate.active_streams = aggregate.active_streams.saturating_sub(1);
-            env.storage()
-                .instance()
-                .set(&DataKey::Aggregate, &aggregate);
+                .persistent()
+                .get(&DataKey::CancelledStream(stream_addr.clone()))
+                .unwrap_or(false);
+            if !already_recorded {
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::CancelledStream(stream_addr.clone()), &true);
+                env.storage().persistent().extend_ttl(
+                    &DataKey::CancelledStream(stream_addr.clone()),
+                    ttl::THRESHOLD,
+                    ttl::EXTEND_TO,
+                );
+
+                let mut aggregate: Aggregate = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::Aggregate)
+                    .unwrap_or(Aggregate {
+                        total_supply: 0,
+                        active_streams: 0,
+                    });
+                aggregate.active_streams = aggregate.active_streams.saturating_sub(1);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::Aggregate, &aggregate);
+            }
         }
 
         Ok(())
@@ -610,20 +625,53 @@ impl DripFactory {
     ///
     /// Direct cancellations that do not go through `cancel_batch_streams`
     /// can call this to keep the aggregate `active_streams` counter accurate.
-    /// The call is idempotent: cancelling an already-zero counter leaves it at
-    /// zero. Stream contracts that were not deployed through this factory
-    /// cannot meaningfully decrement the counter below its true value because
-    /// each decrement corresponds to a stream that the factory counted at
-    /// creation time.
-    pub fn record_cancel(env: Env) {
-        let mut aggregate: Aggregate =
-            env.storage()
-                .instance()
-                .get(&DataKey::Aggregate)
-                .unwrap_or(Aggregate {
-                    total_supply: 0,
-                    active_streams: 0,
-                });
+    /// Requires the stream address, verifies that the stream was deployed by
+    /// this factory (`IsKnownStream`), that it has not already had its
+    /// cancellation recorded, and that the stream contract is currently in a
+    /// cancelled state before decrementing `active_streams`. Repeat calls for
+    /// the same stream are idempotent no-ops.
+    pub fn record_cancel(env: Env, stream: Address) {
+        let is_known: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::IsKnownStream(stream.clone()))
+            .unwrap_or(false);
+        if !is_known {
+            return;
+        }
+
+        let already_recorded: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CancelledStream(stream.clone()))
+            .unwrap_or(false);
+        if already_recorded {
+            return;
+        }
+
+        let stream_client = drip_stream::DripStreamClient::new(&env, &stream);
+        let stream_info = stream_client.info();
+        if !stream_info.is_cancelled() {
+            return;
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::CancelledStream(stream.clone()), &true);
+        env.storage().persistent().extend_ttl(
+            &DataKey::CancelledStream(stream),
+            ttl::THRESHOLD,
+            ttl::EXTEND_TO,
+        );
+
+        let mut aggregate: Aggregate = env
+            .storage()
+            .instance()
+            .get(&DataKey::Aggregate)
+            .unwrap_or(Aggregate {
+                total_supply: 0,
+                active_streams: 0,
+            });
         aggregate.active_streams = aggregate.active_streams.saturating_sub(1);
         env.storage()
             .instance()
@@ -916,10 +964,22 @@ impl DripFactory {
 
     /// Estimate the Soroban resource cost for a given stream operation.
     ///
-    /// Returns a [`FeeEstimate`] with the operation's expected CPU
-    /// instructions and ledger entry counts. The actual network fee in
-    /// stroops is computed by the frontend using `simulateTransaction`,
-    /// which returns the exact cost from the current network base fee.
+    /// Returns a [`FeeEstimate`] with baseline CPU instruction and ledger entry
+    /// counts derived from profiling benchmarks on standard contract deployments.
+    ///
+    /// # Note on Static Estimates vs. Live Simulation
+    /// The values returned here are static, deterministic reference estimates
+    /// intended for fast off-chain previews and heuristic displays without requiring
+    /// RPC simulation round-trips. The `_env` parameter is preserved for interface
+    /// consistency and future dynamic metering.
+    ///
+    /// The actual network fee in stroops is computed by the client via RPC
+    /// `simulateTransaction`, which returns the exact cost against the live ledger state
+    /// and current network base fee.
+    ///
+    /// Whenever contract logic evolves or new storage writes / cross-contract calls
+    /// are added to an operation path, the corresponding benchmark profile in this match
+    /// and `CHANGELOG.md` should be re-profiled and updated.
     ///
     /// This is a read-only call — no state is modified, no auth is required.
     pub fn estimate_fee(_env: Env, operation: StreamOperation) -> FeeEstimate {
