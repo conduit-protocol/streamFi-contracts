@@ -122,3 +122,25 @@ fn test_set_fee_bps_blocked_when_paused() {
     let result = client.try_set_fee_bps(&authority, &100);
     assert_eq!(result, Err(Ok(Error::ContractPaused)));
 }
+
+#[test]
+fn test_cast_vote_with_rationale_emits_detailed_event() {
+    let (env, authority, fee_recipient, factory_address) = create_test_env();
+    let contract_id = env.register_contract(None, DripGovernor);
+    let client = DripGovernorClient::new(&env, &contract_id);
+
+    client.initialize(&authority, &fee_recipient, &factory_address);
+
+    // Create a proposal
+    let proposal_id = client.propose(&authority, &3600);
+
+    // Voter casts vote with rationale
+    let voter = Address::generate(&env);
+    let rationale = soroban_sdk::String::from_str(&env, "ipfs://QmTransparentGovVoteReason123");
+    
+    assert!(client.try_cast_vote_with_rationale(&voter, &proposal_id, &true, &Some(rationale.clone())).is_ok());
+
+    // Also test cast_vote without rationale
+    let voter2 = Address::generate(&env);
+    assert!(client.try_cast_vote(&voter2, &proposal_id, &false).is_ok());
+}

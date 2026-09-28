@@ -157,3 +157,17 @@ pub fn upgraded(env: &Env, caller: &Address, upgraded_at: u64) {
     env.events()
         .publish((symbol_short!("upgraded"), caller.clone()), upgraded_at);
 }
+
+/// Emitted when a vote is cast on a proposal with an optional rationale/IPFS CID string (Issue #718).
+pub fn vote_cast(
+    env: &Env,
+    voter: &Address,
+    proposal_id: u64,
+    support: bool,
+    rationale: Option<soroban_sdk::String>,
+) {
+    env.events().publish(
+        (symbol_short!("vote"), voter.clone(), proposal_id),
+        (support, rationale),
+    );
+}

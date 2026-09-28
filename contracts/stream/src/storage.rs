@@ -49,6 +49,8 @@ pub enum DataKey {
     ForceCancelPauseThresholdSecs,
     /// Optional split configuration dividing claims between recipient and secondary recipient.
     SplitConfig,
+    /// Optional cliff configuration with upfront unlock amount (Issue #719).
+    CliffConfig,
 }
 
 #[contracttype]
@@ -56,6 +58,14 @@ pub enum DataKey {
 pub struct SplitConfig {
     pub secondary_recipient: Address,
     pub split_bps: u32,
+}
+
+/// Stream configuration including cliff and upfront unlock parameters (Issue #719).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CliffConfig {
+    pub cliff_time: u64,
+    pub cliff_unlock_amount: i128,
 }
 
 /// Alias for SplitConfig to support split recipients.

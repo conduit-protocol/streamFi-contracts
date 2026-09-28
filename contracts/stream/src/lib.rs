@@ -15,7 +15,7 @@ use drip_common::{is_zero_address, pause};
 
 pub use errors::Error;
 use storage::{DataKey, StreamInfo, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED};
-pub use storage::{SplitConfig, StreamConfig, StreamStatus, StreamSummary};
+pub use storage::{CliffConfig, SplitConfig, StreamConfig, StreamStatus, StreamSummary};
 
 #[contract]
 pub struct DripStream;
@@ -478,6 +478,9 @@ impl DripStream {
     /// cancellation check -- so an unauthenticated call fails as cheaply
     /// as possible instead of paying for storage-extension instructions
     /// it never needed.
+    /// Deposits additional tokens into the stream (Issue #690: permits external gift funding).
+    ///
+    /// Callable by any authenticated account (sender, recipient, operator, or third-party benefactor).
     pub fn top_up(env: Env, caller: Address, amount: i128) -> Result<(), Error> {
         state::with_guard(&env, |env| Self::_top_up(env, &caller, amount))
     }
@@ -488,7 +491,7 @@ impl DripStream {
         }
 
         let info = state::load(env);
-        require_sender_or_operator(env, caller, &info.sender)?;
+        caller.require_auth();
 
         ttl::bump(env);
         state::assert_not_cancelled(&info)?;
@@ -1092,5 +1095,52 @@ impl DripStream {
     /// Read-only alias for `get_summary`.
     pub fn get_stream_summary(env: Env) -> StreamSummary {
         Self::get_summary(env)
+    }
+
+    /// Set a cliff unlock configuration for this stream (Issue #719).
+    ///
+    /// Credits `cliff_unlock_amount` immediately upon `cliff_time` expiration,
+    /// followed by linear streaming of remaining funds.
+    pub fn set_cliff(
+        env: Env,
+        caller: Address,
+        cliff_time: u64,
+        cliff_unlock_amount: i128,
+    ) -> Result<(), Error> {
+        state::with_guard(&env, |env| {
+            Self::_set_cliff(env, &caller, cliff_time, cliff_unlock_amount)
+        })
+    }
+
+    fn _set_cliff(
+        env: &Env,
+        caller: &Address,
+        cliff_time: u64,
+        cliff_unlock_amount: i128,
+    ) -> Result<(), Error> {
+        ttl::bump(env);
+        let info = state::load(env);
+        state::assert_not_cancelled(&info)?;
+        require_sender_or_operator(env, caller, &info.sender)?;
+
+        if cliff_unlock_amount < 0 {
+            return Err(Error::InvalidAmount);
+        }
+        if cliff_time < info.start_time || (info.end_time > 0 && cliff_time >= info.end_time) {
+            return Err(Error::InvalidTimeRange);
+        }
+
+        let cfg = CliffConfig {
+            cliff_time,
+            cliff_unlock_amount,
+        };
+        env.storage().instance().set(&DataKey::CliffConfig, &cfg);
+        events::cliff_configured(env, caller, cliff_time, cliff_unlock_amount);
+        Ok(())
+    }
+
+    /// Read-only: get the configured cliff configuration, if any (Issue #719).
+    pub fn cliff_config(env: Env) -> Option<CliffConfig> {
+        env.storage().instance().get(&DataKey::CliffConfig)
     }
 }

@@ -199,3 +199,12 @@ pub fn split_recipient_removed(env: &Env, caller: &Address) {
     env.events()
         .publish((symbol_short!("rm_split"), caller.clone(), sequence), ());
 }
+
+pub fn cliff_configured(env: &Env, sender: &Address, cliff_time: u64, cliff_unlock_amount: i128) {
+    assert_non_negative_amount(env, cliff_unlock_amount);
+    let sequence = next_sequence(env);
+    env.events().publish(
+        (symbol_short!("set_cliff"), sender.clone(), sequence),
+        (cliff_time, cliff_unlock_amount),
+    );
+}

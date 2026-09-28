@@ -2462,3 +2462,42 @@ fn test_get_summary_returns_consolidated_state() {
         crate::storage::StreamStatus::Cancelled
     );
 }
+
+#[test]
+fn test_third_party_top_up_gift_funding() {
+    let s = Setup::new(100, 3600, false);
+    let third_party = Address::generate(&s.env);
+
+    // Mint tokens to third party
+    let tok_admin = token::StellarAssetClient::new(&s.env, &s.token.address);
+    tok_admin.mint(&third_party, &50_000);
+
+    // Third party tops up the stream
+    assert!(s.client.try_top_up(&third_party, &50_000).is_ok());
+
+    let balance = s.token.balance(&s.client.address);
+    assert_eq!(balance, 360_000 + 50_000);
+}
+
+#[test]
+fn test_cliff_unlock_percentage_and_linear_streaming() {
+    let s = Setup::new(100, 3600, false);
+    let start = s.env.ledger().timestamp();
+    let cliff_time = start + 1000;
+    let upfront_unlock = 72_000; // 20% of 360,000
+
+    // Set cliff
+    assert!(s.client.try_set_cliff(&s.sender, &cliff_time, &upfront_unlock).is_ok());
+
+    // Before cliff: 0 withdrawable
+    s.advance_secs(500);
+    assert_eq!(s.client.streamed_total().unwrap(), 0);
+
+    // At cliff: upfront 72,000 unlocked immediately
+    s.advance_secs(500); // now at start + 1000
+    assert_eq!(s.client.streamed_total().unwrap(), 72_000);
+
+    // 100 seconds after cliff: 72,000 + 100 * 100 = 82,000
+    s.advance_secs(100);
+    assert_eq!(s.client.streamed_total().unwrap(), 82_000);
+}

@@ -24,7 +24,7 @@ mod storage;
 mod tests;
 mod ttl;
 
-use soroban_sdk::{contract, contractimpl, panic_with_error, Address, BytesN, Env, Symbol, Vec};
+use soroban_sdk::{String, contract, contractimpl, panic_with_error, Address, BytesN, Env, Symbol, Vec};
 
 use drip_common::is_zero_address;
 
@@ -669,6 +669,41 @@ impl DripGovernor {
             .instance()
             .set(&DataKey::Proposal(proposal_id), &proposal);
 
+        Ok(())
+    }
+
+    /// Cast a vote on a proposal (Issue #718).
+    pub fn cast_vote(env: Env, voter: Address, proposal_id: u64, support: bool) -> Result<(), Error> {
+        Self::cast_vote_with_rationale(env, voter, proposal_id, support, None)
+    }
+
+    /// Cast a vote on a proposal with an explanation / IPFS CID rationale (Issue #718).
+    pub fn cast_vote_with_rationale(
+        env: Env,
+        voter: Address,
+        proposal_id: u64,
+        support: bool,
+        rationale: Option<String>,
+    ) -> Result<(), Error> {
+        voter.require_auth();
+        ttl::bump(&env);
+
+        let proposal: storage::Proposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::Proposal(proposal_id))
+            .ok_or(Error::ProposalNotFound)?;
+
+        if proposal.status != storage::ProposalStatus::Pending {
+            return Err(Error::ProposalNotPending);
+        }
+
+        let elapsed = env.ledger().timestamp().saturating_sub(proposal.created_at);
+        if elapsed > proposal.execution_window_secs {
+            return Err(Error::ProposalExpired);
+        }
+
+        events::vote_cast(&env, &voter, proposal_id, support, rationale);
         Ok(())
     }
 }
