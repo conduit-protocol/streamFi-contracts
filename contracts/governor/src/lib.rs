@@ -265,8 +265,6 @@ impl DripGovernor {
 
     // ── Role administration (Admin-gated) ────────────────────────────────
 
-    /// Grants `role` to `account`. Only an `Admin` may call this.
-    
     /// Grants `role` to `account` with an optional expiration timestamp (Issue #692). Only an `Admin` may call this.
     pub fn grant_role_with_expiration(
         env: Env,
@@ -282,6 +280,7 @@ impl DripGovernor {
         Ok(())
     }
 
+    /// Grants `role` to `account`. Only an `Admin` may call this.
     pub fn grant_role(
         env: Env,
         caller: Address,
