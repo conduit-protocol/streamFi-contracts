@@ -651,3 +651,30 @@ fn test_is_known_stream_returns_false_for_unknown_address() {
     let random_addr = Address::generate(&s.env);
     assert_eq!(s.client.is_known_stream(&random_addr), false);
 }
+
+#[test]
+fn test_max_batch_size_matches_constant() {
+    let s = Setup::new();
+    assert_eq!(s.client.max_batch_size(), crate::MAX_BATCH_SIZE);
+    assert_eq!(s.client.max_batch_size(), 10);
+}
+
+#[test]
+fn test_stream_wasm_hash_returns_configured_hash() {
+    let s = Setup::new();
+    let expected_hash = BytesN::from_array(&s.env, &[1u8; 32]);
+    assert_eq!(s.client.stream_wasm_hash(), expected_hash);
+
+    let new_hash = BytesN::from_array(&s.env, &[2u8; 32]);
+    s.client.upgrade_stream_wasm(&new_hash);
+    assert_eq!(s.client.stream_wasm_hash(), new_hash);
+}
+
+#[test]
+fn test_stream_wasm_hash_uninitialized_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, DripFactory);
+    let client = DripFactoryClient::new(&env, &contract_id);
+    assert_eq!(client.try_stream_wasm_hash(), Err(Ok(Error::NotInitialized)));
+}

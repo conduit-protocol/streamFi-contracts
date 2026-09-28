@@ -913,3 +913,31 @@ fn test_deploy_stream_duplicate_salt_fails() {
         assert_eq!(result, Err(Error::SaltAlreadyUsed));
     });
 }
+
+#[test]
+fn max_batch_size_returns_configured_limit() {
+    let env = base_env();
+    let client = deploy_factory(&env);
+    assert_eq!(client.max_batch_size(), drip_factory::MAX_BATCH_SIZE);
+    assert_eq!(client.max_batch_size(), 10);
+}
+
+#[test]
+fn stream_wasm_hash_reports_stored_hash_and_updates_on_upgrade() {
+    let env = base_env();
+    let client = deploy_factory(&env);
+    let initial_hash = BytesN::from_array(&env, &[1u8; 32]);
+    assert_eq!(client.stream_wasm_hash(), initial_hash);
+
+    let updated_hash = BytesN::from_array(&env, &[9u8; 32]);
+    client.upgrade_stream_wasm(&updated_hash);
+    assert_eq!(client.stream_wasm_hash(), updated_hash);
+}
+
+#[test]
+fn stream_wasm_hash_reports_not_initialized_before_setup() {
+    let env = base_env();
+    let id = env.register_contract(None, DripFactory);
+    let client = DripFactoryClient::new(&env, &id);
+    assert_eq!(client.try_stream_wasm_hash(), Err(Ok(Error::NotInitialized)));
+}

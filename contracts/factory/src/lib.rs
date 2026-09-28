@@ -14,7 +14,8 @@ pub mod ttl;
 
 // Import `token` as `tok` to avoid shadowing by any `token: Address` parameter.
 use soroban_sdk::{
-    contract, contractimpl, panic_with_error, token as tok, Address, BytesN, Env, IntoVal, Vec,
+    contract, contractimpl, panic_with_error, token as tok, Address, BytesN, Env, IntoVal, Map,
+    Vec,
 };
 
 use drip_common::is_zero_address;
@@ -502,6 +503,11 @@ impl DripFactory {
         index::migrate_recipient_index(&env, recipient, max_pages)
     }
 
+    /// Read-only: maximum number of streams accepted in a single batch operation (Issue #625).
+    pub fn max_batch_size(_env: Env) -> u32 {
+        MAX_BATCH_SIZE
+    }
+
     /// Cancel multiple streams in one transaction, all authorized by the
     /// same `sender`.
     ///
@@ -530,20 +536,16 @@ impl DripFactory {
         }
 
         // Deduplicate addresses to prevent attempting multiple cancels on the same stream.
-        // Issue #416: If a duplicated address is passed, the first cancel succeeds
+        // Issue #416, #627: If a duplicated address is passed, the first cancel succeeds
         // and sets FLAG_CANCELLED; the second cancel on the now-cancelled stream would
         // return Error::StreamCancelled, which the non-try_ variant turns into a panic.
         // Deduplicating the list ensures each unique stream is cancelled exactly once.
+        // Uses a Map-backed set (O(log n) lookup/insert) rather than an O(n²) nested loop scan.
+        let mut seen = Map::new(&env);
         let mut unique_addresses: Vec<Address> = Vec::new(&env);
         for stream_addr in stream_addresses.iter() {
-            let mut already_seen = false;
-            for seen_addr in unique_addresses.iter() {
-                if stream_addr == seen_addr {
-                    already_seen = true;
-                    break;
-                }
-            }
-            if !already_seen {
+            if !seen.contains_key(stream_addr.clone()) {
+                seen.set(stream_addr.clone(), ());
                 unique_addresses.push_back(stream_addr);
             }
         }
@@ -755,6 +757,14 @@ impl DripFactory {
             .instance()
             .set(&DataKey::StreamWasmHash, &new_wasm_hash);
         Ok(())
+    }
+
+    /// Read-only: the WASM hash currently configured for stream deployments (Issue #626).
+    pub fn stream_wasm_hash(env: Env) -> Result<BytesN<32>, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::StreamWasmHash)
+            .ok_or(Error::NotInitialized)
     }
 
     /// Replace this contract's own WASM bytecode.

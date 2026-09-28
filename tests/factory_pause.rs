@@ -204,8 +204,6 @@ fn create_stream_works_again_after_unpause() {
     assert_ne!(result, Err(Ok(Error::ContractPaused)));
 }
 
-// ── TTL management ─────────────────────────────────────────────────────────────
-
 #[test]
 fn pause_extends_instance_ttl() {
     let env = base_env();
@@ -213,4 +211,33 @@ fn pause_extends_instance_ttl() {
     client.pause();
     let ttl = env.as_contract(&client.address, || env.storage().instance().get_ttl());
     assert_eq!(ttl, 200_000);
+}
+
+// ── Event emission & Governor passthrough (Issue #628) ──────────────────────────
+
+#[test]
+fn governor_pause_factory_and_unpause_factory_flow() {
+    let env = base_env();
+    let factory_id = env.register_contract(None, DripFactory);
+    let governor_id = env.register_contract(None, DripGovernor);
+
+    let authority = Address::generate(&env);
+    let fee_recipient = Address::generate(&env);
+    let governor_client = DripGovernorClient::new(&env, &governor_id);
+    governor_client.initialize(&authority, &fee_recipient, &factory_id);
+
+    let factory_client = DripFactoryClient::new(&env, &factory_id);
+    let dummy_hash = BytesN::from_array(&env, &[1u8; 32]);
+    factory_client.initialize(&dummy_hash, &governor_id);
+
+    // Initial state: not paused
+    assert!(!factory_client.is_paused());
+
+    // Governor pauses factory
+    governor_client.pause_factory(&authority);
+    assert!(factory_client.is_paused());
+
+    // Governor unpauses factory
+    governor_client.unpause_factory(&authority);
+    assert!(!factory_client.is_paused());
 }

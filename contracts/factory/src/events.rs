@@ -17,8 +17,14 @@ use soroban_sdk::{symbol_short, Address, Env};
 ///
 /// Emitted when the factory transitions from unpaused to paused.
 ///
-/// Topics: `("paused", governor)` — the governor that authorized the halt.
+/// Topics: `("paused", governor)` — the governor address that authorized the halt.
 /// Data:   `paused_at` — the ledger timestamp at which the halt took effect.
+///
+/// Note (Issue #628): Because all factory pause/unpause mutations are strictly
+/// gated on `governor.require_auth()`, the `governor` topic identifies the governing
+/// authority that authorized the halt. If the halt was triggered via
+/// `DripGovernor::pause_factory`, the governor contract additionally emits
+/// `("fpaused", caller)` containing the specific administrative caller (Role::Pauser/Admin).
 pub fn paused(env: &Env, governor: &Address, paused_at: u64) {
     env.events()
         .publish((symbol_short!("paused"), governor.clone()), paused_at);
@@ -26,8 +32,12 @@ pub fn paused(env: &Env, governor: &Address, paused_at: u64) {
 
 /// Emitted when the factory transitions from paused back to unpaused.
 ///
-/// Topics: `("unpaused", governor)` — the governor that lifted the halt.
+/// Topics: `("unpaused", governor)` — the governor address that lifted the halt.
 /// Data:   `resumed_at` — the ledger timestamp at which creation resumed.
+///
+/// Note (Issue #628): Identifies the governing authority that lifted the halt.
+/// If triggered via `DripGovernor::unpause_factory`, the governor contract
+/// additionally emits `("funpaused", caller)` containing the specific administrative caller.
 pub fn unpaused(env: &Env, governor: &Address, resumed_at: u64) {
     env.events()
         .publish((symbol_short!("unpaused"), governor.clone()), resumed_at);

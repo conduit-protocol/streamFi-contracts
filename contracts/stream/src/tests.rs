@@ -1662,11 +1662,14 @@ fn non_sender_non_operator_rejected_by_resume() {
 }
 
 #[test]
-fn non_sender_non_operator_rejected_by_top_up() {
+fn non_sender_can_top_up_gift_funding() {
+    // Issue #690: top_up allows third-party gift funding with auth
     let s = Setup::new(100, 3600, false);
     let rando = Address::generate(&s.env);
+    let tok_admin = token::StellarAssetClient::new(&s.env, &s.token.address);
+    tok_admin.mint(&rando, &1_000);
     let result = s.client.try_top_up(&rando, &1_000);
-    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+    assert_eq!(result, Ok(Ok(())));
 }
 
 #[test]
@@ -1718,14 +1721,17 @@ fn revoked_operator_rejected_by_pause() {
 }
 
 #[test]
-fn revoked_operator_rejected_by_top_up() {
+fn revoked_operator_can_still_top_up_gift_funding() {
+    // Issue #690: any authenticated account can top up as a gift
     let s = Setup::new(100, 3600, false);
     let operator = Address::generate(&s.env);
     s.client.set_operator(&s.sender, &operator);
     s.client.revoke_operator(&s.sender);
 
+    let tok_admin = token::StellarAssetClient::new(&s.env, &s.token.address);
+    tok_admin.mint(&operator, &1_000);
     let result = s.client.try_top_up(&operator, &1_000);
-    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+    assert_eq!(result, Ok(Ok(())));
 }
 
 #[test]
@@ -2491,15 +2497,15 @@ fn test_cliff_unlock_percentage_and_linear_streaming() {
 
     // Before cliff: 0 withdrawable
     s.advance_secs(500);
-    assert_eq!(s.client.streamed_total().unwrap(), 0);
+    assert_eq!(s.client.streamed_total(), 0);
 
     // At cliff: upfront 72,000 unlocked immediately
     s.advance_secs(500); // now at start + 1000
-    assert_eq!(s.client.streamed_total().unwrap(), 72_000);
+    assert_eq!(s.client.streamed_total(), 72_000);
 
     // 100 seconds after cliff: 72,000 + 100 * 100 = 82,000
     s.advance_secs(100);
-    assert_eq!(s.client.streamed_total().unwrap(), 82_000);
+    assert_eq!(s.client.streamed_total(), 82_000);
 }
 
 #[test]

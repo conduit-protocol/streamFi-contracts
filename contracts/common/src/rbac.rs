@@ -304,7 +304,7 @@ pub fn require_role<RK: StorageKey>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::testutils::{Address as _, Ledger as _};
     use soroban_sdk::{contract, contractimpl, contracttype, symbol_short};
 
     // ── Contract frame ────────────────────────────────────────────────────────
