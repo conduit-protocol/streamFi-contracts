@@ -1,5 +1,28 @@
 use soroban_sdk::{contracttype, Address};
 
+/// Proposal status.
+#[contracttype]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ProposalStatus {
+    Pending = 0,
+    Executed = 1,
+    Cancelled = 2,
+}
+
+/// Minimal proposal struct for governance proposals.
+#[contracttype]
+#[derive(Clone)]
+pub struct Proposal {
+    /// Address of the proposal author.
+    pub author: Address,
+    /// Timestamp when the proposal was created.
+    pub created_at: u64,
+    /// Window (in seconds) within which the proposal must be executed after passing.
+    pub execution_window_secs: u64,
+    /// Current status of the proposal.
+    pub status: ProposalStatus,
+}
+
 /// Protocol administration roles.
 ///
 /// Each role gates a distinct slice of governor state, so independent wallets
@@ -39,7 +62,7 @@ pub struct RoleKey {
 }
 
 #[contracttype]
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum DataKey {
     /// Fee in basis points (e.g. 30 = 0.3%)
     FeeBps,
@@ -74,4 +97,8 @@ pub enum DataKey {
     /// The admin who proposed the authority transfer.
     /// Used to revoke their Admin role when the transfer is accepted.
     PendingAuthorityProposer,
+    /// Governance proposal by ID.
+    Proposal(u64),
+    /// Proposal counter for generating proposal IDs.
+    ProposalCounter,
 }

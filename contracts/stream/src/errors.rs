@@ -28,4 +28,6 @@ pub enum Error {
     BackdatedStream = 20,
     /// The stream has accrued tokens but is not funded enough to cover the requested withdrawal.
     StreamUnderfunded = 21,
+    /// The requested withdrawal violates the minimum interval rate limit.
+    WithdrawalTooFrequent = 22,
 }

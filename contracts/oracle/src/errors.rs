@@ -38,4 +38,6 @@ pub enum Error {
     /// distinct variant so the contract panics alone from
     /// `require_auth()` and admin-mismatch can both be observed cleanly.
     NotAuthorized = 11,
+    /// Price feed not found for requested pair.
+    PriceNotFound = 12,
 }

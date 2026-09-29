@@ -137,29 +137,54 @@ export async function pollOnce(
 }
 
 /**
+ * Sleep helper that resolves early if AbortSignal triggers.
+ */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
  * Long-running poll loop used by the worker. Polls every `intervalMs`
- * until the process is terminated (SIGTERM/SIGINT). Each iteration is
+ * until the process is terminated (SIGTERM/SIGINT) or the signal aborts. Each iteration is
  * independently transactional via pollOnce.
  */
 export async function startPollLoop(
   pool: Pool,
   fetchEvents: FetchEventsFn,
-  opts: { intervalMs?: number; limit?: number } = {}
-): Promise<never> {
+  opts: { intervalMs?: number; limit?: number; signal?: AbortSignal } = {}
+): Promise<void> {
   const intervalMs = opts.intervalMs ?? 5_000;
   const limit = opts.limit ?? 100;
+  const signal = opts.signal;
 
-  for (;;) {
+  while (!signal?.aborted) {
     try {
       const { fetched } = await pollOnce(pool, fetchEvents, limit);
+      if (signal?.aborted) break;
       if (fetched === 0) {
-        await new Promise((r) => setTimeout(r, intervalMs));
+        await sleep(intervalMs, signal);
       }
     } catch (err) {
+      if (signal?.aborted) break;
       console.error("[poller] pollOnce failed:", err);
       // Back off briefly before retrying — avoids tight crash-loop if the
       // DB or upstream is down.
-      await new Promise((r) => setTimeout(r, Math.min(intervalMs, 2000)));
+      await sleep(Math.min(intervalMs, 2000), signal);
     }
   }
 }
+

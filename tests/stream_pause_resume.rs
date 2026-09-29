@@ -266,3 +266,47 @@ fn withdraw_at_same_timestamp_as_resume_yields_zero_new_tokens() {
     // Nothing left
     assert_eq!(client.withdrawable(), 0);
 }
+
+// ── Sender cannot clawback while paused ──────────────────────────────────────
+
+#[test]
+fn sender_cannot_clawback_while_paused() {
+    let env = base_env();
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    // Deploy stream with clawback enabled (true instead of false)
+    let token_admin = Address::generate(&env);
+    let token_addr = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let rate = 1_000;
+    let duration = 3_600_u64;
+    let deposit = rate * duration as i128;
+
+    token::StellarAssetClient::new(&env, &token_addr).mint(&sender, &deposit);
+
+    let stream_id = env.register_contract(None, DripStream);
+    let client = DripStreamClient::new(&env, &stream_id);
+
+    token::Client::new(&env, &token_addr).transfer(&sender, &stream_id, &deposit);
+
+    let now = env.ledger().timestamp();
+    client.initialize(
+        &sender,
+        &recipient,
+        &token_addr,
+        &rate,
+        &now,
+        &(now + duration),
+        &true, // clawback_enabled = true
+        &2_592_000_u64,
+    );
+
+    advance(&env, 100); // Let some time pass
+    client.pause(&sender);
+
+    // Sender should NOT be able to clawback while paused
+    let result = client.try_clawback(&sender);
+    assert_eq!(result, Err(Ok(Error::NotPaused)));
+}

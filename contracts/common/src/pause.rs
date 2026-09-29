@@ -22,7 +22,7 @@
 //! [`set_paused`] are low-level storage helpers like the per-contract ones they
 //! replace.
 
-use soroban_sdk::Env;
+use soroban_sdk::{contracttype, Env, TryFromVal, Val};
 
 use crate::rbac::StorageKey;
 
@@ -37,23 +37,88 @@ pub enum PausedError {
     ContractPaused,
 }
 
+/// Detailed pause state for emergency pause.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PauseState {
+    pub paused: bool,
+    pub paused_at: u64,
+    pub max_duration: Option<u64>,
+}
+
 /// Reads the emergency-pause flag stored under `paused_key` in `instance()`
 /// storage.
 ///
 /// Defaults to `false` when the key was never written, so a contract deployed
 /// before the pause feature existed is treated as running normally rather than
 /// halting every call.
+///
+/// If a pause duration limit (`max_duration`) was configured and the current
+/// ledger timestamp exceeds `paused_at + max_duration`, the pause is considered
+/// automatically expired and this returns `false`.
 pub fn is_paused<K: StorageKey>(env: &Env, paused_key: &K) -> bool {
-    env.storage().instance().get(paused_key).unwrap_or(false)
+    let storage = env.storage().instance();
+    let Some(raw_val) = storage.get::<K, Val>(paused_key) else {
+        return false;
+    };
+    if let Ok(b) = bool::try_from_val(env, &raw_val) {
+        return b;
+    }
+    if let Ok(state) = PauseState::try_from_val(env, &raw_val) {
+        if !state.paused {
+            return false;
+        }
+        if let Some(max_dur) = state.max_duration {
+            let now = env.ledger().timestamp();
+            if now > state.paused_at.saturating_add(max_dur) {
+                return false;
+            }
+        }
+        return true;
+    }
+    false
 }
 
-/// Writes the emergency-pause flag to `instance()` storage.
+/// Writes the emergency-pause flag to `instance()` storage with an optional duration limit.
+pub fn set_paused_with_duration<K: StorageKey>(
+    env: &Env,
+    paused_key: &K,
+    paused: bool,
+    max_duration: Option<u64>,
+) {
+    let now = env.ledger().timestamp();
+    let state = PauseState {
+        paused,
+        paused_at: if paused { now } else { 0 },
+        max_duration: if paused { max_duration } else { None },
+    };
+    env.storage().instance().set(paused_key, &state);
+}
+
+/// Writes the emergency-pause flag to `instance()` storage without a duration limit.
 ///
 /// Performs no authorization and no state-transition validation: the caller
 /// (the contract's own `pause`/`unpause`) owns both, and is responsible for
 /// emitting the matching event and bumping TTL.
 pub fn set_paused<K: StorageKey>(env: &Env, paused_key: &K, paused: bool) {
-    env.storage().instance().set(paused_key, &paused);
+    set_paused_with_duration(env, paused_key, paused, None);
+}
+
+/// Returns the current `PauseState` stored under `paused_key`, if any.
+pub fn get_pause_state<K: StorageKey>(env: &Env, paused_key: &K) -> Option<PauseState> {
+    let storage = env.storage().instance();
+    let raw_val = storage.get::<K, Val>(paused_key)?;
+    if let Ok(state) = PauseState::try_from_val(env, &raw_val) {
+        Some(state)
+    } else if let Ok(b) = bool::try_from_val(env, &raw_val) {
+        Some(PauseState {
+            paused: b,
+            paused_at: 0,
+            max_duration: None,
+        })
+    } else {
+        None
+    }
 }
 
 /// The pause gate: `Ok(())` when the contract is running, `Err` while halted.
@@ -82,6 +147,7 @@ pub fn require_not_paused_flag(paused: bool) -> Result<(), PausedError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use soroban_sdk::testutils::Ledger as _;
     use soroban_sdk::{contract, contractimpl, contracttype};
 
     // ── Contract frame ────────────────────────────────────────────────────────
@@ -210,6 +276,83 @@ mod tests {
 
             // Two distinct keys hold independent flags.
             assert!(!is_paused(&env, &PAUSED));
+        });
+    }
+
+    // ── Pause duration limit & auto-unpause ───────────────────────────────────
+
+    #[test]
+    fn pause_with_duration_automatically_unpauses_after_expiry() {
+        let env = Env::default();
+        let max_duration = 3600; // 1 hour
+
+        in_contract(&env, || {
+            // Set timestamp to 1000
+            env.ledger().set_timestamp(1000);
+
+            set_paused_with_duration(&env, &PAUSED, true, Some(max_duration));
+            assert!(is_paused(&env, &PAUSED));
+            assert_eq!(
+                require_not_paused(&env, &PAUSED),
+                Err(PausedError::ContractPaused)
+            );
+
+            let state = get_pause_state(&env, &PAUSED).unwrap();
+            assert!(state.paused);
+            assert_eq!(state.paused_at, 1000);
+            assert_eq!(state.max_duration, Some(max_duration));
+
+            // Advance time to exactly paused_at + max_duration (4600) -> still paused
+            env.ledger().set_timestamp(4600);
+            assert!(is_paused(&env, &PAUSED));
+            assert_eq!(
+                require_not_paused(&env, &PAUSED),
+                Err(PausedError::ContractPaused)
+            );
+
+            // Advance time to 4601 (> paused_at + max_duration) -> auto unpaused!
+            env.ledger().set_timestamp(4601);
+            assert!(!is_paused(&env, &PAUSED));
+            assert_eq!(require_not_paused(&env, &PAUSED), Ok(()));
+        });
+    }
+
+    #[test]
+    fn unpause_clears_duration_and_paused_state() {
+        let env = Env::default();
+
+        in_contract(&env, || {
+            env.ledger().set_timestamp(1000);
+            set_paused_with_duration(&env, &PAUSED, true, Some(60));
+            assert!(is_paused(&env, &PAUSED));
+
+            set_paused(&env, &PAUSED, false);
+            assert!(!is_paused(&env, &PAUSED));
+            assert_eq!(require_not_paused(&env, &PAUSED), Ok(()));
+
+            let state = get_pause_state(&env, &PAUSED).unwrap();
+            assert!(!state.paused);
+            assert_eq!(state.paused_at, 0);
+            assert_eq!(state.max_duration, None);
+        });
+    }
+
+    #[test]
+    fn legacy_boolean_storage_compatibility() {
+        let env = Env::default();
+
+        in_contract(&env, || {
+            // Simulate legacy contract writing raw bool into instance storage
+            env.storage().instance().set(&PAUSED, &true);
+            assert!(is_paused(&env, &PAUSED));
+            assert_eq!(
+                require_not_paused(&env, &PAUSED),
+                Err(PausedError::ContractPaused)
+            );
+
+            env.storage().instance().set(&PAUSED, &false);
+            assert!(!is_paused(&env, &PAUSED));
+            assert_eq!(require_not_paused(&env, &PAUSED), Ok(()));
         });
     }
 }

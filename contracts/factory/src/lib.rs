@@ -1,6 +1,6 @@
 #![no_std]
 
-mod deploy;
+pub mod deploy;
 mod errors;
 mod events;
 mod governance;
@@ -14,7 +14,8 @@ pub mod ttl;
 
 // Import `token` as `tok` to avoid shadowing by any `token: Address` parameter.
 use soroban_sdk::{
-    contract, contractimpl, panic_with_error, token as tok, Address, BytesN, Env, IntoVal, Vec,
+    contract, contractimpl, panic_with_error, token as tok, Address, BytesN, Env, IntoVal, Map,
+    Vec,
 };
 
 use drip_common::is_zero_address;
@@ -319,7 +320,13 @@ impl DripFactory {
             config.force_cancel_pause_secs.into_val(&env),
         ];
 
-        let stream_addr = deploy::deploy_stream(&env, &wasm_hash, stream_id, init_args);
+        let stream_addr = match deploy::deploy_stream(&env, &wasm_hash, stream_id, init_args) {
+            Ok(addr) => addr,
+            Err(e) => {
+                env.storage().instance().set(&DataKey::CreateLock, &false);
+                return Err(e);
+            }
+        };
 
         // Forward the deposit into the newly deployed stream contract.
         let stream_balance_before = tk.balance(&stream_addr);
@@ -342,9 +349,17 @@ impl DripFactory {
         env.storage()
             .persistent()
             .set(&DataKey::StreamAddr(stream_id), &stream_addr);
+        env.storage()
+            .persistent()
+            .set(&DataKey::IsKnownStream(stream_addr.clone()), &true);
         // Extend TTL on the stream address entry so it outlives ledger pruning.
         env.storage().persistent().extend_ttl(
             &DataKey::StreamAddr(stream_id),
+            ttl::THRESHOLD,
+            ttl::EXTEND_TO,
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::IsKnownStream(stream_addr.clone()),
             ttl::THRESHOLD,
             ttl::EXTEND_TO,
         );
@@ -488,6 +503,11 @@ impl DripFactory {
         index::migrate_recipient_index(&env, recipient, max_pages)
     }
 
+    /// Read-only: maximum number of streams accepted in a single batch operation (Issue #625).
+    pub fn max_batch_size(_env: Env) -> u32 {
+        MAX_BATCH_SIZE
+    }
+
     /// Cancel multiple streams in one transaction, all authorized by the
     /// same `sender`.
     ///
@@ -516,20 +536,16 @@ impl DripFactory {
         }
 
         // Deduplicate addresses to prevent attempting multiple cancels on the same stream.
-        // Issue #416: If a duplicated address is passed, the first cancel succeeds
+        // Issue #416, #627: If a duplicated address is passed, the first cancel succeeds
         // and sets FLAG_CANCELLED; the second cancel on the now-cancelled stream would
         // return Error::StreamCancelled, which the non-try_ variant turns into a panic.
         // Deduplicating the list ensures each unique stream is cancelled exactly once.
+        // Uses a Map-backed set (O(log n) lookup/insert) rather than an O(n²) nested loop scan.
+        let mut seen = Map::new(&env);
         let mut unique_addresses: Vec<Address> = Vec::new(&env);
         for stream_addr in stream_addresses.iter() {
-            let mut already_seen = false;
-            for seen_addr in unique_addresses.iter() {
-                if stream_addr == seen_addr {
-                    already_seen = true;
-                    break;
-                }
-            }
-            if !already_seen {
+            if !seen.contains_key(stream_addr.clone()) {
+                seen.set(stream_addr.clone(), ());
                 unique_addresses.push_back(stream_addr);
             }
         }
@@ -539,20 +555,35 @@ impl DripFactory {
             stream_client.cancel(&sender);
 
             // Decrement the active-stream counter for every factory-routed
-            // cancellation. Direct cancellations that bypass the factory can
-            // be accounted for via `record_cancel` below.
-            let mut aggregate: Aggregate = env
+            // cancellation and record its cancellation to prevent double decrement.
+            let already_recorded: bool = env
                 .storage()
-                .instance()
-                .get(&DataKey::Aggregate)
-                .unwrap_or(Aggregate {
-                    total_supply: 0,
-                    active_streams: 0,
-                });
-            aggregate.active_streams = aggregate.active_streams.saturating_sub(1);
-            env.storage()
-                .instance()
-                .set(&DataKey::Aggregate, &aggregate);
+                .persistent()
+                .get(&DataKey::CancelledStream(stream_addr.clone()))
+                .unwrap_or(false);
+            if !already_recorded {
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::CancelledStream(stream_addr.clone()), &true);
+                env.storage().persistent().extend_ttl(
+                    &DataKey::CancelledStream(stream_addr.clone()),
+                    ttl::THRESHOLD,
+                    ttl::EXTEND_TO,
+                );
+
+                let mut aggregate: Aggregate = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::Aggregate)
+                    .unwrap_or(Aggregate {
+                        total_supply: 0,
+                        active_streams: 0,
+                    });
+                aggregate.active_streams = aggregate.active_streams.saturating_sub(1);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::Aggregate, &aggregate);
+            }
         }
 
         Ok(())
@@ -594,20 +625,53 @@ impl DripFactory {
     ///
     /// Direct cancellations that do not go through `cancel_batch_streams`
     /// can call this to keep the aggregate `active_streams` counter accurate.
-    /// The call is idempotent: cancelling an already-zero counter leaves it at
-    /// zero. Stream contracts that were not deployed through this factory
-    /// cannot meaningfully decrement the counter below its true value because
-    /// each decrement corresponds to a stream that the factory counted at
-    /// creation time.
-    pub fn record_cancel(env: Env) {
-        let mut aggregate: Aggregate =
-            env.storage()
-                .instance()
-                .get(&DataKey::Aggregate)
-                .unwrap_or(Aggregate {
-                    total_supply: 0,
-                    active_streams: 0,
-                });
+    /// Requires the stream address, verifies that the stream was deployed by
+    /// this factory (`IsKnownStream`), that it has not already had its
+    /// cancellation recorded, and that the stream contract is currently in a
+    /// cancelled state before decrementing `active_streams`. Repeat calls for
+    /// the same stream are idempotent no-ops.
+    pub fn record_cancel(env: Env, stream: Address) {
+        let is_known: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::IsKnownStream(stream.clone()))
+            .unwrap_or(false);
+        if !is_known {
+            return;
+        }
+
+        let already_recorded: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CancelledStream(stream.clone()))
+            .unwrap_or(false);
+        if already_recorded {
+            return;
+        }
+
+        let stream_client = drip_stream::DripStreamClient::new(&env, &stream);
+        let stream_info = stream_client.info();
+        if !stream_info.is_cancelled() {
+            return;
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::CancelledStream(stream.clone()), &true);
+        env.storage().persistent().extend_ttl(
+            &DataKey::CancelledStream(stream),
+            ttl::THRESHOLD,
+            ttl::EXTEND_TO,
+        );
+
+        let mut aggregate: Aggregate = env
+            .storage()
+            .instance()
+            .get(&DataKey::Aggregate)
+            .unwrap_or(Aggregate {
+                total_supply: 0,
+                active_streams: 0,
+            });
         aggregate.active_streams = aggregate.active_streams.saturating_sub(1);
         env.storage()
             .instance()
@@ -741,6 +805,14 @@ impl DripFactory {
             .instance()
             .set(&DataKey::StreamWasmHash, &new_wasm_hash);
         Ok(())
+    }
+
+    /// Read-only: the WASM hash currently configured for stream deployments (Issue #626).
+    pub fn stream_wasm_hash(env: Env) -> Result<BytesN<32>, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::StreamWasmHash)
+            .ok_or(Error::NotInitialized)
     }
 
     /// Replace this contract's own WASM bytecode.
@@ -892,10 +964,22 @@ impl DripFactory {
 
     /// Estimate the Soroban resource cost for a given stream operation.
     ///
-    /// Returns a [`FeeEstimate`] with the operation's expected CPU
-    /// instructions and ledger entry counts. The actual network fee in
-    /// stroops is computed by the frontend using `simulateTransaction`,
-    /// which returns the exact cost from the current network base fee.
+    /// Returns a [`FeeEstimate`] with baseline CPU instruction and ledger entry
+    /// counts derived from profiling benchmarks on standard contract deployments.
+    ///
+    /// # Note on Static Estimates vs. Live Simulation
+    /// The values returned here are static, deterministic reference estimates
+    /// intended for fast off-chain previews and heuristic displays without requiring
+    /// RPC simulation round-trips. The `_env` parameter is preserved for interface
+    /// consistency and future dynamic metering.
+    ///
+    /// The actual network fee in stroops is computed by the client via RPC
+    /// `simulateTransaction`, which returns the exact cost against the live ledger state
+    /// and current network base fee.
+    ///
+    /// Whenever contract logic evolves or new storage writes / cross-contract calls
+    /// are added to an operation path, the corresponding benchmark profile in this match
+    /// and `CHANGELOG.md` should be re-profiled and updated.
     ///
     /// This is a read-only call — no state is modified, no auth is required.
     pub fn estimate_fee(_env: Env, operation: StreamOperation) -> FeeEstimate {
@@ -1021,5 +1105,17 @@ impl DripFactory {
             cpu_instructions,
             ledger_entries,
         }
+    }
+
+    /// Read-only: checks if a specific address was deployed as a stream by this factory (Issue #691).
+    pub fn is_known_stream(env: Env, address: Address) -> bool {
+        let key = DataKey::IsKnownStream(address);
+        let is_known: bool = env.storage().persistent().get(&key).unwrap_or(false);
+        if is_known {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, ttl::THRESHOLD, ttl::EXTEND_TO);
+        }
+        is_known
     }
 }

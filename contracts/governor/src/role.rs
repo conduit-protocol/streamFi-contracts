@@ -25,6 +25,12 @@ fn members_key(role: Role) -> DataKey {
 // ── Public API (delegates to drip_common::rbac) ────────────────────────────
 
 /// Whether `account` currently holds `role`.
+///
+/// **Storage note:** Role membership is stored per (role, account) key in instance storage
+/// (see `role_key` and `DataKey::Role`). Lookup is O(1) — a direct storage read, not a
+/// traversal of role members. This remains efficient regardless of the number of accounts
+/// holding the role, so `require_role` (called on every role-gated write) has constant-time
+/// cost independent of membership size.
 pub fn has_role(env: &Env, role: Role, account: &Address) -> bool {
     rbac::has_role(env, &role_key(role, account))
 }
@@ -35,6 +41,24 @@ pub fn has_role(env: &Env, role: Role, account: &Address) -> bool {
 #[allow(dead_code)]
 pub fn admin_count(env: &Env) -> u32 {
     rbac::admin_count(env, &DataKey::AdminCount)
+}
+
+/// Grants `role` to `account` with an optional expiration timestamp (Issue #692).
+pub fn grant_with_expiration(
+    env: &Env,
+    role: Role,
+    account: &Address,
+    expires_at: Option<u64>,
+) -> bool {
+    rbac::grant_with_expiration(
+        env,
+        &role_key(role, account),
+        &DataKey::AdminCount,
+        &members_key(role),
+        role == Role::Admin,
+        account,
+        expires_at,
+    )
 }
 
 /// Grants `role` to `account`.

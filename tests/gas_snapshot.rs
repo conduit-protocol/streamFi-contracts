@@ -15,13 +15,11 @@
 use drip_batch_processor::{BatchTransferProcessor, BatchTransferProcessorClient};
 use drip_factory::{DripFactory, DripFactoryClient};
 use drip_governor::{DripGovernor, DripGovernorClient};
-use drip_oracle::{OracleConfig, Role as OracleRole, TwapOracle, TwapOracleClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
     token, Address, BytesN, Env,
 };
 use std::collections::BTreeMap;
-use token_vault::{TokenVault, TokenVaultClient};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct Snapshot {
@@ -150,7 +148,17 @@ fn gas_snapshot_matches_committed_file() {
         .address();
     let batch_funder = Address::generate(&env);
     token::StellarAssetClient::new(&env, &token_addr).mint(&batch_funder, &100);
+    // Generated before the budget resets below so address generation is not
+    // counted as contract cost. Shared by preview and process: the preview
+    // must be the cheap read-only mirror of the paying call.
     let (recipients, amounts) = batch_inputs(&env, 100);
+
+    env.budget().reset_default();
+    processor.preview_batch(&recipients, &amounts);
+    instructions.insert(
+        "batch_processor/preview_batch_100".into(),
+        env.budget().cpu_instruction_cost(),
+    );
 
     env.budget().reset_default();
     processor.process_batch(&batch_funder, &token_addr, &recipients, &amounts);

@@ -15,6 +15,7 @@ use drip_common::{is_zero_address, pause};
 
 pub use errors::Error;
 use storage::{DataKey, StreamInfo, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED};
+pub use storage::{CliffConfig, SplitConfig, StreamConfig, StreamStatus, StreamSummary};
 
 #[contract]
 pub struct DripStream;
@@ -221,6 +222,23 @@ impl DripStream {
         state::assert_not_cancelled(&info)?;
         info.recipient.require_auth();
 
+        let min_interval: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinWithdrawalInterval)
+            .unwrap_or(0);
+        if min_interval > 0 {
+            let now = env.ledger().timestamp();
+            let last_withdrawal: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::LastWithdrawalTime)
+                .unwrap_or(0);
+            if last_withdrawal > 0 && now < last_withdrawal.saturating_add(min_interval) {
+                return Err(Error::WithdrawalTooFrequent);
+            }
+        }
+
         // `available` is the recipient's accrued-but-unwithdrawn entitlement
         // (rate * elapsed - withdrawn). If nothing has accrued yet there is
         // genuinely nothing to send.
@@ -261,10 +279,34 @@ impl DripStream {
         state::save(env, &updated);
 
         // Perform the transfer, then derive `remaining` from the single balance
-        // captured above. `checked_sub` (rather than a bare `-`) guarantees no
-        // underflow panic even if a fee-on-transfer / rebasing token leaves the
-        // contract with less than `to_send`; the withdrawal is reverted instead.
-        tk.transfer(&contract_addr, &info.recipient, &to_send);
+        let split_opt: Option<SplitConfig> = env.storage().instance().get(&DataKey::SplitConfig);
+        if let Some(split) = split_opt {
+            let secondary_amount = to_send
+                .checked_mul(split.split_bps as i128)
+                .ok_or(Error::ArithmeticOverflow)?
+                / 10_000;
+            let primary_amount = to_send
+                .checked_sub(secondary_amount)
+                .ok_or(Error::ArithmeticOverflow)?;
+
+            if primary_amount > 0 {
+                tk.transfer(&contract_addr, &info.recipient, &primary_amount);
+            }
+            if secondary_amount > 0 {
+                tk.transfer(
+                    &contract_addr,
+                    &split.secondary_recipient,
+                    &secondary_amount,
+                );
+            }
+        } else {
+            tk.transfer(&contract_addr, &info.recipient, &to_send);
+        }
+
+        let now = env.ledger().timestamp();
+        env.storage()
+            .instance()
+            .set(&DataKey::LastWithdrawalTime, &now);
 
         let remaining = balance
             .checked_sub(to_send)
@@ -324,7 +366,29 @@ impl DripStream {
 
         // Pay the recipient their earned-but-unwithdrawn portion.
         if owed_to_recipient > 0 {
-            tk.transfer(&contract_addr, &info.recipient, &owed_to_recipient);
+            let split_opt: Option<SplitConfig> =
+                env.storage().instance().get(&DataKey::SplitConfig);
+            if let Some(split) = split_opt {
+                let secondary_amount = owed_to_recipient
+                    .checked_mul(split.split_bps as i128)
+                    .ok_or(Error::ArithmeticOverflow)?
+                    / 10_000;
+                let primary_amount = owed_to_recipient
+                    .checked_sub(secondary_amount)
+                    .ok_or(Error::ArithmeticOverflow)?;
+                if primary_amount > 0 {
+                    tk.transfer(&contract_addr, &info.recipient, &primary_amount);
+                }
+                if secondary_amount > 0 {
+                    tk.transfer(
+                        &contract_addr,
+                        &split.secondary_recipient,
+                        &secondary_amount,
+                    );
+                }
+            } else {
+                tk.transfer(&contract_addr, &info.recipient, &owed_to_recipient);
+            }
         }
 
         // Refund the unstreamed remainder to the sender.
@@ -436,6 +500,9 @@ impl DripStream {
     /// cancellation check -- so an unauthenticated call fails as cheaply
     /// as possible instead of paying for storage-extension instructions
     /// it never needed.
+    /// Deposits additional tokens into the stream (Issue #690: permits external gift funding).
+    ///
+    /// Callable by any authenticated account (sender, recipient, operator, or third-party benefactor).
     pub fn top_up(env: Env, caller: Address, amount: i128) -> Result<(), Error> {
         state::with_guard(&env, |env| Self::_top_up(env, &caller, amount))
     }
@@ -446,7 +513,7 @@ impl DripStream {
         }
 
         let info = state::load(env);
-        require_sender_or_operator(env, caller, &info.sender)?;
+        caller.require_auth();
 
         ttl::bump(env);
         state::assert_not_cancelled(&info)?;
@@ -671,6 +738,67 @@ impl DripStream {
         math::withdrawable(&env, &info)
     }
 
+    /// Read-only: dry-run validation for a proposed withdrawal amount.
+    ///
+    /// Runs all pre-transfer validation checks performed by `withdraw()`
+    /// (amount positivity, stream state, rate limits, accrual, and token balance)
+    /// without mutating state or performing token transfers.
+    pub fn validate_withdraw(env: Env, amount: i128) -> Result<(), Error> {
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        let info = state::load(&env);
+        state::assert_not_cancelled(&info)?;
+
+        let min_interval: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinWithdrawalInterval)
+            .unwrap_or(0);
+        if min_interval > 0 {
+            let now = env.ledger().timestamp();
+            let last_withdrawal: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::LastWithdrawalTime)
+                .unwrap_or(0);
+            if last_withdrawal > 0 && now < last_withdrawal.saturating_add(min_interval) {
+                return Err(Error::WithdrawalTooFrequent);
+            }
+        }
+
+        let available = math::withdrawable(&env, &info)?;
+        if available == 0 {
+            return Err(Error::NothingToWithdraw);
+        }
+
+        let tk = token::Client::new(&env, &info.token);
+        let contract_addr = env.current_contract_address();
+        let balance = tk.balance(&contract_addr);
+        let to_send = amount.min(available).min(balance);
+        if to_send == 0 {
+            return Err(Error::StreamUnderfunded);
+        }
+
+        let _new_withdrawn = info
+            .withdrawn
+            .checked_add(to_send)
+            .ok_or(Error::ArithmeticOverflow)?;
+
+        let split_opt: Option<SplitConfig> = env.storage().instance().get(&DataKey::SplitConfig);
+        if let Some(split) = split_opt {
+            let secondary_amount = to_send
+                .checked_mul(split.split_bps as i128)
+                .ok_or(Error::ArithmeticOverflow)?
+                / 10_000;
+            to_send
+                .checked_sub(secondary_amount)
+                .ok_or(Error::ArithmeticOverflow)?;
+        }
+
+        Ok(())
+    }
+
     /// Read-only: whether clawback is enabled for this stream.
     ///
     /// Returns the `clawback_enabled` flag that was set at initialization time.
@@ -747,7 +875,29 @@ impl DripStream {
         state::save(env, &cancelled_info);
 
         if owed_to_recipient > 0 {
-            tk.transfer(&contract_addr, &info.recipient, &owed_to_recipient);
+            let split_opt: Option<SplitConfig> =
+                env.storage().instance().get(&DataKey::SplitConfig);
+            if let Some(split) = split_opt {
+                let secondary_amount = owed_to_recipient
+                    .checked_mul(split.split_bps as i128)
+                    .ok_or(Error::ArithmeticOverflow)?
+                    / 10_000;
+                let primary_amount = owed_to_recipient
+                    .checked_sub(secondary_amount)
+                    .ok_or(Error::ArithmeticOverflow)?;
+                if primary_amount > 0 {
+                    tk.transfer(&contract_addr, &info.recipient, &primary_amount);
+                }
+                if secondary_amount > 0 {
+                    tk.transfer(
+                        &contract_addr,
+                        &split.secondary_recipient,
+                        &secondary_amount,
+                    );
+                }
+            } else {
+                tk.transfer(&contract_addr, &info.recipient, &owed_to_recipient);
+            }
         }
         if refund_to_sender > 0 {
             tk.transfer(&contract_addr, &info.sender, &refund_to_sender);
@@ -856,6 +1006,91 @@ impl DripStream {
         env.storage().instance().get(&DataKey::Operator)
     }
 
+    /// Configure a secondary recipient and basis point split (e.g. 2000 for 20%).
+    ///
+    /// Callable by sender, delegated operator, or current recipient.
+    pub fn set_split_recipient(
+        env: Env,
+        caller: Address,
+        secondary_recipient: Address,
+        split_bps: u32,
+    ) -> Result<(), Error> {
+        state::with_guard(&env, |env| {
+            Self::_set_split_recipient(env, &caller, &secondary_recipient, split_bps)
+        })
+    }
+
+    fn _set_split_recipient(
+        env: &Env,
+        caller: &Address,
+        secondary_recipient: &Address,
+        split_bps: u32,
+    ) -> Result<(), Error> {
+        ttl::bump(env);
+        let info = state::load(env);
+        state::assert_not_cancelled(&info)?;
+
+        let operator = env.storage().instance().get(&DataKey::Operator);
+        let is_sender = caller == &info.sender;
+        let is_op = operator.as_ref().map(|op| caller == op).unwrap_or(false);
+        let is_recipient = caller == &info.recipient;
+
+        if !is_sender && !is_op && !is_recipient {
+            return Err(Error::NotAuthorized);
+        }
+        caller.require_auth();
+
+        if split_bps == 0 || split_bps >= 10_000 {
+            return Err(Error::InvalidAmount);
+        }
+
+        if is_zero_address(env, secondary_recipient)
+            || secondary_recipient == &info.sender
+            || secondary_recipient == &info.recipient
+        {
+            return Err(Error::InvalidRecipient);
+        }
+
+        let config = SplitConfig {
+            secondary_recipient: secondary_recipient.clone(),
+            split_bps,
+        };
+        env.storage().instance().set(&DataKey::SplitConfig, &config);
+
+        events::split_recipient_set(env, caller, secondary_recipient, split_bps);
+        Ok(())
+    }
+
+    /// Remove the configured split recipient, directing 100% of future claims to the primary recipient.
+    pub fn remove_split_recipient(env: Env, caller: Address) -> Result<(), Error> {
+        state::with_guard(&env, |env| Self::_remove_split_recipient(env, &caller))
+    }
+
+    fn _remove_split_recipient(env: &Env, caller: &Address) -> Result<(), Error> {
+        ttl::bump(env);
+        let info = state::load(env);
+        state::assert_not_cancelled(&info)?;
+
+        let operator = env.storage().instance().get(&DataKey::Operator);
+        let is_sender = caller == &info.sender;
+        let is_op = operator.as_ref().map(|op| caller == op).unwrap_or(false);
+        let is_recipient = caller == &info.recipient;
+
+        if !is_sender && !is_op && !is_recipient {
+            return Err(Error::NotAuthorized);
+        }
+        caller.require_auth();
+
+        env.storage().instance().remove(&DataKey::SplitConfig);
+        events::split_recipient_removed(env, caller);
+        Ok(())
+    }
+
+    /// Read-only: get the configured split configuration, if any.
+    pub fn split_recipient(env: Env) -> Option<SplitConfig> {
+        env.storage().instance().get(&DataKey::SplitConfig)
+    }
+
     /// Read-only: total tokens streamed so far (regardless of withdrawals).
     ///
     /// Useful for UIs that want to show "X streamed, Y withdrawn, Z remaining"
@@ -901,4 +1136,139 @@ impl DripStream {
             .get(&DataKey::StorageVersion)
             .unwrap_or(0)
     }
+
+    /// Read-only: consolidated stream summary in a single call.
+    pub fn get_summary(env: Env) -> StreamSummary {
+        let info = state::load(&env);
+        let now = env.ledger().timestamp();
+
+        let status = if info.is_cancelled() {
+            StreamStatus::Cancelled
+        } else if info.is_paused() {
+            StreamStatus::Paused
+        } else if now < info.start_time {
+            StreamStatus::Pending
+        } else if info.end_time > 0 && now >= info.end_time {
+            StreamStatus::Completed
+        } else {
+            StreamStatus::Active
+        };
+
+        let streamed_amount = Self::streamed_total(env.clone()).unwrap_or(0);
+
+        let total_amount = if info.end_time > info.start_time {
+            (info.end_time - info.start_time) as i128 * info.rate_per_second
+        } else {
+            let tk = soroban_sdk::token::Client::new(&env, &info.token);
+            tk.balance(&env.current_contract_address()) + info.withdrawn
+        };
+
+        StreamSummary {
+            sender: info.sender,
+            recipient: info.recipient,
+            token: info.token,
+            total_amount,
+            streamed_amount,
+            status,
+            start_time: info.start_time,
+            stop_time: info.end_time,
+        }
+    }
+
+    /// Read-only alias for `get_summary`.
+    pub fn get_stream_summary(env: Env) -> StreamSummary {
+        Self::get_summary(env)
+    }
+
+    /// Set a cliff unlock configuration for this stream (Issue #719).
+    ///
+    /// Credits `cliff_unlock_amount` immediately upon `cliff_time` expiration,
+    /// followed by linear streaming of remaining funds.
+    pub fn set_cliff(
+        env: Env,
+        caller: Address,
+        cliff_time: u64,
+        cliff_unlock_amount: i128,
+    ) -> Result<(), Error> {
+        state::with_guard(&env, |env| {
+            Self::_set_cliff(env, &caller, cliff_time, cliff_unlock_amount)
+        })
+    }
+
+    fn _set_cliff(
+        env: &Env,
+        caller: &Address,
+        cliff_time: u64,
+        cliff_unlock_amount: i128,
+    ) -> Result<(), Error> {
+        ttl::bump(env);
+        let info = state::load(env);
+        state::assert_not_cancelled(&info)?;
+        require_sender_or_operator(env, caller, &info.sender)?;
+
+        if cliff_unlock_amount < 0 {
+            return Err(Error::InvalidAmount);
+        }
+        if cliff_time < info.start_time || (info.end_time > 0 && cliff_time >= info.end_time) {
+            return Err(Error::InvalidTimeRange);
+        }
+
+        let cfg = CliffConfig {
+            cliff_time,
+            cliff_unlock_amount,
+        };
+        env.storage().instance().set(&DataKey::CliffConfig, &cfg);
+        events::cliff_configured(env, caller, cliff_time, cliff_unlock_amount);
+        Ok(())
+    }
+
+    /// Read-only: get the configured cliff configuration, if any (Issue #719).
+    pub fn cliff_config(env: Env) -> Option<CliffConfig> {
+        env.storage().instance().get(&DataKey::CliffConfig)
+    }
+
+    /// Set a configurable minimum withdrawal interval in seconds (Issue #693).
+    pub fn set_min_withdrawal_interval(
+        env: Env,
+        caller: Address,
+        interval_seconds: u64,
+    ) -> Result<(), Error> {
+        state::with_guard(&env, |env| {
+            Self::_set_min_withdrawal_interval(env, &caller, interval_seconds)
+        })
+    }
+
+    fn _set_min_withdrawal_interval(
+        env: &Env,
+        caller: &Address,
+        interval_seconds: u64,
+    ) -> Result<(), Error> {
+        ttl::bump(env);
+        let info = state::load(env);
+        state::assert_not_cancelled(&info)?;
+        require_sender_or_operator(env, caller, &info.sender)?;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::MinWithdrawalInterval, &interval_seconds);
+        events::min_withdrawal_interval_set(env, caller, interval_seconds);
+        Ok(())
+    }
+
+    /// Read-only: get configured minimum withdrawal interval in seconds.
+    pub fn min_withdrawal_interval(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MinWithdrawalInterval)
+            .unwrap_or(0)
+    }
+
+    /// Read-only: get timestamp of last withdrawal.
+    pub fn last_withdrawal_time(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::LastWithdrawalTime)
+            .unwrap_or(0)
+    }
 }
+

@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Vec};
+use soroban_sdk::{contracttype, Address, BytesN, Vec};
 
 /// Identifies which on-chain stream operation to estimate fees for.
 ///
@@ -178,6 +178,7 @@ pub const CURRENT_STORAGE_VERSION: u32 = 1;
 ///   per-stream addresses, per-user indices). Avoids hitting instance size limits
 ///   as the protocol scales. Each entry has its own TTL and can be extended independently.
 #[contracttype]
+#[derive(Clone)]
 pub enum DataKey {
     /// **Instance storage.** Monotonically incrementing stream counter.
     /// Key: `DataKey::StreamCount` (no inner type, discriminant only)
@@ -294,4 +295,10 @@ pub enum DataKey {
     /// Key: `DataKey::FactoryStorageVersion` (no inner type, discriminant only)
     /// Value: `u32`
     FactoryStorageVersion,
+    /// **Persistent storage.** Tracks salts used for stream deployments.
+    SaltUsed(BytesN<32>),
+    /// **Persistent storage.** Set to true for stream contracts deployed by this factory (Issue #691).
+    IsKnownStream(Address),
+    /// **Persistent storage.** Set to true once a stream's cancellation has been recorded in the aggregate counter (Issue #622).
+    CancelledStream(Address),
 }

@@ -141,4 +141,33 @@ mod factory_batch_cancel {
             "Second cancel should fail with StreamCancelled"
         );
     }
+
+    #[test]
+    fn factory_cancel_batch_streams_deduplicates_addresses() {
+        use drip_factory::{DripFactory, DripFactoryClient};
+
+        let env = base_env();
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let (stream1, _) = deploy_stream(&env, &sender, &recipient, 1_000, 3_600);
+        let (stream2, _) = deploy_stream(&env, &sender, &recipient, 1_000, 3_600);
+
+        let factory_id = env.register_contract(None, DripFactory);
+        let factory = DripFactoryClient::new(&env, &factory_id);
+        let dummy_hash = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+        factory.initialize(&dummy_hash, &Address::generate(&env));
+
+        let mut list = Vec::new(&env);
+        list.push_back(stream1.clone());
+        list.push_back(stream2.clone());
+        list.push_back(stream1.clone()); // duplicate of stream1
+        list.push_back(stream2.clone()); // duplicate of stream2
+
+        let res = factory.try_cancel_batch_streams(&sender, &list);
+        assert!(res.is_ok(), "cancel_batch_streams should deduplicate without failing: {:?}", res);
+
+        assert!(DripStreamClient::new(&env, &stream1).info().is_cancelled());
+        assert!(DripStreamClient::new(&env, &stream2).info().is_cancelled());
+    }
 }

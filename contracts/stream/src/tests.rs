@@ -264,7 +264,6 @@ fn pause_before_start_rejected() {
 // ── Cancel ────────────────────────────────────────────────────────────────────
 
 #[test]
-#[test]
 fn pause_after_end_rejected() {
     let s = Setup::new(100, 3600, false);
     // Advance past the end time.
@@ -276,6 +275,7 @@ fn pause_after_end_rejected() {
     assert_eq!(result, Err(Ok(Error::StreamEnded)));
 }
 
+#[test]
 fn cancel_before_start_refunds_full_deposit() {
     let s = Setup::new(100, 3600, false);
     let deposit = 100 * 3600;
@@ -1079,7 +1079,6 @@ fn extend_duration_rejects_on_arithmetic_overflow() {
     assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
 }
 
-
 // ── Cancellation CEI / settlement invariants (issue #78) ──────────────────────
 //
 // Issue #78 alleged a reentrancy drain in `cancel_batch_streams`. No such
@@ -1663,11 +1662,14 @@ fn non_sender_non_operator_rejected_by_resume() {
 }
 
 #[test]
-fn non_sender_non_operator_rejected_by_top_up() {
+fn non_sender_can_top_up_gift_funding() {
+    // Issue #690: top_up allows third-party gift funding with auth
     let s = Setup::new(100, 3600, false);
     let rando = Address::generate(&s.env);
+    let tok_admin = token::StellarAssetClient::new(&s.env, &s.token.address);
+    tok_admin.mint(&rando, &1_000);
     let result = s.client.try_top_up(&rando, &1_000);
-    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+    assert_eq!(result, Ok(Ok(())));
 }
 
 #[test]
@@ -1719,14 +1721,17 @@ fn revoked_operator_rejected_by_pause() {
 }
 
 #[test]
-fn revoked_operator_rejected_by_top_up() {
+fn revoked_operator_can_still_top_up_gift_funding() {
+    // Issue #690: any authenticated account can top up as a gift
     let s = Setup::new(100, 3600, false);
     let operator = Address::generate(&s.env);
     s.client.set_operator(&s.sender, &operator);
     s.client.revoke_operator(&s.sender);
 
+    let tok_admin = token::StellarAssetClient::new(&s.env, &s.token.address);
+    tok_admin.mint(&operator, &1_000);
     let result = s.client.try_top_up(&operator, &1_000);
-    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+    assert_eq!(result, Ok(Ok(())));
 }
 
 #[test]
@@ -1891,6 +1896,7 @@ fn flag_getters_map_to_correct_bit() {
         event_sequence: 0,
     };
 
+    #[allow(clippy::type_complexity)]
     let cases: [(u32, fn(&StreamInfo) -> bool, &str); 3] = [
         (FLAG_PAUSED, StreamInfo::is_paused, "paused"),
         (
@@ -2293,4 +2299,346 @@ fn stream_exposes_exactly_one_reentrancy_guard_api() {
 
     let _lock: fn(&Env) -> Result<(), Error> = crate::state::lock;
     let _unlock: fn(&Env) = crate::state::unlock;
+}
+
+// ── Split recipient tests ─────────────────────────────────────────────────
+
+#[test]
+fn set_split_recipient_and_withdraw_splits_proportionally() {
+    let s = Setup::new(100, 3600, false);
+    let secondary = Address::generate(&s.env);
+
+    // Sender configures split of 2000 bps (20%)
+    s.client.set_split_recipient(&s.sender, &secondary, &2000);
+
+    let split = s.client.split_recipient().unwrap();
+    assert_eq!(split.secondary_recipient, secondary);
+    assert_eq!(split.split_bps, 2000);
+
+    // Advance 10 seconds -> 1000 tokens accrued
+    s.advance_secs(10);
+
+    let recipient_before = s.token.balance(&s.recipient);
+    let secondary_before = s.token.balance(&secondary);
+
+    s.client.withdraw(&1000);
+
+    let recipient_after = s.token.balance(&s.recipient);
+    let secondary_after = s.token.balance(&secondary);
+
+    // 80% to primary (800), 20% to secondary (200)
+    assert_eq!(recipient_after - recipient_before, 800);
+    assert_eq!(secondary_after - secondary_before, 200);
+}
+
+#[test]
+fn recipient_can_configure_and_remove_split() {
+    let s = Setup::new(100, 3600, false);
+    let secondary = Address::generate(&s.env);
+
+    // Recipient configures split of 3000 bps (30%)
+    s.client
+        .set_split_recipient(&s.recipient, &secondary, &3000);
+    assert_eq!(s.client.split_recipient().unwrap().split_bps, 3000);
+
+    // Recipient removes split
+    s.client.remove_split_recipient(&s.recipient);
+    assert_eq!(s.client.split_recipient(), None);
+
+    s.advance_secs(10);
+    let recipient_before = s.token.balance(&s.recipient);
+    let secondary_before = s.token.balance(&secondary);
+
+    s.client.withdraw(&1000);
+
+    assert_eq!(s.token.balance(&s.recipient) - recipient_before, 1000);
+    assert_eq!(s.token.balance(&secondary) - secondary_before, 0);
+}
+
+#[test]
+fn cancel_stream_splits_accrued_tokens_proportionally() {
+    let s = Setup::new(100, 3600, false);
+    let secondary = Address::generate(&s.env);
+
+    s.client.set_split_recipient(&s.sender, &secondary, &2500); // 25%
+
+    // Advance 20 seconds -> 2000 tokens accrued
+    s.advance_secs(20);
+
+    let recipient_before = s.token.balance(&s.recipient);
+    let secondary_before = s.token.balance(&secondary);
+
+    s.client.cancel(&s.sender);
+
+    // 75% to primary (1500), 25% to secondary (500)
+    assert_eq!(s.token.balance(&s.recipient) - recipient_before, 1500);
+    assert_eq!(s.token.balance(&secondary) - secondary_before, 500);
+}
+
+#[test]
+fn split_recipient_validation_rejects_invalid_inputs() {
+    let s = Setup::new(100, 3600, false);
+    let stranger = Address::generate(&s.env);
+    let secondary = Address::generate(&s.env);
+
+    // Unauthorized caller
+    assert_eq!(
+        s.client
+            .try_set_split_recipient(&stranger, &secondary, &2000),
+        Err(Ok(Error::NotAuthorized))
+    );
+
+    // Zero basis points
+    assert_eq!(
+        s.client.try_set_split_recipient(&s.sender, &secondary, &0),
+        Err(Ok(Error::InvalidAmount))
+    );
+
+    // >= 10_000 basis points
+    assert_eq!(
+        s.client
+            .try_set_split_recipient(&s.sender, &secondary, &10000),
+        Err(Ok(Error::InvalidAmount))
+    );
+
+    // Secondary cannot be sender
+    assert_eq!(
+        s.client
+            .try_set_split_recipient(&s.sender, &s.sender, &2000),
+        Err(Ok(Error::InvalidRecipient))
+    );
+
+    // Secondary cannot be recipient
+    assert_eq!(
+        s.client
+            .try_set_split_recipient(&s.sender, &s.recipient, &2000),
+        Err(Ok(Error::InvalidRecipient))
+    );
+}
+
+#[test]
+fn test_get_summary_returns_consolidated_state() {
+    let s = Setup::new(100, 3600, false);
+    let now = s.env.ledger().timestamp();
+    let summary = s.client.get_summary();
+    assert_eq!(summary.sender, s.sender);
+    assert_eq!(summary.recipient, s.recipient);
+    assert_eq!(summary.token, s.token.address);
+    assert_eq!(summary.total_amount, 360_000);
+    assert_eq!(summary.streamed_amount, 0);
+    assert_eq!(summary.status, crate::storage::StreamStatus::Active);
+    assert_eq!(summary.start_time, now);
+    assert_eq!(summary.stop_time, now + 3600);
+
+    // Also verify get_stream_summary alias
+    let alias_summary = s.client.get_stream_summary();
+    assert_eq!(summary, alias_summary);
+
+    // Advance 100 seconds
+    s.advance_secs(100);
+    let summary2 = s.client.get_summary();
+    assert_eq!(summary2.streamed_amount, 10_000);
+    assert_eq!(summary2.status, crate::storage::StreamStatus::Active);
+
+    // Pause the stream
+    s.client.pause(&s.sender);
+    let paused_summary = s.client.get_summary();
+    assert_eq!(paused_summary.status, crate::storage::StreamStatus::Paused);
+
+    // Resume the stream
+    s.client.resume(&s.sender);
+    let active_summary = s.client.get_summary();
+    assert_eq!(active_summary.status, crate::storage::StreamStatus::Active);
+
+    // Advance past end time
+    s.advance_secs(4000);
+    let completed_summary = s.client.get_summary();
+    assert_eq!(
+        completed_summary.status,
+        crate::storage::StreamStatus::Completed
+    );
+    assert_eq!(completed_summary.streamed_amount, 360_000);
+
+    // Cancel test on new setup
+    let s2 = Setup::new(100, 3600, false);
+    s2.client.cancel(&s2.sender);
+    let cancelled_summary = s2.client.get_summary();
+    assert_eq!(
+        cancelled_summary.status,
+        crate::storage::StreamStatus::Cancelled
+    );
+}
+
+#[test]
+fn test_third_party_top_up_gift_funding() {
+    let s = Setup::new(100, 3600, false);
+    let third_party = Address::generate(&s.env);
+
+    // Mint tokens to third party
+    let tok_admin = token::StellarAssetClient::new(&s.env, &s.token.address);
+    tok_admin.mint(&third_party, &50_000);
+
+    // Third party tops up the stream
+    assert!(s.client.try_top_up(&third_party, &50_000).is_ok());
+
+    let balance = s.token.balance(&s.client.address);
+    assert_eq!(balance, 360_000 + 50_000);
+}
+
+#[test]
+fn test_cliff_unlock_percentage_and_linear_streaming() {
+    let s = Setup::new(100, 3600, false);
+    let start = s.env.ledger().timestamp();
+    let cliff_time = start + 1000;
+    let upfront_unlock = 72_000; // 20% of 360,000
+
+    // Set cliff
+    assert!(s.client.try_set_cliff(&s.sender, &cliff_time, &upfront_unlock).is_ok());
+
+    // Before cliff: 0 withdrawable
+    s.advance_secs(500);
+    assert_eq!(s.client.streamed_total(), 0);
+
+    // At cliff: upfront 72,000 unlocked immediately
+    s.advance_secs(500); // now at start + 1000
+    assert_eq!(s.client.streamed_total(), 72_000);
+
+    // 100 seconds after cliff: 72,000 + 100 * 100 = 82,000
+    s.advance_secs(100);
+    assert_eq!(s.client.streamed_total(), 82_000);
+}
+
+#[test]
+fn test_min_withdrawal_interval_enforcement() {
+    let s = Setup::new(100, 3600, false);
+    // Set 60 seconds minimum interval
+    assert!(s
+        .client
+        .try_set_min_withdrawal_interval(&s.sender, &60)
+        .is_ok());
+    assert_eq!(s.client.min_withdrawal_interval(), 60);
+
+    // Advance 100s, withdraw
+    s.advance_secs(100);
+    assert_eq!(s.client.withdraw(&1000), 1000);
+    assert_eq!(s.client.last_withdrawal_time(), s.env.ledger().timestamp());
+
+    // Advance 30s (< 60s), second withdrawal should fail with WithdrawalTooFrequent
+    s.advance_secs(30);
+    let res = s.client.try_withdraw(&1000);
+    assert_eq!(
+        res.err().unwrap().unwrap(),
+        crate::errors::Error::WithdrawalTooFrequent
+    );
+
+    // Advance another 30s (total 60s elapsed since last withdrawal), should succeed
+    s.advance_secs(30);
+    assert_eq!(s.client.withdraw(&1000), 1000);
+}
+
+#[test]
+fn test_set_min_withdrawal_interval_auth() {
+    let s = Setup::new(100, 3600, false);
+    let unauthorized = Address::generate(&s.env);
+
+    let res = s
+        .client
+        .try_set_min_withdrawal_interval(&unauthorized, &60);
+    assert_eq!(
+        res.err().unwrap().unwrap(),
+        crate::errors::Error::NotAuthorized
+    );
+}
+
+
+// ── Issue #621: validate_withdraw dry-run query ─────────────────────────────
+
+#[test]
+fn validate_withdraw_success_and_does_not_mutate_state() {
+    let s = Setup::new(100, 3600, false);
+    s.advance_secs(10);
+
+    let withdrawable = s.client.withdrawable();
+    assert_eq!(withdrawable, 1000);
+
+    // Validate a partial withdrawal amount
+    assert_eq!(s.client.try_validate_withdraw(&500), Ok(Ok(())));
+
+    // Validate the exact withdrawable amount
+    assert_eq!(s.client.try_validate_withdraw(&1000), Ok(Ok(())));
+
+    // Verify dry-run did not mutate withdrawn amount or transfer tokens
+    let info = s.client.info();
+    assert_eq!(info.withdrawn, 0);
+    assert_eq!(s.token.balance(&s.recipient), 0);
+
+    // Actual withdraw succeeds afterwards
+    assert_eq!(s.client.withdraw(&500), 500);
+    assert_eq!(s.token.balance(&s.recipient), 500);
+}
+
+#[test]
+fn validate_withdraw_rejects_zero_and_negative_amount() {
+    let s = Setup::new(100, 3600, false);
+    s.advance_secs(10);
+
+    let res_zero = s.client.try_validate_withdraw(&0);
+    assert_eq!(
+        res_zero.err().unwrap().unwrap(),
+        crate::errors::Error::InvalidAmount
+    );
+
+    let res_neg = s.client.try_validate_withdraw(&-100);
+    assert_eq!(
+        res_neg.err().unwrap().unwrap(),
+        crate::errors::Error::InvalidAmount
+    );
+}
+
+#[test]
+fn validate_withdraw_rejects_before_any_elapsed() {
+    let s = Setup::new(100, 3600, false);
+    // At start timestamp 0, nothing has accrued yet
+    let res = s.client.try_validate_withdraw(&100);
+    assert_eq!(
+        res.err().unwrap().unwrap(),
+        crate::errors::Error::NothingToWithdraw
+    );
+}
+
+#[test]
+fn validate_withdraw_rejects_after_cancelled() {
+    let s = Setup::new(100, 3600, false);
+    s.advance_secs(10);
+    s.client.cancel(&s.sender);
+
+    let res = s.client.try_validate_withdraw(&100);
+    assert_eq!(
+        res.err().unwrap().unwrap(),
+        crate::errors::Error::StreamCancelled
+    );
+}
+
+#[test]
+fn validate_withdraw_respects_min_interval() {
+    let s = Setup::new(100, 3600, false);
+    assert!(s
+        .client
+        .try_set_min_withdrawal_interval(&s.sender, &60)
+        .is_ok());
+
+    s.advance_secs(100);
+    assert_eq!(s.client.withdraw(&1000), 1000);
+
+    // 30s elapsed (< 60s min interval)
+    s.advance_secs(30);
+    let res = s.client.try_validate_withdraw(&500);
+    assert_eq!(
+        res.err().unwrap().unwrap(),
+        crate::errors::Error::WithdrawalTooFrequent
+    );
+
+    // 30s more elapsed (total 60s)
+    s.advance_secs(30);
+    assert_eq!(s.client.try_validate_withdraw(&500), Ok(Ok(())));
 }

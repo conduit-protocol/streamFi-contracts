@@ -17,7 +17,7 @@ infer it from source layout.
 | `DripStream` | Contract | Production-track | Core protocol — per-stream escrow, see [Contracts](#contracts) below |
 | `DripFactory` | Contract | Production-track | Core protocol — deploys and registers streams |
 | `DripGovernor` | Contract | Production-track | Core protocol — protocol configuration authority |
-| `BatchTransferProcessor` | Contract | Production-track | Optional batch-transfer execution boundary — see [ADR-007](./docs/adr/007-batch-transfer-processor-scope.md) |
+| `BatchTransferProcessor` | Contract | Production-track | Optional batch-transfer execution boundary — see [Contracts](#batchtransferprocessor) below and [ADR-007](./docs/adr/007-batch-transfer-processor-scope.md) |
 | `TwapOracle` | Contract | Production-track | Independent price-oracle service; not in the stream settlement path — see [`docs/architecture.md`](./docs/architecture.md) |
 | `TokenVault` | Contract | Independent / experimental | Standalone token vault; **not part of the streaming protocol** — no protocol call path reaches it, see [`docs/architecture.md`](./docs/architecture.md#tokenvault) |
 | `indexer/` | Service (TypeScript) | Scaffold | Off-chain event poller into Postgres; not wired to a live RPC endpoint yet — see [`indexer/README.md`](./indexer/README.md) |
@@ -249,6 +249,76 @@ fn set_max_rate(env: Env, caller: Address, max_rate: i128) -> Result<(), Error> 
 ```
 
 Each `caller` must `require_auth()` and hold the role gating the call, otherwise the call reverts with `NotAuthorized`.
+
+---
+
+### `BatchTransferProcessor`
+
+Optional batch-transfer execution boundary: pulls `sum(amounts)` from a single funder in one authorised transfer, then fans the funds out to up to 100 recipients. It is **stateless** — it stores no protocol state, holds no governor coupling, and charges no protocol fee (fee-exempt by design, see [ADR-007](./docs/adr/007-batch-transfer-processor-scope.md)).
+
+**Storage:**
+
+| Key | Type | Description |
+|-----|------|-------------|
+| *(none)* | — | No contract keys. The only ledger record touched is the contract's own instance entry, whose TTL `process_batch` renews (keep-alive) exactly like the other three contracts. |
+
+**Public functions:**
+
+```rust
+// Argument order matters: funder first, then token — both are bare Address,
+// so a transposed pair compiles. It fails at runtime with InvalidToken
+// (check 5 below), before require_auth and before any transfer.
+fn process_batch(
+    env:         Env,
+    funder:      Address,        // pays; must require_auth
+    token:       Address,        // SEP-41 asset the batch is denominated in
+    recipients:  Vec<Address>,
+    amounts:     Vec<i128>,
+) -> Result<i128, Error>         // returns sum(amounts) transferred
+
+// Read-only: the same checks 1–4 as process_batch, returning the total
+// without auth, without a token, and without moving funds. Show users
+// "this batch costs X" before they sign — never re-derive the total
+// client-side, or a disagreement stays invisible until the tx fails.
+fn preview_batch(
+    env:         Env,
+    recipients:  Vec<Address>,
+    amounts:     Vec<i128>,
+) -> Result<i128, Error>
+
+fn max_batch_size(env: Env) -> u32   // 100 — the cap process_batch enforces
+fn version(env: Env) -> u32          // behaviour version of this deployment (currently 2)
+```
+
+**Validation order:**
+
+All checks run before `funder.require_auth()` and before any token movement; the first failure wins (so an oversized batch containing a zero amount reports `BatchTooLarge`, never `InvalidAmount`):
+
+1. `recipients.len() == amounts.len()` — else `LengthMismatch`
+2. `amounts.len() <= max_batch_size()` (100) — else `BatchTooLarge`
+3. every `amount > 0` — else `InvalidAmount`
+4. `sum(amounts)` fits in `i128` — else `ArithmeticOverflow`
+5. `token` behaves like a SEP-41 asset — non-zero, not a `G...` wallet, and answering the `balance` probe — else `InvalidToken`
+
+Checks 1–4 are shared verbatim with `preview_batch`; check 5 needs `token` and therefore only exists on `process_batch`. An empty batch short-circuits to `Ok(0)` after check 5, before auth.
+
+**Error codes (this contract only — see [`docs/contract-errors.md`](./docs/contract-errors.md)):**
+
+| Code | Name | Fires when |
+|------|------|------------|
+| `1` | `LengthMismatch` | `recipients` and `amounts` differ in length |
+| `2` | `BatchTooLarge` | the batch exceeds `max_batch_size()` (100) |
+| `3` | `InvalidAmount` | an individual amount is zero or negative |
+| `4` | `ArithmeticOverflow` | the checked sum of the amounts overflows `i128` |
+| `5` | `InvalidToken` | `token` is the all-zero address, a `G...` wallet, or a contract that does not implement SEP-41 — also what a transposed `funder`/`token` call returns |
+
+**Events emitted:**
+
+| Event | Topics | Data |
+|-------|--------|------|
+| `batch_transferred` | `[funder]` | `{ token, recipient_count, total }` |
+
+Emitted only after the fan-out succeeds — a reverted transfer rolls the whole call back, so the event never describes a batch that did not move funds. Validation failures and `preview_batch` emit nothing.
 
 ---
 

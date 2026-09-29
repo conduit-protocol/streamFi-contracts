@@ -1,6 +1,6 @@
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env};
 
-use crate::{storage::DataKey, Error};
+use crate::Error;
 
 /// Allocate the next event sequence before publishing its payload.
 ///
@@ -175,3 +175,45 @@ pub fn operator_revoked(env: &Env, sender: &Address) {
     env.events()
         .publish((symbol_short!("rm_op"), sender.clone(), sequence), ());
 }
+
+pub fn split_recipient_set(
+    env: &Env,
+    caller: &Address,
+    secondary_recipient: &Address,
+    split_bps: u32,
+) {
+    let sequence = next_sequence(env);
+    env.events().publish(
+        (
+            symbol_short!("set_split"),
+            caller.clone(),
+            secondary_recipient.clone(),
+            sequence,
+        ),
+        split_bps,
+    );
+}
+
+pub fn split_recipient_removed(env: &Env, caller: &Address) {
+    let sequence = next_sequence(env);
+    env.events()
+        .publish((symbol_short!("rm_split"), caller.clone(), sequence), ());
+}
+
+pub fn cliff_configured(env: &Env, sender: &Address, cliff_time: u64, cliff_unlock_amount: i128) {
+    assert_non_negative_amount(env, cliff_unlock_amount);
+    let sequence = next_sequence(env);
+    env.events().publish(
+        (symbol_short!("set_cliff"), sender.clone(), sequence),
+        (cliff_time, cliff_unlock_amount),
+    );
+}
+
+pub fn min_withdrawal_interval_set(env: &Env, sender: &Address, interval_seconds: u64) {
+    let sequence = next_sequence(env);
+    env.events().publish(
+        (symbol_short!("min_w_int"), sender.clone(), sequence),
+        interval_seconds,
+    );
+}
+

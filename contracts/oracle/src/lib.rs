@@ -2,7 +2,8 @@
 
 use drip_common::{pause, rbac, ttl};
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
+    Symbol, Vec,
 };
 
 /// Maximum number of distinct price feeders the oracle will track. Caps the
@@ -15,6 +16,9 @@ use soroban_sdk::{
 /// bounded to keep aggregation within the transaction budget. 32 feeders is
 /// ample for a TWAP median and keeps `get_twap_price` well under budget
 /// (32 gets + insertion sort).
+/// Standard precision scale for pair price calculations (8 decimals).
+pub const PRICE_PRECISION: u128 = 100_000_000;
+
 const MAX_SUBMITTERS: u32 = 32;
 
 /// Extends the instance storage TTL so the oracle's entries
@@ -69,6 +73,7 @@ pub struct RoleKey {
 pub enum DataKey {
     Admin,
     Config,
+    QuoteCurrency,
     Price,
     Role(RoleKey),
     AdminCount,
@@ -93,6 +98,10 @@ pub enum DataKey {
     /// `DripGovernor::DataKey::RoleMembers`, closing the gap noted in the
     /// off-chain tooling audit.
     RoleMembers(Role),
+    /// Direct pair price by token Address (base, quote).
+    PairPrice(Address, Address),
+    /// Direct pair price by Symbol (base, quote).
+    PairPriceSymbol(Symbol, Symbol),
 }
 
 /// Configuration parameters for the TWAP oracle.
@@ -147,6 +156,20 @@ pub struct OracleConfig {
     /// configured value is exposed on-chain via [`TwapOracle::min_submitters`]
     /// so callers can check the reliability threshold before trusting a price.
     pub min_submitters: u32,
+}
+
+/// Optional field-wise changes to oracle configuration. `None` preserves the
+/// currently stored value, avoiding a client-side read-modify-write race.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleConfigUpdate {
+    pub decimals: Option<u32>,
+    pub asset_peg: Option<u32>,
+    pub max_staleness: Option<u64>,
+    pub max_price: Option<u64>,
+    pub min_submit_interval: Option<u64>,
+    pub min_submitters: Option<u32>,
+    pub quote_currency: Option<soroban_sdk::Symbol>,
 }
 
 #[contracttype]
@@ -241,6 +264,8 @@ pub enum Error {
     InsufficientQuorum = 1020,
     /// The WASM hash provided to `upgrade` is all zeros (invalid).
     InvalidWasmHash = 1021,
+    /// Price feed not found for requested pair.
+    PriceNotFound = 1022,
 }
 
 #[contract]
@@ -283,6 +308,17 @@ impl TwapOracle {
         role_members(&env, role)
     }
 
+    /// Returns addresses with tracked price submissions, including stale
+    /// submissions. This is the exact roster targeted by `purge_submitter`;
+    /// `role_members(Role::PriceFeeder)` instead lists authorized feeders,
+    /// including those who have never submitted a price.
+    pub fn submitters(env: Env) -> Vec<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Submitters)
+            .unwrap_or(Vec::new(&env))
+    }
+
     /// Grants `role` to `account`. Only an `Admin` may call this.
     pub fn grant_role(
         env: Env,
@@ -319,7 +355,9 @@ impl TwapOracle {
     }
 
     /// Explicitly purges a feeder's submission data and removes them from the
-    /// submitters set. Only an `Admin` may call this.
+    /// submitters set. Use `submitters()` to enumerate the tracked roster;
+    /// `role_members(Role::PriceFeeder)` lists authorized feeders instead.
+    /// Only an `Admin` may call this.
     pub fn purge_submitter(env: Env, caller: Address, feeder: Address) -> Result<(), Error> {
         require_role_or_admin(&env, &caller, Role::Admin)?;
         bump_instance(&env);
@@ -346,7 +384,7 @@ impl TwapOracle {
 
     // ── Reads ────────────────────────────────────────────────────────────
 
-    /// Reconfigures oracle parameters and pricing settings. Admin-gated.
+    /// Replaces all oracle parameters and pricing settings. Admin-gated.
     ///
     /// # Authorization
     ///
@@ -397,52 +435,66 @@ impl TwapOracle {
     ///   exceeds [`MAX_SUBMITTERS`].
     pub fn configure_oracle(env: Env, caller: Address, config: OracleConfig) -> Result<(), Error> {
         require_role_or_admin(&env, &caller, Role::Admin)?;
+        store_oracle_config(&env, &caller, config)
+    }
 
-        if config.decimals > 19 {
-            return Err(Error::InvalidDecimals);
+    /// Returns the complete stored oracle configuration.
+    pub fn oracle_config(env: Env) -> Result<OracleConfig, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(Error::OracleNotConfigured)
+    }
+
+    /// Applies only the supplied fields; all omitted fields retain their
+    /// current values. Configuration validation and price-cache invalidation
+    /// are identical to `configure_oracle`.
+    pub fn update_oracle_config(
+        env: Env,
+        caller: Address,
+        update: OracleConfigUpdate,
+    ) -> Result<(), Error> {
+        require_role_or_admin(&env, &caller, Role::Admin)?;
+        let mut config: OracleConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(Error::OracleNotConfigured)?;
+
+        if let Some(value) = update.decimals {
+            config.decimals = value;
+        }
+        if let Some(value) = update.asset_peg {
+            config.asset_peg = value;
+        }
+        if let Some(value) = update.max_staleness {
+            config.max_staleness = value;
+        }
+        if let Some(value) = update.max_price {
+            config.max_price = value;
+        }
+        if let Some(value) = update.min_submit_interval {
+            config.min_submit_interval = value;
+        }
+        if let Some(value) = update.min_submitters {
+            config.min_submitters = value;
         }
 
-        if config.max_staleness == 0 {
-            return Err(Error::InvalidMaxStaleness);
+        let quote_currency = update.quote_currency;
+        store_oracle_config(&env, &caller, config)?;
+        if let Some(currency) = quote_currency {
+            env.storage()
+                .instance()
+                .set(&DataKey::QuoteCurrency, &currency);
+            events::quote_currency_configured(&env, &caller, currency);
         }
-
-        // The quorum must be at least one (a zero-feeder quorum would let the
-        // oracle report prices nobody backs) and can never exceed the capped
-        // submitter set aggregation iterates over (issue #661).
-        if config.min_submitters == 0 || config.min_submitters > MAX_SUBMITTERS {
-            return Err(Error::InvalidMinSubmitters);
-        }
-
-        bump_instance(&env);
-
-        // Check if decimals or asset_peg changed relative to existing config.
-        // If so, clear all stored price data to prevent magnitude misinterpretation.
-        let existing: Option<OracleConfig> = env.storage().instance().get(&DataKey::Config);
-        if let Some(old) = existing {
-            if old.decimals != config.decimals || old.asset_peg != config.asset_peg {
-                // Clear the legacy single-value price slot.
-                env.storage().instance().remove(&DataKey::Price);
-
-                // Clear every per-feeder submission and the submitter list itself.
-                // Submissions live in persistent() (see DataKey docs) so clears
-                // must target persistent storage and respect the cap.
-                let submitters: Vec<Address> = env
-                    .storage()
-                    .persistent()
-                    .get(&DataKey::Submitters)
-                    .unwrap_or(Vec::new(&env));
-                for feeder in submitters.iter() {
-                    env.storage()
-                        .persistent()
-                        .remove(&DataKey::Submission(feeder));
-                }
-                env.storage().persistent().remove(&DataKey::Submitters);
-            }
-        }
-
-        env.storage().instance().set(&DataKey::Config, &config);
-        events::oracle_configured(&env, &caller, config);
         Ok(())
+    }
+
+    /// Returns the denomination configured for fiat payout values, or `None`
+    /// until an admin supplies it through `update_oracle_config`.
+    pub fn quote_currency(env: Env) -> Option<soroban_sdk::Symbol> {
+        env.storage().instance().get(&DataKey::QuoteCurrency)
     }
 
     /// Submit a price observation. Gated strictly on `PriceFeeder` — `Admin`
@@ -616,7 +668,7 @@ impl TwapOracle {
         // from fewer fresh feeders than `min_submitters` is not reliable
         // enough to return. `PriceStatus` exposes both counts so callers can
         // observe how far below quorum the set is.
-        if fresh_prices.len() as u32 < config.min_submitters {
+        if (fresh_prices.len() as u32) < config.min_submitters {
             return Err(Error::InsufficientQuorum);
         }
 
@@ -656,6 +708,9 @@ impl TwapOracle {
     /// Errors:
     /// - `OracleNotConfigured` if `configure_oracle` has not been called.
     /// - `NoPriceAvailable` if no price has ever been submitted.
+    ///
+    /// Use this single view when both age and staleness are needed; it bundles
+    /// `newest_age`, `oldest_fresh_age`, `stale`, and quorum counts together.
     pub fn price_status(env: Env) -> Result<PriceStatus, Error> {
         load_price_status(&env)
     }
@@ -689,6 +744,40 @@ impl TwapOracle {
     /// - `NoPriceAvailable` if no price has ever been submitted.
     pub fn is_price_stale(env: Env) -> Result<bool, Error> {
         load_price_status(&env).map(|s| s.stale)
+    }
+
+    /// Read-only: the most recent raw price submission from any feeder.
+    ///
+    /// Returns the single most recent `PriceData` across all feeders, without any
+    /// TWAP aggregation or staleness checking. Useful for detecting anomalies in the
+    /// latest raw feed signal (e.g., a price spike) independently of the smoothed TWAP.
+    ///
+    /// The `updated_at` timestamp is the ledger time of the submission.
+    /// If multiple feeders submitted at the same block, returns one of them (order unspecified).
+    ///
+    /// Errors:
+    /// - `NoPriceAvailable` if no price has ever been submitted.
+    pub fn latest_price(env: Env) -> Result<PriceData, Error> {
+        let submitters: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Submitters)
+            .unwrap_or(Vec::new(&env));
+
+        let mut latest: Option<PriceData> = None;
+        for feeder in submitters.iter() {
+            if let Some(data) = env
+                .storage()
+                .persistent()
+                .get::<_, PriceData>(&DataKey::Submission(feeder))
+            {
+                if latest.is_none() || data.updated_at > latest.as_ref().unwrap().updated_at {
+                    latest = Some(data);
+                }
+            }
+        }
+
+        latest.ok_or(Error::NoPriceAvailable)
     }
 
     /// Converts a nominal token amount into its fiat equivalent.
@@ -727,6 +816,132 @@ impl TwapOracle {
         }
 
         Ok(value as u64)
+    }
+
+    /// Sets the price for a token pair (base/quote) identified by `Address`.
+    ///
+    /// Requires that caller is an authorized PriceFeeder or Admin, and that
+    /// the oracle is not paused. Rejects zero price with [`Error::InvalidPrice`].
+    pub fn set_price(
+        env: Env,
+        caller: Address,
+        base: Address,
+        quote: Address,
+        price: u128,
+    ) -> Result<(), Error> {
+        require_not_paused(&env)?;
+        require_role_or_admin(&env, &caller, Role::PriceFeeder)?;
+        if price == 0 {
+            return Err(Error::InvalidPrice);
+        }
+        bump_instance(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::PairPrice(base, quote), &price);
+        Ok(())
+    }
+
+    /// Fetches the direct price for a token pair (base/quote) identified by `Address`.
+    ///
+    /// Returns [`Error::PriceNotFound`] if no direct feed exists.
+    pub fn get_price(env: Env, base: Address, quote: Address) -> Result<u128, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::PairPrice(base, quote))
+            .ok_or(Error::PriceNotFound)
+    }
+
+    /// Fetches the inverted price for a token pair (base/quote) identified by `Address`.
+    ///
+    /// Returns the direct feed price if found; otherwise, if the reciprocal
+    /// feed (quote/base) is found, calculates and returns:
+    /// `(PRICE_PRECISION^2 / price)`
+    /// Returns [`Error::PriceNotFound`] if neither feed exists.
+    pub fn get_price_inverted(env: Env, base: Address, quote: Address) -> Result<u128, Error> {
+        if let Some(price) = env
+            .storage()
+            .instance()
+            .get::<_, u128>(&DataKey::PairPrice(base.clone(), quote.clone()))
+        {
+            return Ok(price);
+        }
+
+        if let Some(price) = env
+            .storage()
+            .instance()
+            .get::<_, u128>(&DataKey::PairPrice(quote, base))
+        {
+            if price == 0 {
+                return Err(Error::InvalidPrice);
+            }
+            let precision_sq = PRICE_PRECISION
+                .checked_mul(PRICE_PRECISION)
+                .ok_or(Error::ArithmeticOverflow)?;
+            let inverted = precision_sq
+                .checked_div(price)
+                .ok_or(Error::ArithmeticOverflow)?;
+            return Ok(inverted);
+        }
+
+        Err(Error::PriceNotFound)
+    }
+
+    /// Sets the price for a pair identified by `Symbol` (e.g. XLM/USDC).
+    pub fn set_price_symbol(
+        env: Env,
+        caller: Address,
+        base: Symbol,
+        quote: Symbol,
+        price: u128,
+    ) -> Result<(), Error> {
+        require_not_paused(&env)?;
+        require_role_or_admin(&env, &caller, Role::PriceFeeder)?;
+        if price == 0 {
+            return Err(Error::InvalidPrice);
+        }
+        bump_instance(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::PairPriceSymbol(base, quote), &price);
+        Ok(())
+    }
+
+    /// Fetches the direct price for a symbol pair.
+    pub fn get_price_symbol(env: Env, base: Symbol, quote: Symbol) -> Result<u128, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::PairPriceSymbol(base, quote))
+            .ok_or(Error::PriceNotFound)
+    }
+
+    /// Fetches the inverted price for a symbol pair.
+    pub fn get_price_inverted_symbol(env: Env, base: Symbol, quote: Symbol) -> Result<u128, Error> {
+        if let Some(price) = env
+            .storage()
+            .instance()
+            .get::<_, u128>(&DataKey::PairPriceSymbol(base.clone(), quote.clone()))
+        {
+            return Ok(price);
+        }
+
+        if let Some(price) = env
+            .storage()
+            .instance()
+            .get::<_, u128>(&DataKey::PairPriceSymbol(quote, base))
+        {
+            if price == 0 {
+                return Err(Error::InvalidPrice);
+            }
+            let precision_sq = PRICE_PRECISION
+                .checked_mul(PRICE_PRECISION)
+                .ok_or(Error::ArithmeticOverflow)?;
+            let inverted = precision_sq
+                .checked_div(price)
+                .ok_or(Error::ArithmeticOverflow)?;
+            return Ok(inverted);
+        }
+
+        Err(Error::PriceNotFound)
     }
 
     // ── Emergency pause (Pauser or Admin-gated) ──────────────────────────
@@ -805,6 +1020,45 @@ impl TwapOracle {
         events::upgraded(&env, &caller, env.ledger().timestamp());
         Ok(())
     }
+}
+
+fn store_oracle_config(env: &Env, caller: &Address, config: OracleConfig) -> Result<(), Error> {
+    if config.decimals > 19 {
+        return Err(Error::InvalidDecimals);
+    }
+
+    if config.max_staleness == 0 {
+        return Err(Error::InvalidMaxStaleness);
+    }
+
+    if config.min_submitters == 0 || config.min_submitters > MAX_SUBMITTERS {
+        return Err(Error::InvalidMinSubmitters);
+    }
+
+    bump_instance(env);
+
+    let existing: Option<OracleConfig> = env.storage().instance().get(&DataKey::Config);
+    if let Some(old) = existing {
+        if old.decimals != config.decimals || old.asset_peg != config.asset_peg {
+            env.storage().instance().remove(&DataKey::Price);
+
+            let submitters: Vec<Address> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Submitters)
+                .unwrap_or(Vec::new(env));
+            for feeder in submitters.iter() {
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::Submission(feeder));
+            }
+            env.storage().persistent().remove(&DataKey::Submitters);
+        }
+    }
+
+    env.storage().instance().set(&DataKey::Config, &config);
+    events::oracle_configured(env, caller, config);
+    Ok(())
 }
 
 // ── Internal RBAC helpers (delegate to drip_common::rbac) ─────────────────
@@ -912,6 +1166,7 @@ fn add_submitter(env: &Env, account: &Address) -> Result<(), Error> {
 
     for existing in submitters.iter() {
         if existing == *account {
+            ttl::bump_persistent(env, &DataKey::Submitters);
             return Ok(());
         }
     }
@@ -1187,6 +1442,11 @@ mod events {
     pub fn oracle_configured(env: &Env, caller: &Address, config: super::OracleConfig) {
         env.events()
             .publish((symbol_short!("ocfg"), caller.clone()), config);
+    }
+
+    pub fn quote_currency_configured(env: &Env, caller: &Address, currency: soroban_sdk::Symbol) {
+        env.events()
+            .publish((symbol_short!("qcurr"), caller.clone()), currency);
     }
 
     /// Emitted when a price submission is rejected so off-chain monitors
@@ -2797,6 +3057,122 @@ mod tests {
         assert!(
             result.is_ok(),
             "first-ever submission must bypass the interval check"
+        );
+    }
+
+    // ── Pair price and inverted price calculation tests ───────────────────
+
+    #[test]
+    fn get_price_returns_direct_price_or_price_not_found() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let token_a = Address::generate(&env);
+        let token_b = Address::generate(&env);
+
+        // Not set yet
+        assert_eq!(
+            client.try_get_price(&token_a, &token_b),
+            Err(Ok(Error::PriceNotFound))
+        );
+
+        // Admin sets price
+        client.set_price(&admin, &token_a, &token_b, &20_000_000u128);
+
+        // Direct lookup returns stored price
+        assert_eq!(client.get_price(&token_a, &token_b), 20_000_000u128);
+
+        // Reverse lookup on get_price returns PriceNotFound
+        assert_eq!(
+            client.try_get_price(&token_b, &token_a),
+            Err(Ok(Error::PriceNotFound))
+        );
+    }
+
+    #[test]
+    fn get_price_inverted_calculates_reciprocal_when_direct_feed_absent() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let xlm = Address::generate(&env);
+        let usdc = Address::generate(&env);
+
+        // When neither feed exists, get_price_inverted returns PriceNotFound
+        assert_eq!(
+            client.try_get_price_inverted(&xlm, &usdc),
+            Err(Ok(Error::PriceNotFound))
+        );
+
+        // Set XLM/USDC price = 0.20 (20_000_000 with 8 decimals)
+        let xlm_price = 20_000_000u128;
+        client.set_price(&admin, &xlm, &usdc, &xlm_price);
+
+        // Direct feed query via get_price_inverted returns direct price
+        assert_eq!(client.get_price_inverted(&xlm, &usdc), xlm_price);
+
+        // Reverse query USDC/XLM via get_price_inverted:
+        // (PRICE_PRECISION^2 / price) = (10^16 / 20_000_000) = 500_000_000 (5.00 XLM per USDC)
+        let expected_inverted = 500_000_000u128;
+        assert_eq!(client.get_price_inverted(&usdc, &xlm), expected_inverted);
+    }
+
+    #[test]
+    fn pair_price_symbols_direct_and_inverted() {
+        let (_env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let xlm = symbol_short!("XLM");
+        let usdc = symbol_short!("USDC");
+
+        // Set XLM/USDC = 0.20
+        client.set_price_symbol(&admin, &xlm, &usdc, &20_000_000u128);
+
+        // Direct
+        assert_eq!(client.get_price_symbol(&xlm, &usdc), 20_000_000u128);
+        assert_eq!(
+            client.get_price_inverted_symbol(&xlm, &usdc),
+            20_000_000u128
+        );
+
+        // Reverse get_price_symbol gives PriceNotFound
+        assert_eq!(
+            client.try_get_price_symbol(&usdc, &xlm),
+            Err(Ok(Error::PriceNotFound))
+        );
+
+        // Reverse get_price_inverted_symbol gives inverted price: 10^16 / 20_000_000 = 500_000_000
+        assert_eq!(
+            client.get_price_inverted_symbol(&usdc, &xlm),
+            500_000_000u128
+        );
+    }
+
+    #[test]
+    fn set_price_guards_auth_zero_and_pause() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let token_a = Address::generate(&env);
+        let token_b = Address::generate(&env);
+        let unauth = Address::generate(&env);
+
+        // Unauthorized caller rejected
+        assert_eq!(
+            client.try_set_price(&unauth, &token_a, &token_b, &100_000_000u128),
+            Err(Ok(Error::NotAuthorized))
+        );
+
+        // Zero price rejected
+        assert_eq!(
+            client.try_set_price(&admin, &token_a, &token_b, &0u128),
+            Err(Ok(Error::InvalidPrice))
+        );
+
+        // Pause blocks setting price
+        client.pause(&admin);
+        assert_eq!(
+            client.try_set_price(&admin, &token_a, &token_b, &100_000_000u128),
+            Err(Ok(Error::ContractPaused))
         );
     }
 }

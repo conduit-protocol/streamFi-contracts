@@ -123,6 +123,15 @@ modify oracle state. Typical use: displaying the fiat-equivalent value of a
 stream's remaining balance or accrued payout without requiring the caller to
 fetch and scale the price themselves.
 
+**Historical price data:** The oracle holds only the current state — the most recent
+submissions from each feeder and the computed current TWAP. It does not retain a
+historical log of past price windows or historical TWAP snapshots on-chain. Any
+use case requiring historical prices (e.g., charting price history, reconstructing
+"what was the oracle-reported rate at time T" for past stream payouts) must rely
+on off-chain indexing of `price_submitted` events. This is intentional to minimize
+on-chain storage cost; historical reconstruction is delegated to the indexer and
+application layer.
+
 ### DripFactory
 
 The factory is a singleton deployed once per network. It owns no token balance for longer than one transaction — funds enter from the sender, then immediately forward to the new stream contract.
@@ -229,7 +238,9 @@ Soroban has three storage tiers. Each has different persistence and TTL semantic
 env.storage().instance().extend_ttl(threshold, extend_to);
 env.storage().persistent().extend_ttl(&key, threshold, extend_to);
 ```
-Pure read-only functions (`withdrawable`, `streamed_total`, `info`, `config`, `stream_address`, etc.) do not bump TTL themselves — an entry only stays alive if something actually mutates it. A long-idle stream that nobody touches can still expire; a `keep_alive`-style function anyone could call without mutating state remains a possible future addition.
+The stateless `BatchTransferProcessor` applies the same instance extension on `process_batch`, so all four production-track contracts keep themselves alive while in use.
+
+Pure read-only functions (`withdrawable`, `streamed_total`, `info`, `config`, `stream_address`, `preview_batch`, etc.) do not bump TTL themselves — an entry only stays alive if something actually mutates it. A long-idle stream that nobody touches can still expire; a `keep_alive`-style function anyone could call without mutating state remains a possible future addition.
 
 ---
 

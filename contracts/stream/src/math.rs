@@ -1,7 +1,7 @@
 use soroban_sdk::Env;
 
 use crate::errors::Error;
-use crate::storage::StreamInfo;
+use crate::storage::{DataKey, CliffConfig, StreamInfo};
 
 /// Returns the total tokens that have streamed up to `now`,
 /// excluding any paused time. Does not account for withdrawals.
@@ -42,6 +42,21 @@ pub fn streamed_amount(env: &Env, info: &StreamInfo) -> Result<i128, Error> {
     } else {
         now
     };
+
+    // Check for optional cliff config (Issue #719)
+    let cliff_cfg: Option<CliffConfig> = env.storage().instance().get(&DataKey::CliffConfig);
+    if let Some(cfg) = cliff_cfg {
+        if effective_now < cfg.cliff_time {
+            return Ok(0);
+        }
+        let elapsed = effective_now
+            .checked_sub(cfg.cliff_time)
+            .ok_or(Error::ArithmeticOverflow)?;
+        let linear = (info.rate_per_second)
+            .checked_mul(elapsed as i128)
+            .ok_or(Error::ArithmeticOverflow)?;
+        return cfg.cliff_unlock_amount.checked_add(linear).ok_or(Error::ArithmeticOverflow);
+    }
 
     let elapsed = effective_now
         .checked_sub(info.start_time)

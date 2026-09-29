@@ -6,10 +6,7 @@ pub mod pause;
 pub mod rbac;
 pub mod ttl;
 
-use soroban_sdk::{
-    xdr::{AccountId, Hash, PublicKey, ScAddress, Uint256},
-    Address, Env, TryFromVal,
-};
+use soroban_sdk::{Address, Env};
 
 /// TTL threshold for instance storage extension.
 /// When the remaining TTL falls below this value, extend to `TTL_EXTEND_TO`.
@@ -42,19 +39,18 @@ pub const TTL_EXTEND_TO: u32 = 200_000;
 /// directly, avoiding repeated StrKey string decoding. Address handles are
 /// tied to an `Env`, so they cannot be cached globally across invocations.
 pub fn is_zero_address(env: &Env, address: &Address) -> bool {
-    let zero_account = Address::try_from_val(
+    let zero_account = Address::from_string(&soroban_sdk::String::from_str(
         env,
-        &ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(
-            [0u8; 32],
-        )))),
-    )
-    .unwrap();
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
     if address == &zero_account {
         return true;
     }
 
-    let zero_contract =
-        Address::try_from_val(env, &ScAddress::Contract(Hash([0u8; 32]))).unwrap();
+    let zero_contract = Address::from_string(&soroban_sdk::String::from_str(
+        env,
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    ));
 
     address == &zero_contract
 }

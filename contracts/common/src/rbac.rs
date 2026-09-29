@@ -73,12 +73,73 @@ pub enum RbacError {
 
 // ── Core helpers ──────────────────────────────────────────────────────────
 
+/// Role assignment tracking optional expiration timestamp (Issue #692).
+#[soroban_sdk::contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RoleAssignment {
+    pub expires_at: Option<u64>,
+}
+
 /// Whether `account` currently holds the role identified by `role_key`.
 ///
 /// `role_key` is the composite `(role, account)` key used to test membership
 /// — typically `DataKey::Role(RoleKey { role, account })`.
 pub fn has_role<RK: StorageKey>(env: &Env, role_key: &RK) -> bool {
-    env.storage().instance().has(role_key)
+    let assignment: Option<RoleAssignment> = env.storage().instance().get(role_key);
+    match assignment {
+        Some(a) => {
+            if let Some(exp) = a.expires_at {
+                env.ledger().timestamp() < exp
+            } else {
+                true
+            }
+        }
+        None => {
+            // Backward-compatible fallback for boolean storage
+            if env.storage().instance().has(role_key) {
+                let is_bool: Option<bool> = env.storage().instance().get(role_key);
+                is_bool.unwrap_or(false)
+            } else {
+                false
+            }
+        }
+    }
+}
+
+/// Grants the role identified by `role_key` with an optional expiration timestamp (Issue #692).
+pub fn grant_with_expiration<RK, AK, MK>(
+    env: &Env,
+    role_key: &RK,
+    admin_count_key: &AK,
+    members_key: &MK,
+    is_admin: bool,
+    account: &Address,
+    expires_at: Option<u64>,
+) -> bool
+where
+    RK: StorageKey,
+    AK: StorageKey,
+    MK: StorageKey,
+{
+    if has_role(env, role_key) {
+        // Update expiration if already held
+        env.storage().instance().set(role_key, &RoleAssignment { expires_at });
+        return false;
+    }
+    env.storage().instance().set(role_key, &RoleAssignment { expires_at });
+    if is_admin {
+        let next = admin_count(env, admin_count_key) + 1;
+        env.storage().instance().set(admin_count_key, &next);
+    }
+    // Maintain the role-members index.
+    let mut members: SorobanVec<Address> = env
+        .storage()
+        .instance()
+        .get(members_key)
+        .unwrap_or(SorobanVec::new(env));
+    members.push_back(account.clone());
+    env.storage().instance().set(members_key, &members);
+    true
 }
 
 /// Number of accounts currently holding `Admin` (zero pre-initialization).
@@ -115,23 +176,7 @@ where
     AK: StorageKey,
     MK: StorageKey,
 {
-    if has_role(env, role_key) {
-        return false;
-    }
-    env.storage().instance().set(role_key, &true);
-    if is_admin {
-        let next = admin_count(env, admin_count_key) + 1;
-        env.storage().instance().set(admin_count_key, &next);
-    }
-    // Maintain the role-members index.
-    let mut members: SorobanVec<Address> = env
-        .storage()
-        .instance()
-        .get(members_key)
-        .unwrap_or(SorobanVec::new(env));
-    members.push_back(account.clone());
-    env.storage().instance().set(members_key, &members);
-    true
+    grant_with_expiration(env, role_key, admin_count_key, members_key, is_admin, account, None)
 }
 
 /// Revokes the role identified by `role_key` from an account.
@@ -258,7 +303,7 @@ pub fn require_role<RK: StorageKey>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::testutils::{Address as _, Ledger as _};
     use soroban_sdk::{contract, contractimpl, contracttype, symbol_short};
 
     // ── Contract frame ────────────────────────────────────────────────────────
@@ -368,6 +413,32 @@ mod tests {
     }
 
     // ── has_role ──────────────────────────────────────────────────────────────
+
+    
+    #[test]
+    fn grant_with_expiration_expires_correctly() {
+        let env = Env::default();
+        let guardian = Address::generate(&env);
+
+        in_contract(&env, || {
+            let expires_at = env.ledger().timestamp() + 100;
+            grant_with_expiration(
+                &env,
+                &role_key(TestRole::Operator, &guardian),
+                &ADMIN_COUNT,
+                &members_key(&TestRole::Operator),
+                false,
+                &guardian,
+                Some(expires_at),
+            );
+
+            assert!(has_role(&env, &role_key(TestRole::Operator, &guardian)));
+
+            // Fast forward ledger timestamp past expiration
+            env.ledger().set_timestamp(expires_at + 1);
+            assert!(!has_role(&env, &role_key(TestRole::Operator, &guardian)));
+        });
+    }
 
     #[test]
     fn has_role_is_false_before_any_grant() {

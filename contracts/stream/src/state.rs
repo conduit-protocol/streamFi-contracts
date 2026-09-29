@@ -1,6 +1,6 @@
 use soroban_sdk::{panic_with_error, Env};
 
-use crate::storage::{DataKey, StreamInfo, FLAG_CANCELLED, FLAG_CLAWBACK_ENABLED};
+use crate::storage::{DataKey, StreamInfo};
 use crate::Error;
 
 /// Load the full stream state in a single storage read.

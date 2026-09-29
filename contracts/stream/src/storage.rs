@@ -47,6 +47,57 @@ pub enum DataKey {
     /// path free of cross-contract calls; a stream deployed directly
     /// (bypassing the factory) falls back to the historical 30-day default.
     ForceCancelPauseThresholdSecs,
+    /// Optional split configuration dividing claims between recipient and secondary recipient.
+    SplitConfig,
+    /// Optional cliff configuration with upfront unlock amount (Issue #719).
+    CliffConfig,
+    /// Configurable minimum interval in seconds between consecutive withdrawals (Issue #693).
+    MinWithdrawalInterval,
+    /// Timestamp of the last withdrawal.
+    LastWithdrawalTime,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SplitConfig {
+    pub secondary_recipient: Address,
+    pub split_bps: u32,
+}
+
+/// Stream configuration including cliff and upfront unlock parameters (Issue #719).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CliffConfig {
+    pub cliff_time: u64,
+    pub cliff_unlock_amount: i128,
+}
+
+/// Alias for SplitConfig to support split recipients.
+pub type StreamConfig = SplitConfig;
+
+/// Operational status of a stream.
+#[contracttype]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StreamStatus {
+    Pending = 0,
+    Active = 1,
+    Paused = 2,
+    Cancelled = 3,
+    Completed = 4,
+}
+
+/// Consolidated state summary for a stream.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamSummary {
+    pub sender: Address,
+    pub recipient: Address,
+    pub token: Address,
+    pub total_amount: i128,
+    pub streamed_amount: i128,
+    pub status: StreamStatus,
+    pub start_time: u64,
+    pub stop_time: u64,
 }
 
 #[contracttype]
