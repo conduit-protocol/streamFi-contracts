@@ -55,6 +55,11 @@ pub enum DataKey {
     MinWithdrawalInterval,
     /// Timestamp of the last withdrawal.
     LastWithdrawalTime,
+    /// Optional accrual checkpoint created by `change_rate`.
+    ///
+    /// Kept outside `StreamInfo` so adding rate changes does not alter the
+    /// serialized `Config` layout of already-deployed streams.
+    RateCheckpoint,
 }
 
 #[contracttype]
@@ -70,6 +75,19 @@ pub struct SplitConfig {
 pub struct CliffConfig {
     pub cliff_time: u64,
     pub cliff_unlock_amount: i128,
+}
+
+/// Accrued-value checkpoint used to make rate changes prospective.
+///
+/// `accrued` is the total amount earned at `at`. From that point onward
+/// streaming uses the current `StreamInfo::rate_per_second`. For a pending
+/// stream (or a stream still before its cliff), `at` may be in the future;
+/// no value is considered streamed until that timestamp is reached.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RateCheckpoint {
+    pub accrued: i128,
+    pub at: u64,
 }
 
 /// Alias for SplitConfig to support split recipients.
