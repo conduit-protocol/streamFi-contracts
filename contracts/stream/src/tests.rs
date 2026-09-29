@@ -1288,6 +1288,68 @@ fn cancelled_flag_is_durable_across_invocations() {
     assert_eq!(s.client.streamed_total(), 0);
 }
 
+// ── Issue #619: mutable prospective stream rate ──────────────────────────────
+
+#[test]
+fn change_rate_preserves_accrued_value_and_applies_new_rate_prospectively() {
+    let s = Setup::new(100, 3_600, false);
+    s.advance_secs(100);
+    assert_eq!(s.client.streamed_total(), 10_000);
+
+    s.client.change_rate(&s.sender, &200);
+    assert_eq!(s.client.info().rate_per_second, 200);
+    assert_eq!(
+        s.client.streamed_total(),
+        10_000,
+        "changing the rate must not reprice value already accrued"
+    );
+
+    s.advance_secs(50);
+    assert_eq!(s.client.streamed_total(), 20_000);
+}
+
+#[test]
+fn change_rate_rejects_invalid_unauthorized_and_overflowing_rates() {
+    let s = Setup::new(1, 2, false);
+
+    assert_eq!(
+        s.client.try_change_rate(&s.sender, &0),
+        Err(Ok(Error::InvalidAmount))
+    );
+
+    let stranger = Address::generate(&s.env);
+    assert_eq!(
+        s.client.try_change_rate(&stranger, &2),
+        Err(Ok(Error::NotAuthorized))
+    );
+
+    assert_eq!(
+        s.client.try_change_rate(&s.sender, &i128::MAX),
+        Err(Ok(Error::ArithmeticOverflow))
+    );
+}
+
+#[test]
+fn change_rate_emits_rate_changed_event() {
+    let s = Setup::new(100, 3_600, false);
+    s.client.change_rate(&s.sender, &250);
+
+    assert_eq!(s.client.event_sequence(), 2);
+    let all_events = s.env.events().all();
+    let stream_events: std::vec::Vec<_> = all_events
+        .iter()
+        .filter(|(contract, _, _)| contract == &s.client.address)
+        .collect();
+    let last = stream_events.last().unwrap();
+
+    assert_eq!(
+        last.1,
+        (symbol_short!("rate_chg"), s.sender.clone(), 2_u64).into_val(&s.env)
+    );
+    let data: (i128, i128) = last.2.try_into_val(&s.env).unwrap();
+    assert_eq!(data, (100, 250));
+}
+
 // ── Issue #205: top_up_and_extend convenience ────────────────────────────────
 
 #[test]
@@ -1303,7 +1365,28 @@ fn top_up_and_extend_updates_balance_and_end_time() {
     s.client.top_up_and_extend(&s.sender, &20_000, &200);
 
     assert_eq!(s.client.info().end_time, before_end + 200);
-    assert_eq!(s.token.balance(&s.client.address), contract_before + 20_000);
+    let contract_after = s.token.balance(&s.client.address);
+    assert_eq!(contract_after, contract_before + 20_000);
+
+    // The atomic operation emits one dedicated event rather than a generic
+    // top-up event plus a separate duration event that indexers must correlate.
+    assert_eq!(s.client.event_sequence(), 2);
+    let all_events = s.env.events().all();
+    let stream_events: std::vec::Vec<_> = all_events
+        .iter()
+        .filter(|(contract, _, _)| contract == &s.client.address)
+        .collect();
+    assert_eq!(stream_events.len(), 2);
+    let last = stream_events.last().unwrap();
+    assert_eq!(
+        last.1,
+        (symbol_short!("top_ext"), s.sender.clone(), 2_u64).into_val(&s.env)
+    );
+    let data: (i128, i128, u64, u64) = last.2.try_into_val(&s.env).unwrap();
+    assert_eq!(
+        data,
+        (contract_before, contract_after, before_end, before_end + 200)
+    );
 }
 
 #[test]
