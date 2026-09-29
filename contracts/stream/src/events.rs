@@ -139,6 +139,41 @@ pub fn topped_up(env: &Env, sender: &Address, amount: i128, new_balance: i128) {
     );
 }
 
+
+/// Publish a single event for the atomic `top_up_and_extend` transition.
+///
+/// A dedicated event prevents indexers from having to correlate independent
+/// top-up and duration-extension records from the same transaction.
+pub fn topped_up_and_extended(
+    env: &Env,
+    caller: &Address,
+    old_balance: i128,
+    new_balance: i128,
+    old_end_time: u64,
+    new_end_time: u64,
+) {
+    assert_non_negative_amount(env, old_balance);
+    assert_non_negative_amount(env, new_balance);
+
+    let sequence = next_sequence(env);
+    env.events().publish(
+        (symbol_short!("top_ext"), caller.clone(), sequence),
+        (old_balance, new_balance, old_end_time, new_end_time),
+    );
+}
+
+/// Publish a prospective stream-rate change.
+pub fn rate_changed(env: &Env, caller: &Address, old_rate: i128, new_rate: i128) {
+    assert_non_negative_amount(env, old_rate);
+    assert_non_negative_amount(env, new_rate);
+
+    let sequence = next_sequence(env);
+    env.events().publish(
+        (symbol_short!("rate_chg"), caller.clone(), sequence),
+        (old_rate, new_rate),
+    );
+}
+
 pub fn clawback(env: &Env, sender: &Address, amount: i128) {
     assert_non_negative_amount(env, amount);
 
