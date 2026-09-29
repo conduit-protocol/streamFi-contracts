@@ -14,7 +14,7 @@ use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env}
 use drip_common::{is_zero_address, pause};
 
 pub use errors::Error;
-use storage::{DataKey, StreamInfo, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED};
+use storage::{DataKey, RateCheckpoint, StreamInfo, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED};
 pub use storage::{CliffConfig, SplitConfig, StreamConfig, StreamStatus, StreamSummary};
 
 #[contract]
@@ -458,6 +458,26 @@ impl DripStream {
             .checked_sub(info.paused_at)
             .ok_or(Error::ArithmeticOverflow)?;
 
+        // If a rate change has already become active, move its accrual
+        // checkpoint forward by the paused duration just like start/end time.
+        // A checkpoint that is still in the future (for example at a pending
+        // cliff) is left untouched, matching the existing cliff semantics.
+        if let Some(mut checkpoint) = env
+            .storage()
+            .instance()
+            .get::<_, RateCheckpoint>(&DataKey::RateCheckpoint)
+        {
+            if checkpoint.at <= info.paused_at {
+                checkpoint.at = checkpoint
+                    .at
+                    .checked_add(paused_duration)
+                    .ok_or(Error::ArithmeticOverflow)?;
+                env.storage()
+                    .instance()
+                    .set(&DataKey::RateCheckpoint, &checkpoint);
+            }
+        }
+
         // A stream that stays paused beyond the protocol's safe grace window is
         // at risk of instance-storage archival; reject the resume before the host
         // turns this into the opaque "entry archived" error path. The same
@@ -490,6 +510,102 @@ impl DripStream {
         state::save(env, &updated);
 
         events::resumed(env, caller, now);
+        Ok(())
+    }
+
+    /// Sender or delegated operator changes the stream's payout rate.
+    ///
+    /// The new rate is prospective: value accrued under the old rate is
+    /// checkpointed before the rate is updated, so already-earned value is
+    /// never retroactively repriced. The caller may change the rate on a
+    /// pending, active, or paused stream; a completed/cancelled stream is
+    /// rejected.
+    pub fn change_rate(
+        env: Env,
+        caller: Address,
+        new_rate_per_second: i128,
+    ) -> Result<(), Error> {
+        state::with_guard(&env, |env| {
+            Self::_change_rate(env, &caller, new_rate_per_second)
+        })
+    }
+
+    fn _change_rate(
+        env: &Env,
+        caller: &Address,
+        new_rate_per_second: i128,
+    ) -> Result<(), Error> {
+        if new_rate_per_second <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let mut info = state::load(env);
+        state::assert_not_cancelled(&info)?;
+        require_sender_or_operator(env, caller, &info.sender)?;
+
+        let now = env.ledger().timestamp();
+        if info.end_time > 0 && now >= info.end_time {
+            return Err(Error::StreamEnded);
+        }
+
+        // Compute the value earned under the old rate before changing it.
+        let accrued = math::streamed_amount(env, &info)?;
+
+        // If currently paused, the new rate starts when the stream resumes,
+        // not while wall-clock time is frozen at paused_at.
+        let effective_change_time = if info.is_paused() {
+            info.paused_at
+        } else {
+            now
+        };
+
+        // Before start/cliff, the checkpoint lives at the first timestamp at
+        // which value can accrue. For a cliffed stream the upfront unlock is
+        // included exactly at the cliff boundary.
+        let cliff_cfg: Option<CliffConfig> =
+            env.storage().instance().get(&DataKey::CliffConfig);
+        let (checkpoint_at, checkpoint_accrued) = if let Some(cfg) = cliff_cfg {
+            if effective_change_time < cfg.cliff_time {
+                (cfg.cliff_time, cfg.cliff_unlock_amount)
+            } else {
+                (effective_change_time, accrued)
+            }
+        } else if effective_change_time < info.start_time {
+            (info.start_time, 0)
+        } else {
+            (effective_change_time, accrued)
+        };
+
+        // Re-run the bounded-stream overflow invariant with the new rate.
+        // This is the same class of guard initialize performs, but includes
+        // any value already accrued before this rate change.
+        if info.end_time > 0 && checkpoint_at < info.end_time {
+            let remaining = info
+                .end_time
+                .checked_sub(checkpoint_at)
+                .ok_or(Error::ArithmeticOverflow)? as i128;
+            let future = new_rate_per_second
+                .checked_mul(remaining)
+                .ok_or(Error::ArithmeticOverflow)?;
+            checkpoint_accrued
+                .checked_add(future)
+                .ok_or(Error::ArithmeticOverflow)?;
+        }
+
+        ttl::bump(env);
+
+        let old_rate = info.rate_per_second;
+        info.rate_per_second = new_rate_per_second;
+        state::save(env, &info);
+        env.storage().instance().set(
+            &DataKey::RateCheckpoint,
+            &RateCheckpoint {
+                accrued: checkpoint_accrued,
+                at: checkpoint_at,
+            },
+        );
+
+        events::rate_changed(env, caller, old_rate, new_rate_per_second);
         Ok(())
     }
 
@@ -672,6 +788,7 @@ impl DripStream {
 
         let tk = token::Client::new(env, &info.token);
         let contract_addr = env.current_contract_address();
+        let old_balance = tk.balance(&contract_addr);
 
         // Transfer funds from the caller (sender or operator) into the
         // contract. See `_top_up` for why this isn't always `info.sender`.
@@ -688,7 +805,14 @@ impl DripStream {
         state::save(env, &updated);
 
         let new_balance = tk.balance(&contract_addr);
-        events::topped_up(env, caller, amount, new_balance);
+        events::topped_up_and_extended(
+            env,
+            caller,
+            old_balance,
+            new_balance,
+            info.end_time,
+            new_end_time,
+        );
 
         Ok(())
     }
