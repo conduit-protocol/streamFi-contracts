@@ -75,6 +75,7 @@ fn cancel(env: Env, caller: Address) -> Result<(), Error>
 fn pause(env: Env, caller: Address) -> Result<(), Error>
 fn resume(env: Env, caller: Address) -> Result<(), Error>
 fn top_up(env: Env, caller: Address, amount: i128) -> Result<(), Error>
+fn change_rate(env: Env, caller: Address, new_rate_per_second: i128) -> Result<(), Error>
 fn clawback(env: Env, caller: Address) -> Result<i128, Error> // rejected while paused; resume() first
 
 // Extend end_time by extra_time_seconds, pulling the exact rate-implied deposit from the sender
@@ -109,7 +110,7 @@ fn storage_version(env: Env) -> u32
 ```
 
 > **Not yet in the SDK.** `force_cancel`, `transfer_recipient`, `streamed_total`, `extend_duration`,
-> `top_up_and_extend`, `set_operator`, `revoke_operator`, `operator`, `event_sequence`, and
+> `top_up_and_extend`, `change_rate`, `set_operator`, `revoke_operator`, `operator`, `event_sequence`, and
 > `storage_version` exist in the contract but aren't wrapped by `conduit-sdk` yet — callers need
 > to invoke them directly until the SDK catches up.
 
@@ -123,6 +124,7 @@ A sender can delegate a subset of sender-level actions to another address via `s
 | `resume` | sender **or** operator |
 | `cancel` | sender **or** operator |
 | `top_up` | sender **or** operator (funds come from the caller) |
+| `change_rate` | sender **or** operator; new rate applies prospectively without repricing accrued value |
 | `extend_duration` | sender **or** operator (funds come from the caller) |
 | `top_up_and_extend` | sender **or** operator (funds come from the caller) |
 | `clawback` | sender **or** operator |
@@ -140,6 +142,8 @@ A sender can delegate a subset of sender-level actions to another address via `s
 | `stream_paused` | `[sender]` | `{ paused_at, withdrawable }` |
 | `stream_resumed` | `[sender]` | `{ resumed_at }` |
 | `stream_topped_up` | `[sender]` | `{ amount, new_balance }` |
+| `top_ext` | `[caller, sequence]` | `{ old_balance, new_balance, old_end_time, new_end_time }` |
+| `rate_chg` | `[caller, sequence]` | `{ old_rate, new_rate }` |
 | `stream_clawback` | `[sender]` | `{ amount }` |
 | `xfer_rec` | `[old_recipient]` | `new_recipient` |
 
