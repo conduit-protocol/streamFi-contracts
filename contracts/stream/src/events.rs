@@ -139,7 +139,6 @@ pub fn topped_up(env: &Env, sender: &Address, amount: i128, new_balance: i128) {
     );
 }
 
-
 /// Publish a single event for the atomic `top_up_and_extend` transition.
 ///
 /// A dedicated event prevents indexers from having to correlate independent
@@ -251,4 +250,3 @@ pub fn min_withdrawal_interval_set(env: &Env, sender: &Address, interval_seconds
         interval_seconds,
     );
 }
-

@@ -1,7 +1,7 @@
 use soroban_sdk::Env;
 
 use crate::errors::Error;
-use crate::storage::{DataKey, CliffConfig, RateCheckpoint, StreamInfo};
+use crate::storage::{CliffConfig, DataKey, RateCheckpoint, StreamInfo};
 
 /// Returns the total tokens that have streamed up to `now`,
 /// excluding any paused time. Does not account for withdrawals.
@@ -48,8 +48,7 @@ pub fn streamed_amount(env: &Env, info: &StreamInfo) -> Result<i128, Error> {
     // retroactively repriced. The checkpoint is optional so pre-upgrade streams
     // continue to use the original start/cliff calculation until their first
     // rate change.
-    let checkpoint: Option<RateCheckpoint> =
-        env.storage().instance().get(&DataKey::RateCheckpoint);
+    let checkpoint: Option<RateCheckpoint> = env.storage().instance().get(&DataKey::RateCheckpoint);
     if let Some(checkpoint) = checkpoint {
         if effective_now < checkpoint.at {
             return Ok(0);
@@ -79,7 +78,10 @@ pub fn streamed_amount(env: &Env, info: &StreamInfo) -> Result<i128, Error> {
         let linear = (info.rate_per_second)
             .checked_mul(elapsed as i128)
             .ok_or(Error::ArithmeticOverflow)?;
-        return cfg.cliff_unlock_amount.checked_add(linear).ok_or(Error::ArithmeticOverflow);
+        return cfg
+            .cliff_unlock_amount
+            .checked_add(linear)
+            .ok_or(Error::ArithmeticOverflow);
     }
 
     let elapsed = effective_now

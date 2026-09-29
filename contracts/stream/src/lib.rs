@@ -14,8 +14,8 @@ use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env}
 use drip_common::{is_zero_address, pause};
 
 pub use errors::Error;
-use storage::{DataKey, RateCheckpoint, StreamInfo, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED};
 pub use storage::{CliffConfig, SplitConfig, StreamConfig, StreamStatus, StreamSummary};
+use storage::{DataKey, RateCheckpoint, StreamInfo, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED};
 
 #[contract]
 pub struct DripStream;
@@ -520,21 +520,13 @@ impl DripStream {
     /// never retroactively repriced. The caller may change the rate on a
     /// pending, active, or paused stream; a completed/cancelled stream is
     /// rejected.
-    pub fn change_rate(
-        env: Env,
-        caller: Address,
-        new_rate_per_second: i128,
-    ) -> Result<(), Error> {
+    pub fn change_rate(env: Env, caller: Address, new_rate_per_second: i128) -> Result<(), Error> {
         state::with_guard(&env, |env| {
             Self::_change_rate(env, &caller, new_rate_per_second)
         })
     }
 
-    fn _change_rate(
-        env: &Env,
-        caller: &Address,
-        new_rate_per_second: i128,
-    ) -> Result<(), Error> {
+    fn _change_rate(env: &Env, caller: &Address, new_rate_per_second: i128) -> Result<(), Error> {
         if new_rate_per_second <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -562,8 +554,7 @@ impl DripStream {
         // Before start/cliff, the checkpoint lives at the first timestamp at
         // which value can accrue. For a cliffed stream the upfront unlock is
         // included exactly at the cliff boundary.
-        let cliff_cfg: Option<CliffConfig> =
-            env.storage().instance().get(&DataKey::CliffConfig);
+        let cliff_cfg: Option<CliffConfig> = env.storage().instance().get(&DataKey::CliffConfig);
         let (checkpoint_at, checkpoint_accrued) = if let Some(cfg) = cliff_cfg {
             if effective_change_time < cfg.cliff_time {
                 (cfg.cliff_time, cfg.cliff_unlock_amount)
@@ -1395,4 +1386,3 @@ impl DripStream {
             .unwrap_or(0)
     }
 }
-

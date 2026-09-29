@@ -867,8 +867,7 @@ impl TwapOracle {
             price,
             updated_at: env.ledger().timestamp(),
         };
-        let submission_key =
-            DataKey::PairSubmission(base.clone(), quote.clone(), caller.clone());
+        let submission_key = DataKey::PairSubmission(base.clone(), quote.clone(), caller.clone());
         env.storage().persistent().set(&submission_key, &data);
         ttl::bump_persistent(&env, &submission_key);
 
@@ -911,9 +910,7 @@ impl TwapOracle {
                     .ok_or(Error::ArithmeticOverflow)
             }
             Err(reverse_err) => {
-                if direct_err == Error::OracleStalePrice
-                    || reverse_err == Error::OracleStalePrice
-                {
+                if direct_err == Error::OracleStalePrice || reverse_err == Error::OracleStalePrice {
                     Err(Error::OracleStalePrice)
                 } else {
                     Err(Error::PriceNotFound)
@@ -982,9 +979,7 @@ impl TwapOracle {
                     .ok_or(Error::ArithmeticOverflow)
             }
             Err(reverse_err) => {
-                if direct_err == Error::OracleStalePrice
-                    || reverse_err == Error::OracleStalePrice
-                {
+                if direct_err == Error::OracleStalePrice || reverse_err == Error::OracleStalePrice {
                     Err(Error::OracleStalePrice)
                 } else {
                     Err(Error::PriceNotFound)
@@ -3431,10 +3426,7 @@ mod tests {
         client.set_price_symbol(&f2, &base, &quote, &21_000_000u128);
         client.set_price_symbol(&f3, &base, &quote, &19_000_000u128);
 
-        assert_eq!(
-            client.get_price_symbol(&base, &quote),
-            20_000_000u128
-        );
+        assert_eq!(client.get_price_symbol(&base, &quote), 20_000_000u128);
     }
 
     // ── Pair price and inverted price calculation tests ───────────────────

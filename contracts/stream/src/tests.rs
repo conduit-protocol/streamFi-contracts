@@ -1385,7 +1385,12 @@ fn top_up_and_extend_updates_balance_and_end_time() {
     let data: (i128, i128, u64, u64) = last.2.try_into_val(&s.env).unwrap();
     assert_eq!(
         data,
-        (contract_before, contract_after, before_end, before_end + 200)
+        (
+            contract_before,
+            contract_after,
+            before_end,
+            before_end + 200
+        )
     );
 }
 
@@ -2576,7 +2581,10 @@ fn test_cliff_unlock_percentage_and_linear_streaming() {
     let upfront_unlock = 72_000; // 20% of 360,000
 
     // Set cliff
-    assert!(s.client.try_set_cliff(&s.sender, &cliff_time, &upfront_unlock).is_ok());
+    assert!(s
+        .client
+        .try_set_cliff(&s.sender, &cliff_time, &upfront_unlock)
+        .is_ok());
 
     // Before cliff: 0 withdrawable
     s.advance_secs(500);
@@ -2624,15 +2632,12 @@ fn test_set_min_withdrawal_interval_auth() {
     let s = Setup::new(100, 3600, false);
     let unauthorized = Address::generate(&s.env);
 
-    let res = s
-        .client
-        .try_set_min_withdrawal_interval(&unauthorized, &60);
+    let res = s.client.try_set_min_withdrawal_interval(&unauthorized, &60);
     assert_eq!(
         res.err().unwrap().unwrap(),
         crate::errors::Error::NotAuthorized
     );
 }
-
 
 // ── Issue #621: validate_withdraw dry-run query ─────────────────────────────
 
