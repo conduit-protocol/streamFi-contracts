@@ -1300,7 +1300,11 @@ fn median_u128(values: Vec<u128>) -> u128 {
     if len & 1 == 0 {
         let a = sorted.get(mid - 1).unwrap();
         let b = sorted.get(mid).unwrap();
-        a.saturating_add(b) / 2
+        // Overflow-safe integer average. Avoid `a + b`, which can overflow
+        // for valid u128 prices even though their median is representable.
+        (a / 2)
+            .saturating_add(b / 2)
+            .saturating_add(((a % 2) + (b % 2)) / 2)
     } else {
         sorted.get(mid).unwrap()
     }
@@ -3302,6 +3306,134 @@ mod tests {
         assert!(
             result.is_ok(),
             "first-ever submission must bypass the interval check"
+        );
+    }
+
+    // ── Issue #695: decentralized pair-price aggregation ───────────────────
+
+    #[test]
+    fn pair_price_uses_median_of_fresh_authorized_reporters() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let base = Address::generate(&env);
+        let quote = Address::generate(&env);
+        let f1 = Address::generate(&env);
+        let f2 = Address::generate(&env);
+        let f3 = Address::generate(&env);
+
+        for feeder in [f1.clone(), f2.clone(), f3.clone()] {
+            client.grant_role(&admin, &Role::PriceFeeder, &feeder);
+        }
+
+        client.set_price(&f1, &base, &quote, &100u128);
+        client.set_price(&f2, &base, &quote, &300u128);
+        client.set_price(&f3, &base, &quote, &200u128);
+
+        assert_eq!(client.get_price(&base, &quote), 200u128);
+    }
+
+    #[test]
+    fn pair_price_ignores_stale_reports_and_errors_when_all_are_stale() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let base = Address::generate(&env);
+        let quote = Address::generate(&env);
+        let f1 = Address::generate(&env);
+        let f2 = Address::generate(&env);
+        client.grant_role(&admin, &Role::PriceFeeder, &f1);
+        client.grant_role(&admin, &Role::PriceFeeder, &f2);
+
+        env.ledger().set(LedgerInfo {
+            timestamp: 1_000_000,
+            protocol_version: 21,
+            sequence_number: 1,
+            network_id: Default::default(),
+            base_reserve: 10,
+            min_temp_entry_ttl: 16,
+            min_persistent_entry_ttl: 4096,
+            max_entry_ttl: 6_312_000,
+        });
+        client.set_price(&f1, &base, &quote, &100u128);
+
+        // f1 is now older than the 15-minute pair-report window.
+        env.ledger().set(LedgerInfo {
+            timestamp: 1_000_901,
+            protocol_version: 21,
+            sequence_number: 2,
+            network_id: Default::default(),
+            base_reserve: 10,
+            min_temp_entry_ttl: 16,
+            min_persistent_entry_ttl: 4096,
+            max_entry_ttl: 6_312_000,
+        });
+        client.set_price(&f2, &base, &quote, &250u128);
+        assert_eq!(client.get_price(&base, &quote), 250u128);
+
+        env.ledger().set(LedgerInfo {
+            timestamp: 1_001_802,
+            protocol_version: 21,
+            sequence_number: 3,
+            network_id: Default::default(),
+            base_reserve: 10,
+            min_temp_entry_ttl: 16,
+            min_persistent_entry_ttl: 4096,
+            max_entry_ttl: 6_312_000,
+        });
+        assert_eq!(
+            client.try_get_price(&base, &quote),
+            Err(Ok(Error::OracleStalePrice))
+        );
+    }
+
+    #[test]
+    fn pair_price_caps_active_reporters_at_five() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let base = Address::generate(&env);
+        let quote = Address::generate(&env);
+        let mut feeders = std::vec::Vec::new();
+
+        for _ in 0..6 {
+            let feeder = Address::generate(&env);
+            client.grant_role(&admin, &Role::PriceFeeder, &feeder);
+            feeders.push(feeder);
+        }
+
+        for feeder in feeders.iter().take(5) {
+            client.set_price(feeder, &base, &quote, &100u128);
+        }
+
+        assert_eq!(
+            client.try_set_price(&feeders[5], &base, &quote, &100u128),
+            Err(Ok(Error::TooManyPairReporters))
+        );
+    }
+
+    #[test]
+    fn symbol_pair_price_uses_the_same_median_policy() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let base = symbol_short!("XLM");
+        let quote = symbol_short!("USDC");
+        let f1 = Address::generate(&env);
+        let f2 = Address::generate(&env);
+        let f3 = Address::generate(&env);
+
+        for feeder in [f1.clone(), f2.clone(), f3.clone()] {
+            client.grant_role(&admin, &Role::PriceFeeder, &feeder);
+        }
+
+        client.set_price_symbol(&f1, &base, &quote, &20_000_000u128);
+        client.set_price_symbol(&f2, &base, &quote, &21_000_000u128);
+        client.set_price_symbol(&f3, &base, &quote, &19_000_000u128);
+
+        assert_eq!(
+            client.get_price_symbol(&base, &quote),
+            20_000_000u128
         );
     }
 
