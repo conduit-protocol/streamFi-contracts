@@ -12,8 +12,8 @@ use soroban_sdk::{
 use crate::{BatchTransferProcessorClient, Error};
 
 /// Mirrors `MAX_BATCH_SIZE` — the value `max_batch_size()` must expose and
-/// the cap `process_batch` enforces.
-const MAX_BATCH_SIZE: u32 = 100;
+/// the cap `process_batch` enforces (reduced to 30 per issue #677).
+const MAX_BATCH_SIZE: u32 = 30;
 
 struct Setup {
     env: Env,
