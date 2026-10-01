@@ -1,4 +1,4 @@
-use soroban_sdk::{symbol_short, Address, Env};
+use soroban_sdk::{symbol_short, Address, Env, Symbol};
 
 use crate::Role;
 
@@ -69,6 +69,14 @@ pub fn propose_authority(env: &Env, caller: &Address, new_authority: &Address) {
     env.events().publish(
         (symbol_short!("propose"), caller.clone()),
         new_authority.clone(),
+    );
+}
+
+/// Emitted when an `Admin` cancels a pending authority proposal.
+pub fn revoke_propose_authority(env: &Env, caller: &Address, pending_authority: &Address) {
+    env.events().publish(
+        (Symbol::new(env, "authority_proposal_revoked"), caller.clone()),
+        pending_authority.clone(),
     );
 }
 

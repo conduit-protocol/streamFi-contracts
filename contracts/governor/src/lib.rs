@@ -30,7 +30,7 @@ use drip_common::is_zero_address;
 
 pub use config::GovernorConfig;
 pub use errors::Error;
-pub use role::Role;
+pub use role::{Role, RoleMembersPage};
 use storage::DataKey;
 pub use storage::{Proposal, ProposalStatus};
 
@@ -112,6 +112,16 @@ impl DripGovernor {
         config::load(&env)
     }
 
+    /// Current protocol fee recipient, without fetching the full config.
+    pub fn fee_recipient(env: Env) -> Result<Address, Error> {
+        Ok(config::load(&env)?.fee_recipient)
+    }
+
+    /// Current protocol fee in basis points, without fetching the full config.
+    pub fn fee_bps(env: Env) -> Result<u32, Error> {
+        Ok(config::load(&env)?.fee_bps)
+    }
+
     /// Read-only: current minimum stream duration in seconds.
     ///
     /// Focused accessor for callers that only need this one field, avoiding
@@ -131,13 +141,17 @@ impl DripGovernor {
         role::has_role(&env, role, &account)
     }
 
-    /// Returns every account currently holding `role`.
+    /// Returns a page of accounts holding `role`, plus the total member count.
     ///
-    /// Enables on-chain role-membership auditing without replaying every
-    /// `grant_role`/`revoke_role` event from genesis. The index is maintained
-    /// automatically by `grant_role` and `revoke_role`.
-    pub fn role_members(env: Env, role: Role) -> Vec<Address> {
-        role::role_members(&env, role)
+    /// The page is capped at 100 accounts. The index is maintained by the
+    /// single-account and batch role mutation methods.
+    pub fn role_members(
+        env: Env,
+        role: Role,
+        offset: u32,
+        limit: u32,
+    ) -> RoleMembersPage {
+        role::role_members(&env, role, offset, limit)
     }
 
     /// Current maximum stream duration in seconds, without fetching the full
@@ -313,6 +327,45 @@ impl DripGovernor {
         Ok(())
     }
 
+    /// Grants `role` to each account. Only an `Admin` may call this.
+    ///
+    /// Emits the same per-account event as `grant_role`, only for new grants.
+    pub fn grant_role_batch(
+        env: Env,
+        caller: Address,
+        role: Role,
+        accounts: Vec<Address>,
+    ) -> Result<(), Error> {
+        role::require_role(&env, &caller, Role::Admin)?;
+        for index in 0..accounts.len() {
+            let account = accounts.get(index).unwrap();
+            if role::grant(&env, role, &account) {
+                events::grant_role(&env, &caller, role, &account);
+            }
+        }
+        Ok(())
+    }
+
+    /// Revokes `role` from each account. Only an `Admin` may call this.
+    ///
+    /// Preserves `revoke_role` idempotency and last-admin protection, and
+    /// emits one event for each account whose role was actually removed.
+    pub fn revoke_role_batch(
+        env: Env,
+        caller: Address,
+        role: Role,
+        accounts: Vec<Address>,
+    ) -> Result<(), Error> {
+        role::require_role(&env, &caller, Role::Admin)?;
+        for index in 0..accounts.len() {
+            let account = accounts.get(index).unwrap();
+            if role::revoke(&env, role, &account)? {
+                events::revoke_role(&env, &caller, role, &account);
+            }
+        }
+        Ok(())
+    }
+
     /// Hands the full `Admin` role from `caller` to `new_authority`.
     ///
     /// Grants first so the subsequent revoke can never trip the `LastAdmin`
@@ -366,6 +419,19 @@ impl DripGovernor {
             .instance()
             .set(&DataKey::PendingAuthorityProposer, &caller);
         events::propose_authority(&env, &caller, &new_authority);
+        Ok(())
+    }
+
+    /// Cancels the pending authority transfer. Only an `Admin` may call this.
+    pub fn revoke_propose_authority(env: Env, caller: Address) -> Result<(), Error> {
+        role::require_role(&env, &caller, Role::Admin)?;
+        let storage = env.storage().instance();
+        let pending: Address = storage
+            .get(&DataKey::PendingAuthority)
+            .ok_or(Error::NoPendingAuthority)?;
+        storage.remove(&DataKey::PendingAuthority);
+        storage.remove(&DataKey::PendingAuthorityProposer);
+        events::revoke_propose_authority(&env, &caller, &pending);
         Ok(())
     }
 

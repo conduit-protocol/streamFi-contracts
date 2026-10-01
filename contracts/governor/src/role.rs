@@ -1,4 +1,4 @@
-use soroban_sdk::{Address, Env, Vec as SorobanVec};
+use soroban_sdk::{contracttype, Address, Env, Vec};
 
 use drip_common::rbac;
 
@@ -8,6 +8,16 @@ use crate::Error;
 
 /// Re-export so callers using `role::Role` continue to work unchanged.
 pub use crate::storage::Role;
+
+/// A page of role members, with the total count for pagination.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoleMembersPage {
+    pub members: Vec<Address>,
+    pub total: u32,
+}
+
+const MAX_ROLE_MEMBERS_PAGE_SIZE: u32 = 100;
 
 // ── Key helpers ────────────────────────────────────────────────────────────
 
@@ -105,12 +115,22 @@ pub fn require_role(env: &Env, caller: &Address, role: Role) -> Result<(), Error
         .map_err(|_| Error::NotAuthorized)
 }
 
-/// Returns every account currently holding `role`.
+/// Returns a page of accounts currently holding `role`.
 ///
 /// Reads from the `RoleMembers` index maintained by `grant`/`revoke`.
-/// Returns an empty vector if no accounts hold the role.
-pub fn role_members(env: &Env, role: Role) -> SorobanVec<Address> {
-    rbac::role_members(env, &members_key(role))
+/// The result is capped at 100 members and includes the total member count.
+pub fn role_members(env: &Env, role: Role, offset: u32, limit: u32) -> RoleMembersPage {
+    let all_members = rbac::role_members(env, &members_key(role));
+    let total = all_members.len();
+    let start = offset.min(total);
+    let end = start
+        .saturating_add(limit.min(MAX_ROLE_MEMBERS_PAGE_SIZE))
+        .min(total);
+    let mut members = Vec::new(env);
+    for index in start..end {
+        members.push_back(all_members.get(index).unwrap());
+    }
+    RoleMembersPage { members, total }
 }
 
 /// Requires that `caller` authorized the transaction and holds `role` **or**
