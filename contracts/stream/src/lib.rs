@@ -1230,6 +1230,36 @@ impl DripStream {
         state::load(&env)
     }
 
+    /// Read-only: the stream sender.
+    pub fn sender(env: Env) -> Address {
+        state::load(&env).sender
+    }
+
+    /// Read-only: the stream recipient.
+    pub fn recipient(env: Env) -> Address {
+        state::load(&env).recipient
+    }
+
+    /// Read-only: the token escrowed by this stream.
+    pub fn token(env: Env) -> Address {
+        state::load(&env).token
+    }
+
+    /// Read-only: the stream's current rate per second.
+    pub fn rate_per_second(env: Env) -> i128 {
+        state::load(&env).rate_per_second
+    }
+
+    /// Read-only: whether this stream has no scheduled end time.
+    pub fn is_open_ended(env: Env) -> bool {
+        state::load(&env).end_time == 0
+    }
+
+    /// Read-only: maximum safe pause duration, in seconds.
+    pub fn max_pause_secs(_env: Env) -> u64 {
+        ttl::MAX_PAUSE_SECS
+    }
+
     /// Latest committed event sequence.
     ///
     /// Event consumers can compare this value with the last sequence they
