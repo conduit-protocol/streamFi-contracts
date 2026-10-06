@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { foldEvent, type RawEvent } from "./handlers.js";
+import { retryWithBackoff, sleep, type RetryPolicy } from "./retry.js";
 
 /**
  * Poller — fetches ledger events since the DB cursor and folds them into
@@ -35,6 +36,24 @@ import { foldEvent, type RawEvent } from "./handlers.js";
  * being idempotent. The transactional approach is strictly stronger and
  * costs one extra round-trip (the BEGIN/COMMIT) per page, which is
  * negligible next to the Horizon/RPC fetch.
+ *
+ * Retry / backoff (issue #569):
+ * -----------------------------
+ * Two different failure classes, two different strategies — both explicit:
+ *
+ *   fetch (RPC)   — retried *inside* pollOnce via `retryWithBackoff`
+ *                   (exponential, default 3 attempts: 250ms, 500ms). A
+ *                   transient RPC error never surfaces as a poll failure.
+ *   ingest (DB)   — NOT retried inside pollOnce: the transaction has already
+ *                   rolled back, so the clean retry is a fresh BEGIN. That
+ *                   retry happens on the next loop iteration, where
+ *                   startPollLoop catches the throw and sleeps
+ *                   min(intervalMs, 2000) before polling again.
+ *
+ * The loop itself never dies on a failure: startPollLoop catches everything,
+ * logs it, backs off, and polls again — so neither a bad RPC response nor a
+ * Postgres blip can leave the worker "running but stalled" (see
+ * test/poller.test.ts).
  */
 
 export async function getCursor(client: PoolClient): Promise<number> {
@@ -98,10 +117,21 @@ export type FetchEventsFn = (
   limit: number
 ) => Promise<RawEvent[]>;
 
+export interface PollOnceOptions {
+  /**
+   * Retry policy for the RPC fetch step (issue #569). Defaults to
+   * {@link DEFAULT_RETRY} — 3 attempts with 250ms/500ms exponential backoff.
+   */
+  retry?: RetryPolicy;
+  /** Aborts an in-flight backoff sleep so shutdown is not delayed. */
+  signal?: AbortSignal;
+}
+
 export async function pollOnce(
   pool: Pool,
   fetchEvents: FetchEventsFn,
-  limit = 100
+  limit = 100,
+  opts: PollOnceOptions = {}
 ): Promise<{ fetched: number; nextLedger: number | null }> {
   // Read cursor outside the ingest transaction (it's just the start point).
   const cursorClient = await pool.connect();
@@ -112,7 +142,14 @@ export async function pollOnce(
     cursorClient.release();
   }
 
-  const events = await fetchEvents(fromLedger + 1, limit);
+  // RPC fetch step — explicit retry-with-backoff so one transient upstream
+  // failure (rate limit, 5xx, connection reset) does not fail the poll.
+  // Exhausted retries rethrow; startPollLoop catches, backs off, and tries
+  // the same cursor again — the cursor never advances on a failed fetch.
+  const events = await retryWithBackoff(
+    () => fetchEvents(fromLedger + 1, limit),
+    { ...opts.retry, signal: opts.signal, label: "fetchEvents" }
+  );
   if (events.length === 0) {
     return { fetched: 0, nextLedger: null };
   }
@@ -137,35 +174,27 @@ export async function pollOnce(
 }
 
 /**
- * Sleep helper that resolves early if AbortSignal triggers.
- */
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal?.aborted) {
-      resolve();
-      return;
-    }
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      resolve();
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
-/**
  * Long-running poll loop used by the worker. Polls every `intervalMs`
  * until the process is terminated (SIGTERM/SIGINT) or the signal aborts. Each iteration is
  * independently transactional via pollOnce.
+ *
+ * Failure handling (issue #569): the loop never exits on a failure. A fetch
+ * failure is first retried inside pollOnce (exponential backoff); if that is
+ * exhausted — or the *ingest* half failed and rolled back — the error lands
+ * here, is logged, and the loop sleeps min(intervalMs, 2000) before polling
+ * the same cursor again. So the only ways this loop stops are abort or
+ * process death; it cannot silently stall while looking healthy.
  */
 export async function startPollLoop(
   pool: Pool,
   fetchEvents: FetchEventsFn,
-  opts: { intervalMs?: number; limit?: number; signal?: AbortSignal } = {}
+  opts: {
+    intervalMs?: number;
+    limit?: number;
+    signal?: AbortSignal;
+    /** Retry policy forwarded to the fetch step of pollOnce. */
+    retry?: RetryPolicy;
+  } = {}
 ): Promise<void> {
   const intervalMs = opts.intervalMs ?? 5_000;
   const limit = opts.limit ?? 100;
@@ -173,7 +202,10 @@ export async function startPollLoop(
 
   while (!signal?.aborted) {
     try {
-      const { fetched } = await pollOnce(pool, fetchEvents, limit);
+      const { fetched } = await pollOnce(pool, fetchEvents, limit, {
+        retry: opts.retry,
+        signal,
+      });
       if (signal?.aborted) break;
       if (fetched === 0) {
         await sleep(intervalMs, signal);

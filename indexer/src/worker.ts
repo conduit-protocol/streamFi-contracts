@@ -129,6 +129,29 @@ export function setupGracefulShutdown(
   return handleShutdown;
 }
 
+/**
+ * One-time loud warning that this worker is running the placeholder event
+ * source (issue #568). `npm run start:worker` used to boot cleanly, log
+ * nothing at all, and index nothing forever — an operator could not tell
+ * "intentionally running the stub" apart from "the RPC path is broken and
+ * returning zero events". This line makes the difference visible once per
+ * process; silence afterwards means "no new events on chain".
+ */
+let placeholderWarned = false;
+export function warnPlaceholderSourceOnce(): void {
+  if (placeholderWarned) return;
+  placeholderWarned = true;
+  console.warn(
+    JSON.stringify({
+      level: "warn",
+      msg: "using placeholder event source — no events will be indexed",
+      source: "fetchEventsFromRPC",
+      file: "indexer/src/worker.ts",
+      hint: "implement fetchEventsFromRPC (soroban-rpc getEvents) to index real events",
+    })
+  );
+}
+
 async function fetchEventsFromRPC(
   fromLedger: number,
   limit: number
@@ -136,12 +159,13 @@ async function fetchEventsFromRPC(
   // Placeholder — in production this would call Horizon / Soroban RPC
   // `getEvents` with startLedger/fromLedger and pagination.
   // For local dev without a running node it returns an empty page so the
-  // poller simply advances nothing and sleeps.
+  // poller simply advances nothing and sleeps — loudly (issue #568).
   //
   // Replace with:
   //   const rpc = new SorobanRpc.Server(RPC_URL);
   //   const resp = await rpc.getEvents({ startLedger: fromLedger, limit, filters: [...] });
   //   return resp.events.map(toRawEvent);
+  warnPlaceholderSourceOnce();
   void fromLedger;
   void limit;
   return [];
@@ -155,20 +179,27 @@ async function main(): Promise<void> {
   const lockClient = await acquireSingletonLock(pool);
 
   const abortController = new AbortController();
-  let pollLoopPromise: Promise<void> | undefined;
+  // Holder: the shutdown handler registered below must be able to await the
+  // poll loop even though the loop hasn't started yet — a const holder keeps
+  // eslint's prefer-const happy without deferring the assignment.
+  const pollLoop: { promise?: Promise<void> } = {};
 
-  setupGracefulShutdown(pool, lockClient, abortController, () => pollLoopPromise);
+  setupGracefulShutdown(pool, lockClient, abortController, () => pollLoop.promise);
 
   const fetchEvents: FetchEventsFn = fetchEventsFromRPC;
 
+  // Issue #568 — say it at boot, not only on first fetch: this worker runs
+  // the placeholder source and will not index anything until it's replaced.
+  warnPlaceholderSourceOnce();
+
   console.log("[worker] Starting poll loop...");
-  pollLoopPromise = startPollLoop(pool, fetchEvents, {
+  pollLoop.promise = startPollLoop(pool, fetchEvents, {
     intervalMs: Number(process.env.POLLER_INTERVAL_MS ?? 5000),
     limit: Number(process.env.POLLER_PAGE_LIMIT ?? 100),
     signal: abortController.signal,
   });
 
-  await pollLoopPromise;
+  await pollLoop.promise;
 }
 
 // Only run when executed directly (not when imported in tests).
