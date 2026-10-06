@@ -8,11 +8,31 @@
  *  - `lastLedger` inclusive semantics
  *  - opaque `nextToken` round-tripping
  *  - `events` sorted ascending by `(ledger, sequence)`
+ *
+ * Loud-by-default (issue #568): constructing this stub logs a one-time
+ * warning. Before that, a worker booted against this stub "succeeded" —
+ * clean start, healthy `/healthz`, zero log lines, zero indexed events —
+ * indistinguishable from a broken RPC returning nothing. Now the intent is
+ * stated once, at construction, and silence after that means "no events on
+ * chain", not "the stub is still wired in".
  */
 
 import { Page, GetEventsParams, SorobanEventSource } from "./types.js";
 
 export class StubSorobanEventSource implements SorobanEventSource {
+  /** One warning per construction — never per `getEvents` call. */
+  constructor() {
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        msg: "using placeholder SorobanEventSource — no events will be indexed",
+        stub: "StubSorobanEventSource",
+        file: "indexer/src/indexer/eventSource.ts",
+        hint: "replace with an RPC-backed SorobanEventSource to index real events",
+      })
+    );
+  }
+
   async getEvents(params: GetEventsParams): Promise<Page> {
     const end = params.endLedger ?? params.startLedger;
     return {

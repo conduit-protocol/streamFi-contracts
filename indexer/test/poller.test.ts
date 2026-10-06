@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { getCursor, saveCursor, ingestPage, pollOnce, startPollLoop } from "../src/poller.js";
 import { setupGracefulShutdown } from "../src/worker.js";
@@ -55,6 +55,17 @@ const sampleEvent = (overrides: Partial<RawEvent> = {}): RawEvent => ({
   },
   ...overrides,
 });
+
+/** Poll `predicate` until true or fail — used for the loop-based tests. */
+async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error(`waitFor: condition not met within ${timeoutMs}ms`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
 
 describe("poller", () => {
   let client: ReturnType<typeof mockClient>;
@@ -252,6 +263,131 @@ describe("poller", () => {
       expect(exitSpy).toHaveBeenCalledWith(0);
 
       exitSpy.mockRestore();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Issue #569 — explicit retry-with-backoff around the RPC fetch step, and
+  // proof the loop never silently stops advancing after a transient failure.
+  // -----------------------------------------------------------------------
+  describe("retry & backoff around the fetch step (issue #569)", () => {
+    beforeEach(() => {
+      // retryWithBackoff logs a structured warn line per attempt; keep it out
+      // of the test output.
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("retries a transient fetch failure inside pollOnce and still advances the cursor", async () => {
+      let attempts = 0;
+      const fetchEvents = vi.fn(async (): Promise<RawEvent[]> => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("socket hang up");
+        return [sampleEvent({ ledger: 70, txHash: "tx70" })];
+      });
+      const pool = mockPool(client);
+      client.query = vi.fn(async (sql: string) => {
+        if (sql.includes("SELECT last_ledger")) return { rows: [{ last_ledger: 42 }], rowCount: 1 } as never;
+        return { rows: [], rowCount: 0 } as never;
+      }) as never;
+
+      const result = await pollOnce(pool, fetchEvents, 100, {
+        retry: { attempts: 3, baseDelayMs: 1, maxDelayMs: 2 },
+      });
+
+      // The fetch was retried (not abandoned after one blip) …
+      expect(fetchEvents).toHaveBeenCalledTimes(2);
+      // … and the poll still produced a committed cursor advance.
+      expect(result).toEqual({ fetched: 1, nextLedger: 70 });
+      const sqls = (client.query as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as string);
+      expect(sqls).toContain("BEGIN");
+      expect(sqls).toContain("COMMIT");
+    });
+
+    it("rethrows after exhausting fetch retries without touching the cursor", async () => {
+      const fetchEvents = vi.fn(async () => {
+        throw new Error("rpc down");
+      });
+      const pool = mockPool(client);
+      client.query = vi.fn(async () => ({ rows: [], rowCount: 0 } as never)) as never;
+
+      await expect(
+        pollOnce(pool, fetchEvents, 100, { retry: { attempts: 3, baseDelayMs: 1, maxDelayMs: 2 } })
+      ).rejects.toThrow("rpc down");
+
+      expect(fetchEvents).toHaveBeenCalledTimes(3);
+      const sqls = (client.query as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as string);
+      // Nothing was ingested and the cursor was not moved — the retry did not
+      // turn a hard failure into a silent partial advance.
+      expect(sqls).not.toContain("BEGIN");
+      expect(sqls).not.toContain("COMMIT");
+    });
+
+    it("startPollLoop keeps advancing after an exhausted fetch failure (no silent stall)", async () => {
+      let fetchCount = 0;
+      const fetchEvents = vi.fn(async (): Promise<RawEvent[]> => {
+        fetchCount += 1;
+        // First pollOnce: attempts 1+2 both fail (retries exhausted) → the
+        // loop's own backoff kicks in; from attempt 3 the RPC recovers.
+        if (fetchCount <= 2) throw new Error("ECONNRESET");
+        if (fetchCount === 3) return [sampleEvent({ ledger: 90, txHash: "tx90" })];
+        return [];
+      });
+      const pool = mockPool(client);
+      let committed = false;
+      client.query = vi.fn(async (sql: string) => {
+        if (sql.includes("SELECT last_ledger")) return { rows: [{ last_ledger: 42 }], rowCount: 1 } as never;
+        if (sql === "COMMIT") committed = true;
+        return { rows: [], rowCount: 0 } as never;
+      }) as never;
+
+      const controller = new AbortController();
+      const loop = startPollLoop(pool, fetchEvents, {
+        intervalMs: 5,
+        retry: { attempts: 2, baseDelayMs: 1, maxDelayMs: 2 },
+        signal: controller.signal,
+      });
+
+      // The failure is survived: a later iteration ingests and commits.
+      await waitFor(() => committed);
+      controller.abort();
+      await loop;
+
+      expect(fetchCount).toBeGreaterThanOrEqual(3);
+      expect(committed).toBe(true);
+    });
+
+    it("startPollLoop backs off (not spins) after a hard fetch failure", async () => {
+      let fetchCount = 0;
+      const fetchEvents = vi.fn(async (): Promise<RawEvent[]> => {
+        fetchCount += 1;
+        if (fetchCount === 1) throw new Error("db blip");
+        return [];
+      });
+      const pool = mockPool(client);
+      client.query = vi.fn(async (sql: string) => {
+        if (sql.includes("SELECT last_ledger")) return { rows: [{ last_ledger: 42 }], rowCount: 1 } as never;
+        return { rows: [], rowCount: 0 } as never;
+      }) as never;
+
+      const controller = new AbortController();
+      const loop = startPollLoop(pool, fetchEvents, {
+        intervalMs: 500, // loop-level backoff is min(intervalMs, 2000)
+        retry: { attempts: 1, baseDelayMs: 1 },
+        signal: controller.signal,
+      });
+
+      await waitFor(() => fetchCount >= 2);
+      controller.abort();
+      await loop;
+
+      // After the failed iteration the loop slept before polling again
+      // instead of hot-looping the failing cursor (a hot loop would have
+      // burned through thousands of fetches in that window).
+      expect(fetchCount).toBeLessThan(10);
     });
   });
 });

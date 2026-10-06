@@ -33,6 +33,16 @@ npm run dev
   ```
   Counter triples (`pages_processed`, `events_folded`, `fold_failures`) are also emitted as structured JSON log lines on stderr (`msg=indexer_tick`) for dashboards without scraping.
 
+## Failure handling
+
+- **Fetch step (issue #569)** — the RPC `getEvents` call runs through `retryWithBackoff` (`src/retry.ts`): 3 attempts by default with exponential backoff (250ms → 5s cap), one structured warn line per attempt. Exhausted retries are logged and the cursor is left untouched; the next tick / loop iteration retries the same position, so a transient RPC error or Postgres blip delays progress instead of stopping it.
+- **Ingest step** — `pollOnce` keeps ingest + cursor save in a single transaction; a failure rolls back and `startPollLoop` backs off `min(intervalMs, 2000)` before polling again. The loop never exits on a failure — only on abort or process death.
+- **Placeholder source (issue #568)** — constructing `StubSorobanEventSource` and booting `src/worker.ts` each log a one-time warning that no events will be indexed, so a worker running the scaffold is never indistinguishable from a worker whose real event source is returning nothing.
+
+## Derived tables
+
+`db/schema.sql` ships `streams` (issue #567 — one row per stream: sender, recipient, token, rate, start/end) and `stream_events` (issue #566 — one row per DripStream lifecycle event: withdrawn, cancelled, paused, resumed, topped_up, clawback, xfer_rec), folded by `src/indexer/handlers.ts`. The DAO-voting tables (`loan_proposals`, `treasury_proposals`) are legacy scaffolding.
+
 ## Contract
 
 See `src/indexer/types.ts` for the `SorobanEventSource` pagination contract (`nextToken` opaque, `lastLedger` inclusive) and the expected `fields` shape per `ev.type`. That file is the entire interface between the poller and the event source implementation that will replace `StubSorobanEventSource`.
