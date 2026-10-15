@@ -17,4 +17,4 @@ drip-stream = { path = "../stream" }
 soroban-sdk = { workspace = true, features = ["testutils"] }
 
 [features]
-testutils = ["soroban-sdk/testutils"]
+testutils = ["soroban-sdk/testutils", "drip-common/testutils"]

@@ -13,10 +13,12 @@ use soroban_sdk::{contract, contractimpl, token, Address, BytesN, Env, Vec};
 use storage::{
     get_max_limit, get_operator, get_operator_withdraw_limit, get_owner, get_owner_proposal_ttl,
     get_pending_owner, get_pending_owner_proposed_at, get_pending_owner_proposer, get_token,
-    is_paused, remove_operator, remove_pending_owner, remove_pending_owner_proposed_at,
-    remove_pending_owner_proposer, set_max_limit, set_operator, set_operator_withdraw_limit,
-    set_owner, set_owner_proposal_ttl as store_owner_proposal_ttl, set_paused, set_pending_owner,
-    set_pending_owner_proposed_at, set_pending_owner_proposer, set_token, DataKey,
+    get_token_account_balance, get_token_max_limit, is_paused, remove_operator,
+    remove_pending_owner, remove_pending_owner_proposed_at, remove_pending_owner_proposer,
+    set_max_limit, set_operator, set_operator_withdraw_limit, set_owner,
+    set_owner_proposal_ttl as store_owner_proposal_ttl, set_paused, set_pending_owner,
+    set_pending_owner_proposed_at, set_pending_owner_proposer, set_token,
+    set_token_account_balance, set_token_max_limit, DataKey,
 };
 use ttl::bump_instance;
 
@@ -201,6 +203,12 @@ impl TokenVault {
         }
         if new_balance != expected_balance {
             return Err(Error::DepositTransferFailed);
+        }
+
+        let default_token = get_token(&env).ok_or(Error::NotInitialized)?;
+        let cur_acc_bal = get_token_account_balance(&env, &default_token, &from);
+        if let Some(new_acc_bal) = cur_acc_bal.checked_add(amount) {
+            set_token_account_balance(&env, &default_token, &from, new_acc_bal);
         }
 
         bump_instance(&env);
@@ -608,5 +616,128 @@ impl TokenVault {
         env.deployer().update_current_contract_wasm(new_wasm_hash);
         events::upgraded(&env, &caller, env.ledger().timestamp());
         Ok(())
+    }
+
+    // ── Multi-token vault support (Issue #724) ─────────────────────────────
+
+    /// Deposits an arbitrary token into the vault for a specific account (Issue #724).
+    pub fn deposit_token(
+        env: Env,
+        from: Address,
+        token: Address,
+        amount: i128,
+    ) -> Result<(), Error> {
+        assert_not_paused(&env)?;
+        let owner = get_owner(&env).ok_or(Error::NotInitialized)?;
+        require_owner_or_operator(&env, &from, &owner)?;
+
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        if let Some(max) = get_token_max_limit(&env, &token) {
+            let tk_client = token::Client::new(&env, &token);
+            let current_vault_balance = tk_client.balance(&env.current_contract_address());
+            let expected_balance = current_vault_balance
+                .checked_add(amount)
+                .ok_or(Error::ArithmeticOverflow)?;
+            if expected_balance > max {
+                return Err(Error::LimitExceeded);
+            }
+        }
+
+        let tk = token::Client::new(&env, &token);
+        tk.transfer(&from, &env.current_contract_address(), &amount);
+
+        let current_acc_balance = get_token_account_balance(&env, &token, &from);
+        let new_acc_balance = current_acc_balance
+            .checked_add(amount)
+            .ok_or(Error::ArithmeticOverflow)?;
+        set_token_account_balance(&env, &token, &from, new_acc_balance);
+
+        bump_instance(&env);
+        events::deposited(&env, &from, amount, tk.balance(&env.current_contract_address()));
+        Ok(())
+    }
+
+    /// Withdraws a specific token from the vault to a destination address (Issue #724).
+    pub fn withdraw_token(
+        env: Env,
+        caller: Address,
+        token: Address,
+        to: Address,
+        amount: i128,
+    ) -> Result<(), Error> {
+        assert_not_paused(&env)?;
+        let owner = get_owner(&env).ok_or(Error::NotInitialized)?;
+        require_owner_or_operator(&env, &caller, &owner)?;
+
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let cap = withdraw_cap(&env, &caller, &owner)?;
+        if amount > cap {
+            return Err(Error::LimitExceeded);
+        }
+
+        let tk = token::Client::new(&env, &token);
+        let vault_bal = tk.balance(&env.current_contract_address());
+        if amount > vault_bal {
+            return Err(Error::LimitExceeded);
+        }
+
+        let current_acc_balance = get_token_account_balance(&env, &token, &caller);
+        if caller != owner && current_acc_balance < amount {
+            return Err(Error::LimitExceeded);
+        }
+
+        tk.transfer(&env.current_contract_address(), &to, &amount);
+
+        if current_acc_balance >= amount {
+            set_token_account_balance(&env, &token, &caller, current_acc_balance - amount);
+        }
+
+        let new_vault_bal = tk.balance(&env.current_contract_address());
+        let by_operator = caller != owner;
+        events::withdrawn(&env, &caller, &to, amount, new_vault_bal, by_operator);
+
+        bump_instance(&env);
+        Ok(())
+    }
+
+    /// Read-only: balance of a specific token held for an account in persistent storage (Issue #724).
+    pub fn get_token_account_balance(env: Env, token: Address, account: Address) -> i128 {
+        get_token_account_balance(&env, &token, &account)
+    }
+
+    /// Read-only: alias for get_token_account_balance (Issue #724).
+    pub fn balance_by_token(env: Env, token: Address, account: Address) -> i128 {
+        get_token_account_balance(&env, &token, &account)
+    }
+
+    /// Sets the maximum deposit limit for a specific token (Issue #724).
+    pub fn set_token_max_limit(
+        env: Env,
+        caller: Address,
+        token: Address,
+        limit: i128,
+    ) -> Result<(), Error> {
+        assert_not_paused(&env)?;
+        let owner = get_owner(&env).ok_or(Error::NotInitialized)?;
+        require_owner_or_operator(&env, &caller, &owner)?;
+
+        if limit <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        set_token_max_limit(&env, &token, &limit);
+        bump_instance(&env);
+        Ok(())
+    }
+
+    /// Read-only: maximum deposit limit for a specific token, if set (Issue #724).
+    pub fn token_max_limit(env: Env, token: Address) -> Option<i128> {
+        get_token_max_limit(&env, &token)
     }
 }

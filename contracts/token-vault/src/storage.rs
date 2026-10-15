@@ -34,6 +34,10 @@ pub enum DataKey {
     PendingOwnerProposedAt,
     /// Validity period for pending owner proposals, in seconds.
     OwnerProposalTtl,
+    /// Persistent storage: balance of a specific token held for a specific account (Issue #724).
+    TokenAccountBalance(Address, Address),
+    /// Persistent storage: optional maximum deposit limit per token (Issue #724).
+    TokenMaxLimit(Address),
 }
 
 pub fn set_owner(env: &Env, a: &Address) {
@@ -163,4 +167,30 @@ pub fn set_owner_proposal_ttl(env: &Env, ttl_seconds: u64) {
 
 pub fn get_owner_proposal_ttl(env: &Env) -> Option<u64> {
     env.storage().instance().get(&DataKey::OwnerProposalTtl)
+}
+
+
+pub fn get_token_account_balance(env: &Env, token: &Address, account: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::TokenAccountBalance(token.clone(), account.clone()))
+        .unwrap_or(0)
+}
+
+pub fn set_token_account_balance(env: &Env, token: &Address, account: &Address, balance: i128) {
+    let key = DataKey::TokenAccountBalance(token.clone(), account.clone());
+    env.storage().persistent().set(&key, &balance);
+    drip_common::ttl::bump_persistent(env, &key);
+}
+
+pub fn get_token_max_limit(env: &Env, token: &Address) -> Option<i128> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::TokenMaxLimit(token.clone()))
+}
+
+pub fn set_token_max_limit(env: &Env, token: &Address, limit: &i128) {
+    let key = DataKey::TokenMaxLimit(token.clone());
+    env.storage().persistent().set(&key, limit);
+    drip_common::ttl::bump_persistent(env, &key);
 }

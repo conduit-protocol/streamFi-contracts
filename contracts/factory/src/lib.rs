@@ -726,11 +726,39 @@ impl DripFactory {
     }
 
     /// Total number of streams ever created by this factory.
+    /// Total number of streams ever created by this factory.
     pub fn stream_count(env: Env) -> u64 {
         env.storage()
             .instance()
             .get(&DataKey::StreamCount)
             .unwrap_or(0)
+    }
+
+    /// Read-only: total stream count deployed by factory as a dedicated lightweight counter (Issue #708).
+    pub fn get_total_streams_count(env: Env) -> u64 {
+        Self::stream_count(env)
+    }
+
+    /// Read-only: alias for stream_count (Issue #708).
+    pub fn get_stream_count(env: Env) -> u64 {
+        Self::stream_count(env)
+    }
+
+    /// Read-only: returns the number of streams deployed using a specific token (Issue #720).
+    pub fn get_deployed_streams_count_by_token(env: Env, token: Address) -> u64 {
+        let key = DataKey::TokenStreamCount(token);
+        let count: u64 = env.storage().persistent().get(&key).unwrap_or(0);
+        if count > 0 {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, ttl::THRESHOLD, ttl::EXTEND_TO);
+        }
+        count
+    }
+
+    /// Read-only: alias for get_deployed_streams_count_by_token (Issue #720).
+    pub fn stream_count_by_token(env: Env, token: Address) -> u64 {
+        Self::get_deployed_streams_count_by_token(env, token)
     }
 
     /// Read-only: current protocol fee in basis points.

@@ -301,4 +301,6 @@ pub enum DataKey {
     IsKnownStream(Address),
     /// **Persistent storage.** Set to true once a stream's cancellation has been recorded in the aggregate counter (Issue #622).
     CancelledStream(Address),
+    /// **Persistent storage.** Number of streams deployed using a specific token (Issue #720).
+    TokenStreamCount(Address),
 }

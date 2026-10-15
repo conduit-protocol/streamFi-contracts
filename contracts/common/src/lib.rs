@@ -5,6 +5,8 @@
 pub mod pause;
 pub mod rbac;
 pub mod ttl;
+#[cfg(any(test, feature = "testutils"))]
+pub mod testutils;
 
 use soroban_sdk::{Address, Env};
 
