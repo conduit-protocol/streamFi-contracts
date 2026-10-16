@@ -33,4 +33,6 @@ pub enum Error {
     ProposalExpired = 14,
     /// Proposal has already been executed or cancelled.
     ProposalNotPending = 15,
+    /// Minimum timelock delay has not elapsed since proposal creation.
+    TimelockNotMet = 16,
 }

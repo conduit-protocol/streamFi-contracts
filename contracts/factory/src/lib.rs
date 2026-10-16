@@ -23,7 +23,7 @@ use drip_common::is_zero_address;
 pub use errors::Error;
 use storage::DataKey;
 pub use storage::{
-    Aggregate, BatchStreamRequest, FactoryStatus, FeeEstimate, StreamOperation, StreamPage,
+    Aggregate, BatchStreamRequest, FactoryStatus, FeeEstimate, StreamInitParams, StreamOperation, StreamPage,
 };
 
 /// Maximum number of streams accepted by a single `create_batch_streams`
@@ -418,6 +418,71 @@ impl DripFactory {
     /// that error immediately, and every storage write and token
     /// transfer already made earlier in this same call is rolled back
     /// by the host -- no partial-batch state is ever left behind.
+    /// Deploy multiple streams in a single transaction for multi-recipient setup (Issue #700).
+    pub fn batch_create_streams(
+        env: Env,
+        configs: Vec<StreamInitParams>,
+    ) -> Result<Vec<Address>, Error> {
+        if configs.is_empty() {
+            return Err(Error::EmptyBatch);
+        }
+        if configs.len() > MAX_BATCH_SIZE {
+            return Err(Error::BatchTooLarge);
+        }
+
+        pause::require_not_paused(&env)?;
+
+        let governor: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::GovernorAddress)
+            .ok_or(Error::NotInitialized)?;
+        let config = governance::config(&env, &governor)?;
+
+        let mut deployed = Vec::new(&env);
+        for cfg in configs.iter() {
+            cfg.sender.require_auth();
+            let now = Self::validate_stream_request(
+                &env,
+                &cfg.sender,
+                &cfg.recipient,
+                &cfg.token,
+                cfg.deposit,
+                cfg.rate_per_sec,
+                cfg.start_time,
+                cfg.end_time,
+            )?;
+            let stream_id = Self::create_stream_with_config(
+                env.clone(),
+                &config,
+                now,
+                cfg.sender.clone(),
+                cfg.recipient,
+                cfg.token,
+                cfg.deposit,
+                cfg.rate_per_sec,
+                cfg.start_time,
+                cfg.end_time,
+                cfg.clawback,
+            )?;
+            let addr: Address = env
+                .storage()
+                .persistent()
+                .get(&DataKey::StreamAddr(stream_id))
+                .unwrap();
+            deployed.push_back(addr);
+        }
+        Ok(deployed)
+    }
+
+    /// Helper alias for batch deploying streams (Issue #700).
+    pub fn batch_deploy_streams(
+        env: Env,
+        configs: Vec<StreamInitParams>,
+    ) -> Result<Vec<Address>, Error> {
+        Self::batch_create_streams(env, configs)
+    }
+
     pub fn create_batch_streams(
         env: Env,
         sender: Address,

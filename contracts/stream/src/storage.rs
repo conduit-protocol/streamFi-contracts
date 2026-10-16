@@ -62,6 +62,20 @@ pub enum DataKey {
     RateCheckpoint,
     /// Emergency pause flag adhering to drip_common::pause (Issue #699).
     EmergencyPaused,
+    /// Immutable stream configuration in instance storage (Issue #702).
+    ImmutableConfig,
+}
+
+/// Immutable stream configuration stored in instance storage for cheaper reads (Issue #702).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImmutableConfig {
+    pub start_time: u64,
+    pub stop_time: u64,
+    pub token: Address,
+    pub rate_per_second: i128,
+    pub sender: Address,
+    pub recipient: Address,
 }
 
 #[contracttype]

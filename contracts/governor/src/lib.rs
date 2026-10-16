@@ -698,6 +698,19 @@ impl DripGovernor {
     ///
     /// Fails with `ProposalExpired` if the execution window has elapsed.
     /// Fails with `ProposalNotPending` if the proposal has been executed or cancelled.
+    /// Minimum delay (7 days) required between proposal creation and execution (Issue #688).
+    pub const MIN_EXECUTION_DELAY: u64 = 604_800;
+
+    /// Read-only: get minimum timelock delay for proposals in seconds.
+    pub fn min_execution_delay(_env: Env) -> u64 {
+        Self::MIN_EXECUTION_DELAY
+    }
+
+    /// Execute a proposal that has passed voting.
+    ///
+    /// Fails with `TimelockNotMet` if the proposal has not elapsed MIN_EXECUTION_DELAY.
+    /// Fails with `ProposalExpired` if the execution window has elapsed.
+    /// Fails with `ProposalNotPending` if the proposal has been executed or cancelled.
     pub fn execute_proposal(env: Env, proposal_id: u64) -> Result<(), Error> {
         ttl::bump(&env);
 
@@ -712,7 +725,10 @@ impl DripGovernor {
         }
 
         let elapsed = env.ledger().timestamp().saturating_sub(proposal.created_at);
-        if elapsed > proposal.execution_window_secs {
+        if elapsed < Self::MIN_EXECUTION_DELAY {
+            return Err(Error::TimelockNotMet);
+        }
+        if elapsed > proposal.execution_window_secs.saturating_add(Self::MIN_EXECUTION_DELAY) {
             return Err(Error::ProposalExpired);
         }
 

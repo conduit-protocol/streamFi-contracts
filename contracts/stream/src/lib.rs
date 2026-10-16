@@ -174,6 +174,17 @@ impl DripStream {
             &DataKey::ForceCancelPauseThresholdSecs,
             &force_cancel_pause_secs,
         );
+        s.set(
+            &DataKey::ImmutableConfig,
+            &storage::ImmutableConfig {
+                start_time,
+                stop_time: end_time,
+                token: token.clone(),
+                rate_per_second,
+                sender: sender.clone(),
+                recipient: recipient.clone(),
+            },
+        );
 
         // Write the initial state before emitting the creation event so the
         // event sequence lives with the consolidated `Config` payload from the
@@ -1444,5 +1455,26 @@ impl DripStream {
             .instance()
             .get(&DataKey::LastWithdrawalTime)
             .unwrap_or(0)
+    }
+
+    /// Read-only: get immutable configuration fields from instance storage (Issue #702).
+    pub fn immutable_config(env: Env) -> Result<storage::ImmutableConfig, Error> {
+        if let Some(cfg) = env.storage().instance().get(&DataKey::ImmutableConfig) {
+            return Ok(cfg);
+        }
+        let info = state::try_load(&env)?;
+        Ok(storage::ImmutableConfig {
+            start_time: info.start_time,
+            stop_time: info.end_time,
+            token: info.token,
+            rate_per_second: info.rate_per_second,
+            sender: info.sender,
+            recipient: info.recipient,
+        })
+    }
+
+    /// Read-only alias for immutable_config (Issue #702).
+    pub fn get_immutable_config(env: Env) -> Result<storage::ImmutableConfig, Error> {
+        Self::immutable_config(env)
     }
 }

@@ -2730,3 +2730,15 @@ fn validate_withdraw_respects_min_interval() {
     s.advance_secs(30);
     assert_eq!(s.client.try_validate_withdraw(&500), Ok(Ok(())));
 }
+
+#[test]
+fn test_immutable_config_stored_in_instance_storage() {
+    let s = Setup::new(100, 3600, false);
+    let cfg = s.client.immutable_config().unwrap();
+    assert_eq!(cfg.rate_per_second, 100);
+    assert_eq!(cfg.start_time, s.env.ledger().timestamp());
+    assert_eq!(cfg.stop_time, s.env.ledger().timestamp() + 3600);
+    assert_eq!(cfg.sender, s.sender);
+    assert_eq!(cfg.recipient, s.recipient);
+    assert_eq!(cfg.token, s.token.address);
+}

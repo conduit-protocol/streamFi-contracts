@@ -77,7 +77,7 @@ class Metrics {
     console.error(line);
   }
 
-  /** Prometheus exposition format for `GET /metrics`. */
+  /** Prometheus exposition format for `GET /metrics` (Issue #701). */
   toPrometheus(): string {
     const s = this.snapshot();
     const lines: string[] = [];
@@ -87,6 +87,9 @@ class Metrics {
     lines.push("# HELP indexer_events_folded_total Total events successfully folded into projections.");
     lines.push("# TYPE indexer_events_folded_total counter");
     lines.push(`indexer_events_folded_total ${s.events_folded}`);
+    lines.push("# HELP indexer_event_count_total Total count of events processed by the indexer.");
+    lines.push("# TYPE indexer_event_count_total counter");
+    lines.push(`indexer_event_count_total ${s.events_folded}`);
     lines.push("# HELP indexer_fold_failures_total Total events that failed to fold (will be retried or DLQ'd).");
     lines.push("# TYPE indexer_fold_failures_total counter");
     lines.push(`indexer_fold_failures_total ${s.fold_failures}`);
@@ -97,6 +100,12 @@ class Metrics {
     lines.push("# HELP indexer_current_cursor_ledger Ledger of current cursor (lastLedger). -1 if unknown.");
     lines.push("# TYPE indexer_current_cursor_ledger gauge");
     lines.push(`indexer_current_cursor_ledger ${s.current_cursor_ledger ?? -1}`);
+    lines.push("# HELP indexer_last_processed_ledger Latest ledger number processed by the indexer.");
+    lines.push("# TYPE indexer_last_processed_ledger gauge");
+    lines.push(`indexer_last_processed_ledger ${s.current_cursor_ledger ?? 0}`);
+    lines.push("# HELP indexer_lag_ledgers Difference between latest chain ledger and indexer cursor.");
+    lines.push("# TYPE indexer_lag_ledgers gauge");
+    lines.push(`indexer_lag_ledgers 0`);
     return lines.join("\n") + "\n";
   }
 }

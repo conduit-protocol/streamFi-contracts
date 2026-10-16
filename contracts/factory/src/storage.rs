@@ -95,6 +95,20 @@ pub struct BatchStreamRequest {
     pub end_time: u64,
 }
 
+/// Parameter struct for batch deploying streams (Issue #700).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamInitParams {
+    pub sender: Address,
+    pub recipient: Address,
+    pub token: Address,
+    pub deposit: i128,
+    pub rate_per_sec: i128,
+    pub start_time: u64,
+    pub end_time: u64,
+    pub clawback: bool,
+}
+
 /// Combined status of the DripFactory contract.
 ///
 /// Combines `is_paused` and `protocol_fee_bps` into a single view struct so

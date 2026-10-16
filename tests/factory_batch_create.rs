@@ -268,3 +268,12 @@ fn gas_usage_for_batches_of_10_50_100() {
         env.budget().print();
     }
 }
+
+#[test]
+fn batch_deploy_streams_rejects_empty_batch() {
+    let env = base_env();
+    let client = deploy_factory(&env);
+    let configs: Vec<drip_factory::StreamInitParams> = Vec::new(&env);
+    let result = client.try_batch_deploy_streams(&configs);
+    assert_eq!(result, Err(Ok(Error::EmptyBatch)));
+}

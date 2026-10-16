@@ -144,3 +144,25 @@ fn test_cast_vote_with_rationale_emits_detailed_event() {
     let voter2 = Address::generate(&env);
     assert!(client.try_cast_vote(&voter2, &proposal_id, &false).is_ok());
 }
+
+#[test]
+fn test_execute_proposal_enforces_timelock_delay() {
+    let (env, authority, fee_recipient, factory_address) = create_test_env();
+    let contract_id = env.register_contract(None, DripGovernor);
+    let client = DripGovernorClient::new(&env, &contract_id);
+
+    client.initialize(&authority, &fee_recipient, &factory_address);
+
+    let proposal_id = client.propose(&authority, &3600);
+
+    // Try executing immediately — should fail with TimelockNotMet
+    let res = client.try_execute_proposal(&proposal_id);
+    assert_eq!(res, Err(Ok(Error::TimelockNotMet)));
+
+    // Advance ledger timestamp to satisfy timelock delay (604_800s)
+    let current_time = env.ledger().timestamp();
+    env.ledger().set_timestamp(current_time + 604_800);
+
+    // Now execute succeeds
+    assert!(client.try_execute_proposal(&proposal_id).is_ok());
+}
