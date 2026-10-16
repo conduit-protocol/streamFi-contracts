@@ -236,3 +236,40 @@ fn test_execute_proposal_enforces_quorum_threshold() {
     // Now execute succeeds!
     assert!(client.try_execute_proposal(&proposal_id).is_ok());
 }
+
+#[test]
+fn test_two_step_admin_transfer_flow() {
+    let (env, authority, fee_recipient, factory_address) = create_test_env();
+    let contract_id = env.register_contract(None, DripGovernor);
+    let client = DripGovernorClient::new(&env, &contract_id);
+
+    client.initialize(&authority, &fee_recipient, &factory_address);
+
+    let new_admin = Address::generate(&env);
+    let unauthorized = Address::generate(&env);
+
+    // Initial check
+    assert_eq!(client.pending_admin(), None);
+    assert_eq!(client.has_role(&Role::Admin, &authority), true);
+    assert_eq!(client.has_role(&Role::Admin, &new_admin), false);
+
+    // Non-admin cannot propose
+    let err = client.try_propose_admin(&unauthorized, &new_admin);
+    assert_eq!(err, Err(Ok(Error::NotAuthorized)));
+
+    // Admin proposes new_admin
+    client.propose_admin(&authority, &new_admin);
+    assert_eq!(client.pending_admin(), Some(new_admin.clone()));
+
+    // Unauthorized address cannot claim
+    let err_claim = client.try_claim_admin(&unauthorized);
+    assert_eq!(err_claim, Err(Ok(Error::NotPendingAuthority)));
+
+    // New admin claims role
+    client.claim_admin(&new_admin);
+
+    // Transfer completed: new_admin is Admin, authority lost Admin, pending cleared
+    assert_eq!(client.pending_admin(), None);
+    assert_eq!(client.has_role(&Role::Admin, &new_admin), true);
+    assert_eq!(client.has_role(&Role::Admin, &authority), false);
+}

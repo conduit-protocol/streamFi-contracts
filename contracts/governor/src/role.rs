@@ -149,3 +149,68 @@ pub fn require_role_or_admin(env: &Env, caller: &Address, role: Role) -> Result<
     )
     .map_err(|_| Error::NotAuthorized)
 }
+
+/// Propose transferring the admin role to a new address (step 1 of 2) (Issue #682).
+pub fn propose_admin(env: &Env, proposer: &Address, new_admin: &Address) -> Result<(), Error> {
+    require_role(env, proposer, Role::Admin)?;
+    if has_role(env, Role::Admin, new_admin) {
+        return Err(Error::InvalidParam);
+    }
+    env.storage()
+        .instance()
+        .set(&DataKey::PendingAuthority, new_admin);
+    env.storage()
+        .instance()
+        .set(&DataKey::PendingAuthorityProposer, proposer);
+    crate::events::propose_authority(env, proposer, new_admin);
+    Ok(())
+}
+
+/// Claim proposed admin role (step 2 of 2) (Issue #682).
+pub fn claim_admin(env: &Env, claimer: &Address) -> Result<(), Error> {
+    let pending: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::PendingAuthority)
+        .ok_or(Error::NoPendingAuthority)?;
+    if *claimer != pending {
+        return Err(Error::NotPendingAuthority);
+    }
+    claimer.require_auth();
+    ttl::bump(env);
+
+    let proposer: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::PendingAuthorityProposer)
+        .ok_or(Error::NoPendingAuthority)?;
+
+    grant(env, Role::Admin, claimer);
+    let _ = revoke(env, Role::Admin, &proposer)?;
+
+    env.storage().instance().remove(&DataKey::PendingAuthority);
+    env.storage()
+        .instance()
+        .remove(&DataKey::PendingAuthorityProposer);
+
+    crate::events::accept_authority(env, claimer, &proposer);
+    Ok(())
+}
+
+/// Returns the pending proposed admin address, if any (Issue #682).
+pub fn pending_admin(env: &Env) -> Option<Address> {
+    env.storage().instance().get(&DataKey::PendingAuthority)
+}
+
+/// Revokes the currently pending admin proposal.
+pub fn revoke_propose_admin(env: &Env, caller: &Address) -> Result<(), Error> {
+    require_role(env, caller, Role::Admin)?;
+    let storage = env.storage().instance();
+    let pending: Address = storage
+        .get(&DataKey::PendingAuthority)
+        .ok_or(Error::NoPendingAuthority)?;
+    storage.remove(&DataKey::PendingAuthority);
+    storage.remove(&DataKey::PendingAuthorityProposer);
+    crate::events::revoke_propose_authority(env, caller, &pending);
+    Ok(())
+}

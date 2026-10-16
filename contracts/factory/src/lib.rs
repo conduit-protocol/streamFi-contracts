@@ -336,6 +336,10 @@ impl DripFactory {
             return Err(Error::StreamFundingFailed);
         }
 
+        // Emit StreamCreated event including salt and wasm_hash (Issue #684)
+        let salt = deploy::compute_salt(&env, stream_id);
+        events::stream_created(&env, &sender, &recipient, &stream_addr, &salt, &wasm_hash);
+
         // ── Index ─────────────────────────────────────────────────────────
         // StreamAddr and the sender/recipient indices grow without bound, so
         // they use persistent storage (not instance storage) to avoid hitting

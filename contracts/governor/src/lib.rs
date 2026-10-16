@@ -473,6 +473,26 @@ impl DripGovernor {
         Ok(())
     }
 
+    /// Propose a new admin address via two-step ownership transfer (Issue #682).
+    pub fn propose_admin(env: Env, caller: Address, new_admin: Address) -> Result<(), Error> {
+        role::propose_admin(&env, &caller, &new_admin)
+    }
+
+    /// Claim the pending admin role (step 2 of 2) (Issue #682).
+    pub fn claim_admin(env: Env, caller: Address) -> Result<(), Error> {
+        role::claim_admin(&env, &caller)
+    }
+
+    /// Returns the currently pending admin address, if any (Issue #682).
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        role::pending_admin(&env)
+    }
+
+    /// Revoke the currently pending admin proposal (Issue #682).
+    pub fn revoke_propose_admin(env: Env, caller: Address) -> Result<(), Error> {
+        role::revoke_propose_admin(&env, &caller)
+    }
+
     /// Return the current number of `Admin` role holders.
     ///
     /// UIs and indexers can call this to show how many authorities exist

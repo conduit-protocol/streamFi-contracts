@@ -8,6 +8,8 @@ pub mod ttl;
 #[cfg(any(test, feature = "testutils"))]
 pub mod testutils;
 
+pub use ttl::{bump_instance_ttl, bump_persistent_ttl, ensure_active_ttl};
+
 use soroban_sdk::{Address, Env};
 
 /// TTL threshold for instance storage extension.

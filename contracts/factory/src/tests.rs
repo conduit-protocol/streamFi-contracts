@@ -936,3 +936,20 @@ fn migrate_recipient_index_short_circuits_when_done() {
     let migrated_repeat = s.client.migrate_recipient_index(&recipient, &10);
     assert_eq!(migrated_repeat, 150);
 }
+
+#[test]
+fn test_stream_created_event_payload_includes_salt_and_wasm_hash() {
+    let env = Env::default();
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let stream_addr = Address::generate(&env);
+    let salt = BytesN::from_array(&env, &[42u8; 32]);
+    let wasm_hash = BytesN::from_array(&env, &[99u8; 32]);
+
+    crate::events::stream_created(&env, &creator, &recipient, &stream_addr, &salt, &wasm_hash);
+
+    let events = env.events().all();
+    assert_eq!(events.len(), 1);
+    let last = events.last().unwrap();
+    assert_eq!(last.1.len(), 3); // Topics: (StreamCreated, creator, recipient)
+}

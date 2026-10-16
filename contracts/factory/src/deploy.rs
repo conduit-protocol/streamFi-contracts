@@ -16,6 +16,16 @@ use crate::storage::DataKey;
 /// deployment executes, the `deploy()` call will fail. Off-chain clients should
 /// read `stream_wasm_hash()` immediately before submitting the `create_stream`
 /// transaction to minimize the window for concurrent upgrades.
+/// Derives a deterministic salt from the stream ID (Issue #684).
+pub fn compute_salt(env: &Env, stream_id: u64) -> BytesN<32> {
+    env.crypto()
+        .sha256(&soroban_sdk::Bytes::from_array(
+            env,
+            &stream_id.to_be_bytes(),
+        ))
+        .into()
+}
+
 pub fn deploy_stream(
     env: &Env,
     wasm_hash: &BytesN<32>,
@@ -24,13 +34,7 @@ pub fn deploy_stream(
 ) -> Result<Address, Error> {
     // Derive a deterministic salt from the stream ID so each stream gets a
     // unique, reproducible contract address.
-    let salt: BytesN<32> = env
-        .crypto()
-        .sha256(&soroban_sdk::Bytes::from_array(
-            env,
-            &stream_id.to_be_bytes(),
-        ))
-        .into();
+    let salt = compute_salt(env, stream_id);
 
     let salt_key = DataKey::SaltUsed(salt.clone());
     if env.storage().persistent().has(&salt_key) {

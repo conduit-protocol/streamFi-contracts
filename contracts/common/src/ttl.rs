@@ -31,6 +31,9 @@ pub fn bump_instance(env: &Env) {
         .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
 }
 
+/// Alias for [`bump_instance`] (Issue #683).
+pub use bump_instance as bump_instance_ttl;
+
 /// Extends the TTL of a single `persistent()` entry under `key` on the same
 /// schedule as [`bump_instance`].
 ///
@@ -43,4 +46,51 @@ pub fn bump_persistent<K: StorageKey>(env: &Env, key: &K) {
     env.storage()
         .persistent()
         .extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND_TO);
+}
+
+/// Alias for [`bump_persistent`] (Issue #683).
+pub use bump_persistent as bump_persistent_ttl;
+
+/// Automatically checks and renews the instance TTL if within threshold (Issue #683).
+/// Safe to call on state reads or writes to keep active entries from expiring.
+pub fn ensure_active_ttl(env: &Env) {
+    bump_instance(env);
+}
+
+/// Automatically checks and renews persistent storage entry TTL under `key` (Issue #683).
+pub fn ensure_persistent_active_ttl<K: StorageKey>(env: &Env, key: &K) {
+    bump_persistent(env, key);
+}
+
+/// Helper macro to ensure active TTL on instance or persistent storage (Issue #683).
+///
+/// Usage:
+/// - `ensure_active_ttl!(env);` for instance storage
+/// - `ensure_active_ttl!(env, &key);` for persistent storage
+#[macro_export]
+macro_rules! ensure_active_ttl {
+    ($env:expr) => {
+        $crate::ttl::bump_instance($env);
+    };
+    ($env:expr, $key:expr) => {
+        $crate::ttl::bump_persistent($env, $key);
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ensure_active_ttl_does_not_panic() {
+        let env = Env::default();
+        ensure_active_ttl(&env);
+        bump_instance_ttl(&env);
+    }
+
+    #[test]
+    fn test_macro_ensure_active_ttl() {
+        let env = Env::default();
+        ensure_active_ttl!(&env);
+    }
 }

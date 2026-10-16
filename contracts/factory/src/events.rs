@@ -59,3 +59,42 @@ pub fn protocol_fee_charged(env: &Env, fee_recipient: &Address, fee: i128) {
     env.events()
         .publish((symbol_short!("fee"), fee_recipient.clone()), fee);
 }
+
+/// StreamCreated event payload metadata (Issue #684).
+#[soroban_sdk::contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamCreatedPayload {
+    pub creator: Address,
+    pub recipient: Address,
+    pub stream_address: Address,
+    pub salt: soroban_sdk::BytesN<32>,
+    pub wasm_hash: soroban_sdk::BytesN<32>,
+}
+
+/// Emitted when a new stream is deployed and created by the factory (Issue #684).
+///
+/// Includes creator, recipient, stream address, salt, and wasm_hash in the event payload.
+pub fn stream_created(
+    env: &Env,
+    creator: &Address,
+    recipient: &Address,
+    stream_address: &Address,
+    salt: &soroban_sdk::BytesN<32>,
+    wasm_hash: &soroban_sdk::BytesN<32>,
+) {
+    let payload = StreamCreatedPayload {
+        creator: creator.clone(),
+        recipient: recipient.clone(),
+        stream_address: stream_address.clone(),
+        salt: salt.clone(),
+        wasm_hash: wasm_hash.clone(),
+    };
+    env.events().publish(
+        (
+            soroban_sdk::Symbol::new(env, "StreamCreated"),
+            creator.clone(),
+            recipient.clone(),
+        ),
+        payload,
+    );
+}
