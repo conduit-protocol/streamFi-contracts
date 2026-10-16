@@ -68,6 +68,8 @@ pub enum DataKey {
     CliffReached,
     /// Milestone flag indicating the stream has fully settled and completion event emitted (Issue #676).
     StreamCompleted,
+    /// Stream cancellation configuration (Issue #685).
+    StreamConfig,
 }
 
 /// Immutable stream configuration stored in instance storage for cheaper reads (Issue #702).
@@ -110,8 +112,13 @@ pub struct RateCheckpoint {
     pub at: u64,
 }
 
-/// Alias for SplitConfig to support split recipients.
-pub type StreamConfig = SplitConfig;
+/// Stream cancellation configuration (Issue #685).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamConfig {
+    pub is_cancelable: bool,
+}
+
 
 /// Operational status of a stream.
 #[contracttype]

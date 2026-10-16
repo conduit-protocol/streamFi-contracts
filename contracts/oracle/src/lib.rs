@@ -119,6 +119,8 @@ pub enum DataKey {
     PairSymbolReporters(Symbol, Symbol),
     /// Configurable maximum staleness in seconds.
     MaxStalenessSeconds,
+    /// Configurable maximum price deviation in basis points (Issue #680).
+    MaxDeviationBps,
 }
 
 /// Configuration parameters for the TWAP oracle.
@@ -187,6 +189,7 @@ pub struct OracleConfigUpdate {
     pub min_submit_interval: Option<u64>,
     pub min_submitters: Option<u32>,
     pub quote_currency: Option<soroban_sdk::Symbol>,
+    pub max_deviation_bps: Option<u32>,
 }
 
 #[contracttype]
@@ -516,6 +519,11 @@ impl TwapOracle {
                 .set(&DataKey::QuoteCurrency, &currency);
             events::quote_currency_configured(&env, &caller, currency);
         }
+        if let Some(dev) = update.max_deviation_bps {
+            env.storage()
+                .instance()
+                .set(&DataKey::MaxDeviationBps, &dev);
+        }
         Ok(())
     }
 
@@ -590,6 +598,37 @@ impl TwapOracle {
                 events::price_rejected(&env, &caller, price, symbol_short!("max_price"));
                 return Err(Error::PriceExceedsMaxPrice);
             }
+
+            // Price deviation circuit breaker: reject price updates deviating too rapidly (Issue #680).
+            let max_deviation = env
+                .storage()
+                .instance()
+                .get::<_, u32>(&DataKey::MaxDeviationBps)
+                .unwrap_or(0);
+            if max_deviation > 0 {
+                if let Some(last_price_data) = env
+                    .storage()
+                    .instance()
+                    .get::<_, PriceData>(&DataKey::Price)
+                {
+                    if last_price_data.price > 0 {
+                        let diff = if price > last_price_data.price {
+                            price - last_price_data.price
+                        } else {
+                            last_price_data.price - price
+                        };
+                        let deviation_bps = (diff as u128)
+                            .checked_mul(10_000)
+                            .ok_or(Error::ArithmeticOverflow)?
+                            / (last_price_data.price as u128);
+                        if deviation_bps > max_deviation as u128 {
+                            events::price_rejected(&env, &caller, price, symbol_short!("deviation"));
+                            return Err(Error::ExcessivePriceDeviation);
+                        }
+                    }
+                }
+            }
+
 
             // Rate-limit: reject a re-submission from this feeder if it arrives
             // before `min_submit_interval` seconds have elapsed since their last
@@ -876,6 +915,31 @@ impl TwapOracle {
                 .unwrap_or(0)
         }
     }
+
+    /// Sets the maximum allowable price deviation in basis points (1 bps = 0.01%, 1000 = 10%) (Issue #680).
+    /// Setting this to 0 disables deviation circuit breaker checks.
+    pub fn set_max_deviation_bps(
+        env: Env,
+        caller: Address,
+        max_deviation_bps: u32,
+    ) -> Result<(), Error> {
+        require_not_paused(&env)?;
+        require_role_or_admin(&env, &caller, Role::Admin)?;
+        bump_instance(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxDeviationBps, &max_deviation_bps);
+        Ok(())
+    }
+
+    /// Read-only: returns the configured maximum price deviation in basis points, or 0 if disabled (Issue #680).
+    pub fn max_deviation_bps(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxDeviationBps)
+            .unwrap_or(0)
+    }
+
 
     /// Converts a nominal token amount into its fiat equivalent.
     ///
@@ -3661,4 +3725,48 @@ mod tests {
         client.submit_price(&feeder, &52_000_000);
         assert_eq!(client.latest_price().price, 52_000_000);
     }
+
+    #[test]
+    fn test_price_deviation_circuit_breaker() {
+        let (env, client, admin) = setup();
+        let feeder = Address::generate(&env);
+        client.grant_role(&admin, &Role::PriceFeeder, &feeder);
+
+        let config = OracleConfig {
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 300,
+            max_price: 1_000_000_000,
+            min_submit_interval: 0,
+            min_submitters: 1,
+        };
+        client.configure_oracle(&admin, &config);
+
+        // Initial price submission at 100
+        client.submit_price(&feeder, &100_000_000);
+
+        // Set max_deviation_bps to 1000 (10%)
+        client.set_max_deviation_bps(&admin, &1000);
+        assert_eq!(client.max_deviation_bps(), 1000);
+
+        // A 5% increase (to 105) is within 10% tolerance -> succeeds
+        assert!(client.try_submit_price(&feeder, &105_000_000).is_ok());
+
+        // A sudden drop from 105 to 50 is ~52% deviation (> 10%) -> rejected
+        assert_eq!(
+            client.try_submit_price(&feeder, &50_000_000),
+            Err(Ok(Error::ExcessivePriceDeviation))
+        );
+
+        // A sudden surge from 105 to 200 is ~90% deviation (> 10%) -> rejected
+        assert_eq!(
+            client.try_submit_price(&feeder, &200_000_000),
+            Err(Ok(Error::ExcessivePriceDeviation))
+        );
+
+        // Disabling deviation checks (set to 0) allows any price change
+        client.set_max_deviation_bps(&admin, &0);
+        assert!(client.try_submit_price(&feeder, &50_000_000).is_ok());
+    }
 }
+

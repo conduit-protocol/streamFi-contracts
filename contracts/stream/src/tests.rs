@@ -2778,3 +2778,30 @@ fn test_cliff_reached_and_stream_completed_events() {
     assert_eq!(s.client.balance(), 0);
 }
 
+#[test]
+fn test_non_cancelable_stream_rejects_cancel() {
+    let s = Setup::new(100, 3600, false);
+
+    // By default stream is cancelable
+    assert!(s.client.is_cancelable());
+
+    // Sender marks stream as non-cancelable
+    s.client.set_cancelable(&s.sender, &false);
+    assert_eq!(s.client.is_cancelable(), false);
+
+    let cfg = s.client.stream_config().unwrap();
+    assert_eq!(cfg.is_cancelable, false);
+
+    // Cancellation is rejected
+    assert_eq!(
+        s.client.try_cancel(&s.sender),
+        Err(Ok(Error::StreamNotCancelable))
+    );
+
+    // If sender re-enables cancelability, cancellation succeeds
+    s.client.set_cancelable(&s.sender, &true);
+    assert_eq!(s.client.is_cancelable(), true);
+    assert!(s.client.try_cancel(&s.sender).is_ok());
+}
+
+

@@ -175,4 +175,31 @@ describe("Poller (src/indexer/poller.ts)", () => {
     expect(seen[0].limit).toBe(25);
     expect(seen[0].cursor).toBeNull();
   });
+
+  it("backs off exponentially with jitter on consecutive RPC errors (issue #686)", async () => {
+    const source: SorobanEventSource = {
+      getEvents: vi.fn(async (): Promise<Page> => {
+        throw new Error("RPC connection drop");
+      }),
+    };
+
+    const poller = new Poller({
+      source,
+      startLedger: 100,
+      intervalMs: 1000,
+      maxBackoffMs: 16_000,
+      retry: { attempts: 1, baseDelayMs: 1 },
+    });
+
+    expect(poller.getPollDelayMs()).toBe(1000);
+
+    await poller.start();
+    poller.stop();
+
+    expect(poller.getConsecutiveErrors()).toBe(1);
+    const delay1 = poller.getPollDelayMs();
+    expect(delay1).toBeGreaterThanOrEqual(1000);
+    expect(delay1).toBeLessThanOrEqual(1250);
+  });
 });
+

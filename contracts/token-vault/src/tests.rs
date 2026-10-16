@@ -5,7 +5,7 @@ extern crate std;
 use soroban_sdk::{
     symbol_short,
     testutils::{storage::Instance as _, Address as _, Events as _, Ledger as _},
-    token, Address, Env, IntoVal, String, TryIntoVal,
+    token, Address, Env, IntoVal, String, Symbol, TryIntoVal,
 };
 
 use crate::errors::Error;
@@ -1438,4 +1438,31 @@ fn emergency_migration_can_be_cancelled() {
         Err(Ok(Error::NoMigrationProposed))
     );
 }
+
+#[test]
+fn test_deposit_with_fee_emits_token_deposited_event() {
+    let s = Setup::new(1_000_000);
+    s.client.deposit_with_fee(&s.owner, &1_000, &50);
+
+    let events = vault_events(&s);
+    // initialized + deposited + token_deposited
+    assert_eq!(events.len(), 3);
+
+    let (_, topics, data) = &events[2];
+    assert_eq!(
+        topics.clone(),
+        (Symbol::new(&s.env, "TokenDeposited"), s.owner.clone()).into_val(&s.env)
+    );
+    let payload: crate::events::DepositEvent = data.clone().try_into_val(&s.env).unwrap();
+    assert_eq!(
+        payload,
+        crate::events::DepositEvent {
+            gross_amount: 1_000,
+            fee_amount: 50,
+            net_amount: 950,
+        }
+    );
+    assert_eq!(s.client.balance(), Some(950));
+}
+
 

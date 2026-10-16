@@ -10,7 +10,16 @@
 //! Soroban transaction, so either both commit or both roll back — an event
 //! is never emitted for a transition that did not actually persist.
 
-use soroban_sdk::{symbol_short, Address, Env};
+use soroban_sdk::{contracttype, symbol_short, Address, Env, Symbol};
+
+/// Event data payload detailing the fee breakdown for deposits (Issue #687).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DepositEvent {
+    pub gross_amount: i128,
+    pub fee_amount: i128,
+    pub net_amount: i128,
+}
 
 /// Emitted by `initialize` when the vault is first set up.
 ///
@@ -34,6 +43,29 @@ pub fn deposited(env: &Env, from: &Address, amount: i128, new_balance: i128) {
         (amount, new_balance),
     );
 }
+
+/// Emitted on deposit to publish a complete fee breakdown for financial accounting (Issue #687).
+///
+/// Topics: `("TokenDeposited", from)`
+/// Data:   `DepositEvent { gross_amount, fee_amount, net_amount }`
+pub fn token_deposited(
+    env: &Env,
+    from: &Address,
+    gross_amount: i128,
+    fee_amount: i128,
+    net_amount: i128,
+) {
+    let payload = DepositEvent {
+        gross_amount,
+        fee_amount,
+        net_amount,
+    };
+    env.events().publish(
+        (Symbol::new(env, "TokenDeposited"), from.clone()),
+        payload,
+    );
+}
+
 
 /// Emitted by `withdraw` after tokens are paid out of the vault.
 ///

@@ -42,6 +42,8 @@ export interface PollerOptions {
    * a transient RPC/DB blip never stalls the loop silently.
    */
   retry?: RetryPolicy;
+  /** Max delay in ms when backing off after consecutive RPC connection drops (issue #686). Default 60000. */
+  maxBackoffMs?: number;
   /** Optional loader/saver for the high-water cursor (e.g. Postgres or file). */
   loadCursor?: () => Promise<Cursor | null>;
   saveCursor?: (cursor: Cursor) => Promise<void>;
@@ -51,6 +53,7 @@ export class Poller {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   private cursor: Cursor | null = null;
+  private consecutiveErrors = 0;
 
   constructor(private readonly opts: PollerOptions) {}
 
@@ -74,20 +77,53 @@ export class Poller {
       this.cursor = { lastLedger: this.opts.startLedger - 1, nextToken: null };
     }
 
-    // Immediate tick, then interval
+    // Immediate tick, then dynamic interval scheduling with backoff
     await this.tick();
-    this.timer = setInterval(() => {
-      this.tick().catch((e) => {
-        console.error(JSON.stringify({ level: "error", msg: "tick threw", error: String(e) }));
-      });
-    }, this.opts.intervalMs ?? 5000);
-    if (this.timer.unref) this.timer.unref();
+    this.scheduleNext();
   }
 
   stop(): void {
     this.running = false;
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+  }
+
+  /**
+   * Calculates the next polling delay with exponential backoff and randomized jitter
+   * if consecutive RPC errors occur (issue #686).
+   */
+  getPollDelayMs(): number {
+    const baseInterval = this.opts.intervalMs ?? 5000;
+    if (this.consecutiveErrors === 0) {
+      return baseInterval;
+    }
+    const maxBackoff = this.opts.maxBackoffMs ?? 60_000;
+    const factor = Math.min(2 ** Math.max(0, this.consecutiveErrors - 1), maxBackoff / Math.max(1, baseInterval));
+    const backoff = Math.min(baseInterval * factor, maxBackoff);
+    const jitter = Math.floor(Math.random() * (backoff * 0.25));
+    return backoff + jitter;
+  }
+
+  getConsecutiveErrors(): number {
+    return this.consecutiveErrors;
+  }
+
+  private scheduleNext(): void {
+    if (!this.running) return;
+    const delay = this.getPollDelayMs();
+    this.timer = setTimeout(() => {
+      this.tick()
+        .catch((e) => {
+          this.consecutiveErrors++;
+          console.error(JSON.stringify({ level: "error", msg: "tick threw", error: String(e), consecutiveErrors: this.consecutiveErrors }));
+        })
+        .finally(() => {
+          this.scheduleNext();
+        });
+    }, delay);
+    if (this.timer.unref) this.timer.unref();
   }
 
   private async tick(): Promise<void> {
@@ -114,13 +150,15 @@ export class Poller {
         ...this.opts.retry,
         label: "getEvents",
       });
+      this.consecutiveErrors = 0;
     } catch (e) {
+      this.consecutiveErrors++;
       // Every attempt in this tick failed. Do not advance the cursor: the
       // next tick rebuilds the same params from the unchanged cursor and
       // tries again, so a transient failure only delays progress — the loop
       // keeps running (interval ticks are scheduled independently of a
       // thrown tick, see start()) and cannot stall silently.
-      console.error(JSON.stringify({ level: "error", msg: "getEvents failed after retries", error: String(e), attempts, startLedger, cursor: this.cursor.nextToken }));
+      console.error(JSON.stringify({ level: "error", msg: "getEvents failed after retries", error: String(e), attempts, startLedger, cursor: this.cursor.nextToken, consecutiveErrors: this.consecutiveErrors }));
       metrics.logStructured({ phase: "fetch_error", startLedger });
       return;
     }

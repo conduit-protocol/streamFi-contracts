@@ -234,6 +234,28 @@ impl TokenVault {
         Ok(())
     }
 
+    /// Deposits tokens with an explicit fee breakdown for financial accounting (Issue #687).
+    ///
+    /// Deducts `fee_amount` from `gross_amount` and escrows the remaining `net_amount` in the vault.
+    /// Emits `TokenDeposited` event containing `DepositEvent { gross_amount, fee_amount, net_amount }`.
+    pub fn deposit_with_fee(
+        env: Env,
+        from: Address,
+        gross_amount: i128,
+        fee_amount: i128,
+    ) -> Result<(), Error> {
+        if fee_amount < 0 || gross_amount <= 0 || fee_amount >= gross_amount {
+            return Err(Error::InvalidAmount);
+        }
+        let net_amount = gross_amount
+            .checked_sub(fee_amount)
+            .ok_or(Error::ArithmeticOverflow)?;
+
+        Self::deposit(env.clone(), from.clone(), net_amount)?;
+        events::token_deposited(&env, &from, gross_amount, fee_amount, net_amount);
+        Ok(())
+    }
+
     /// Consolidates deposits from multiple accounts in a single transaction.
     ///
     /// Requires authorization from each depositor individually.
@@ -272,6 +294,7 @@ impl TokenVault {
             let current_balance = tk.balance(&contract_addr);
             events::deposited(&env, &deposit.from, deposit.amount, current_balance);
         }
+
 
         let final_balance = tk.balance(&contract_addr);
         if final_balance > max {

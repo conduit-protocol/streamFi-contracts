@@ -32,4 +32,7 @@ pub enum Error {
     WithdrawalTooFrequent = 22,
     /// The stream is under an emergency administrative halt (Issue #699).
     ContractPaused = 23,
+    /// The stream is non-cancelable (Issue #685).
+    StreamNotCancelable = 24,
 }
+

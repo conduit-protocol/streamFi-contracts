@@ -42,4 +42,9 @@ pub enum Error {
     PriceNotFound = 12,
     /// Price feed has not been updated within the allowed max staleness window.
     StalePriceFeed = 13,
+    /// Price update deviates too rapidly from the previous price, exceeding max_deviation_bps (Issue #680).
+    ExcessivePriceDeviation = 14,
+    /// Price deviation exceeded (Issue #680).
+    PriceDeviationExceeded = 15,
 }
+

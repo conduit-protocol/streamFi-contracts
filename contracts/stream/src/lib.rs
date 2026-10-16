@@ -361,6 +361,15 @@ impl DripStream {
 
         let info = state::load(env);
         state::assert_not_cancelled(&info)?;
+
+        let cfg_opt: Option<StreamConfig> =
+            env.storage().instance().get(&DataKey::StreamConfig);
+        if let Some(cfg) = cfg_opt {
+            if !cfg.is_cancelable {
+                return Err(Error::StreamNotCancelable);
+            }
+        }
+
         require_sender_or_operator(env, caller, &info.sender)?;
 
         let tk = token::Client::new(env, &info.token);
@@ -1493,4 +1502,48 @@ impl DripStream {
     pub fn get_immutable_config(env: Env) -> Result<storage::ImmutableConfig, Error> {
         Self::immutable_config(env)
     }
+
+    /// Configure whether the stream allows sender cancellation (Issue #685).
+    pub fn set_stream_config(
+        env: Env,
+        caller: Address,
+        config: StreamConfig,
+    ) -> Result<(), Error> {
+        state::with_guard(&env, |env| {
+            ttl::bump(env);
+            let info = state::load(env);
+            state::assert_not_cancelled(&info)?;
+            require_sender_or_operator(env, &caller, &info.sender)?;
+            env.storage().instance().set(&DataKey::StreamConfig, &config);
+            Ok(())
+        })
+    }
+
+    /// Helper to set stream cancelability (Issue #685).
+    pub fn set_cancelable(
+        env: Env,
+        caller: Address,
+        is_cancelable: bool,
+    ) -> Result<(), Error> {
+        Self::set_stream_config(env, caller, StreamConfig { is_cancelable })
+    }
+
+    /// Read-only: get the configured stream cancellation config, if any (Issue #685).
+    pub fn stream_config(env: Env) -> Option<StreamConfig> {
+        env.storage().instance().get(&DataKey::StreamConfig)
+    }
+
+    /// Read-only: returns whether the stream allows sender cancellation (defaults to true) (Issue #685).
+    pub fn is_cancelable(env: Env) -> bool {
+        if let Some(cfg) = env
+            .storage()
+            .instance()
+            .get::<_, StreamConfig>(&DataKey::StreamConfig)
+        {
+            cfg.is_cancelable
+        } else {
+            true
+        }
+    }
 }
+
