@@ -323,6 +323,22 @@ impl DripStream {
             .checked_sub(to_send)
             .ok_or(Error::ArithmeticOverflow)?;
         events::withdrawn(env, &info.recipient, to_send, new_withdrawn, remaining);
+
+        // Check if cliff timestamp was reached and emit event once (Issue #676)
+        let cliff_opt: Option<CliffConfig> = env.storage().instance().get(&DataKey::CliffConfig);
+        if let Some(cliff) = cliff_opt {
+            if now >= cliff.cliff_time && !env.storage().instance().has(&DataKey::CliffReached) {
+                env.storage().instance().set(&DataKey::CliffReached, &true);
+                events::cliff_reached(env, &info.recipient, now, cliff.cliff_unlock_amount);
+            }
+        }
+
+        // Emit stream_completed event on final withdrawal when remaining balance reaches zero (Issue #676)
+        if remaining == 0 && (info.end_time > 0 || balance > 0) && !env.storage().instance().has(&DataKey::StreamCompleted) {
+            env.storage().instance().set(&DataKey::StreamCompleted, &true);
+            events::stream_completed(env, &info.recipient, new_withdrawn);
+        }
+
         Ok(to_send)
     }
 

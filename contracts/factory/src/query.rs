@@ -1,4 +1,4 @@
-use soroban_sdk::{Env, Vec};
+use soroban_sdk::{Address, Env, Vec};
 
 /// Hard cap for pagination. Prevents a caller passing `limit = u32::MAX`
 /// from forcing the contract to build a `Vec` up to the length of the
@@ -32,3 +32,16 @@ pub fn paginate(env: &Env, v: Vec<u64>, offset: u32, limit: u32) -> Vec<u64> {
     }
     result
 }
+
+/// Returns a paginated slice of `Address` vector starting at `offset` with at most `limit` elements.
+pub fn paginate_addresses(env: &Env, v: Vec<Address>, offset: u32, limit: u32) -> Vec<Address> {
+    let mut result = Vec::new(env);
+    let start = offset as usize;
+    let effective_limit = limit.min(MAX_PAGE_SIZE) as usize;
+    let end = (offset as usize).saturating_add(effective_limit);
+    for i in start..end.min(v.len() as usize) {
+        result.push_back(v.get(i as u32).unwrap());
+    }
+    result
+}
+

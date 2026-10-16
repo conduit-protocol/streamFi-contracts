@@ -64,6 +64,10 @@ pub enum DataKey {
     EmergencyPaused,
     /// Immutable stream configuration in instance storage (Issue #702).
     ImmutableConfig,
+    /// Milestone flag indicating the cliff timestamp was passed and event emitted (Issue #676).
+    CliffReached,
+    /// Milestone flag indicating the stream has fully settled and completion event emitted (Issue #676).
+    StreamCompleted,
 }
 
 /// Immutable stream configuration stored in instance storage for cheaper reads (Issue #702).

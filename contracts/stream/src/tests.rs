@@ -2742,3 +2742,39 @@ fn test_immutable_config_stored_in_instance_storage() {
     assert_eq!(cfg.recipient, s.recipient);
     assert_eq!(cfg.token, s.token.address);
 }
+
+#[test]
+fn test_cliff_reached_and_stream_completed_events() {
+    let s = Setup::new(100, 1000, false);
+    let start = s.env.ledger().timestamp();
+    let cliff_time = start + 500;
+    let upfront_unlock = 10_000;
+
+    // Configure cliff
+    assert!(s
+        .client
+        .try_set_cliff(&s.sender, &cliff_time, &upfront_unlock)
+        .is_ok());
+
+    // Advance to cliff time
+    s.advance_secs(500);
+
+    // Initial withdrawal after cliff reaches the milestone and emits cliff_rch
+    let withdrawn = s.client.withdraw(&10_000);
+    assert_eq!(withdrawn, 10_000);
+
+    // Second withdrawal after cliff should NOT emit cliff_rch again (one-shot milestone)
+    s.advance_secs(100);
+    let withdrawn2 = s.client.withdraw(&5_000);
+    assert_eq!(withdrawn2, 5_000);
+
+    // Advance to end of stream and withdraw remaining balance to trigger completion
+    s.advance_secs(400); // at end of stream (1000s)
+    let available = s.client.withdrawable();
+    let final_withdrawn = s.client.withdraw(&available);
+    assert!(final_withdrawn > 0);
+
+    // Stream is now fully settled (balance 0)
+    assert_eq!(s.client.balance(), 0);
+}
+

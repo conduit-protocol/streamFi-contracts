@@ -761,6 +761,47 @@ impl DripFactory {
         index::streams_by_sender(&env, sender, offset, limit)
     }
 
+    /// Returns a paginated list of stream contract addresses created by `creator` (Issue #678).
+    ///
+    /// Resolves stream IDs returned by [`index::streams_by_sender`] to their deployed addresses.
+    /// Clamped to [`query::MAX_PAGE_SIZE`] to prevent unbounded memory usage and RPC timeouts.
+    pub fn get_streams_by_creator_paged(
+        env: Env,
+        creator: Address,
+        start_index: u32,
+        limit: u32,
+    ) -> Vec<Address> {
+        let page = index::streams_by_sender(&env, creator, start_index, limit);
+        let mut addrs = Vec::new(&env);
+        for id in page.ids.iter() {
+            if let Some(addr) = Self::stream_address(env.clone(), id) {
+                addrs.push_back(addr);
+            }
+        }
+        addrs
+    }
+
+    /// Alias for [`Self::get_streams_by_creator_paged`] (Issue #678).
+    pub fn streams_by_creator_paged(
+        env: Env,
+        creator: Address,
+        start_index: u32,
+        limit: u32,
+    ) -> Vec<Address> {
+        Self::get_streams_by_creator_paged(env, creator, start_index, limit)
+    }
+
+    /// Returns stream contract addresses created by `creator`, up to [`query::MAX_PAGE_SIZE`] (Issue #678).
+    pub fn get_streams_by_creator(env: Env, creator: Address) -> Vec<Address> {
+        Self::get_streams_by_creator_paged(env, creator, 0, query::MAX_PAGE_SIZE)
+    }
+
+    /// Alias for [`Self::get_streams_by_creator`] (Issue #678).
+    pub fn streams_by_creator(env: Env, creator: Address) -> Vec<Address> {
+        Self::get_streams_by_creator(env, creator)
+    }
+
+
     /// Paginated list of stream IDs where `recipient` is the beneficiary,
     /// paired with the recipient's total stream count.
     ///

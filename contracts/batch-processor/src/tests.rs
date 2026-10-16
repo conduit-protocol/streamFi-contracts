@@ -12,8 +12,8 @@ use soroban_sdk::{
 use crate::{BatchTransferProcessorClient, Error};
 
 /// Mirrors `MAX_BATCH_SIZE` — the value `max_batch_size()` must expose and
-/// the cap `process_batch` enforces.
-const MAX_BATCH_SIZE: u32 = 100;
+/// the cap `process_batch` enforces (Issue #677).
+const MAX_BATCH_SIZE: u32 = 30;
 
 struct Setup {
     env: Env,
@@ -613,3 +613,12 @@ fn test_reentrancy_lock_blocks_concurrent_execution() {
         .try_process_batch(&s.funder, &s.token_addr, &recipients, &amounts);
     assert_eq!(result, Err(Ok(Error::ReentrancyForbidden)));
 }
+
+#[test]
+fn test_max_batch_size_limit_is_thirty() {
+    let s = Setup::new();
+    assert_eq!(s.client.max_batch_size(), 30);
+    assert_eq!(crate::MAX_BATCH_LIMIT, 30);
+    assert_eq!(crate::MAX_BATCH_SIZE, 30);
+}
+

@@ -158,3 +158,45 @@ pub fn owner_proposal_ttl_set(env: &Env, caller: &Address, old_ttl: u64, new_ttl
         (old_ttl, new_ttl),
     );
 }
+
+/// Emitted by `initiate_emergency_migration` when a cold storage migration is scheduled (Issue #679).
+///
+/// Topics: `("em_init", caller)` — the owner.
+/// Data:   `(destination, executable_at)`
+pub fn emergency_migration_initiated(
+    env: &Env,
+    caller: &Address,
+    destination: &Address,
+    executable_at: u64,
+) {
+    env.events().publish(
+        (symbol_short!("em_init"), caller.clone()),
+        (destination.clone(), executable_at),
+    );
+}
+
+/// Emitted by `execute_emergency_migration` when a cold storage migration is executed (Issue #679).
+///
+/// Topics: `("em_exec", caller)` — the owner.
+/// Data:   `(destination, amount)`
+pub fn emergency_migration_executed(
+    env: &Env,
+    caller: &Address,
+    destination: &Address,
+    amount: i128,
+) {
+    env.events().publish(
+        (symbol_short!("em_exec"), caller.clone()),
+        (destination.clone(), amount),
+    );
+}
+
+/// Emitted by `cancel_emergency_migration` when a pending migration is cancelled (Issue #679).
+///
+/// Topics: `("em_cancel", caller)` — the owner.
+/// Data:   ()
+pub fn emergency_migration_cancelled(env: &Env, caller: &Address) {
+    env.events()
+        .publish((symbol_short!("em_cancel"), caller.clone()), ());
+}
+

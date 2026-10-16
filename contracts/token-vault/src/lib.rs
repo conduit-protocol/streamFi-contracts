@@ -9,16 +9,17 @@ mod ttl;
 
 use drip_common::{is_zero_address, TTL_EXTEND_TO};
 use errors::Error;
-use soroban_sdk::{contract, contractimpl, token, Address, BytesN, Env, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, Env, Vec};
 use storage::{
-    get_max_limit, get_operator, get_operator_withdraw_limit, get_owner, get_owner_proposal_ttl,
-    get_pending_owner, get_pending_owner_proposed_at, get_pending_owner_proposer, get_token,
-    get_token_account_balance, get_token_max_limit, is_paused, remove_operator,
-    remove_pending_owner, remove_pending_owner_proposed_at, remove_pending_owner_proposer,
+    get_emergency_migration, get_max_limit, get_operator, get_operator_withdraw_limit, get_owner,
+    get_owner_proposal_ttl, get_pending_owner, get_pending_owner_proposed_at,
+    get_pending_owner_proposer, get_token, get_token_account_balance, get_token_max_limit,
+    is_paused, remove_emergency_migration, remove_operator, remove_pending_owner,
+    remove_pending_owner_proposed_at, remove_pending_owner_proposer, set_emergency_migration,
     set_max_limit, set_operator, set_operator_withdraw_limit, set_owner,
     set_owner_proposal_ttl as store_owner_proposal_ttl, set_paused, set_pending_owner,
     set_pending_owner_proposed_at, set_pending_owner_proposer, set_token,
-    set_token_account_balance, set_token_max_limit, DataKey,
+    set_token_account_balance, set_token_max_limit, DataKey, EmergencyMigration,
 };
 use ttl::bump_instance;
 
@@ -33,6 +34,8 @@ pub struct DepositSpec {
 pub struct TokenVault;
 
 const OWNER_PROPOSAL_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
+pub const EMERGENCY_MIGRATION_TIMELOCK_SECONDS: u64 = 48 * 60 * 60;
+
 
 
 /// Pre-flight validation verifying that `token` adheres to standard SEP-0041
@@ -760,4 +763,100 @@ impl TokenVault {
     pub fn is_token_compliant(env: Env, token: Address) -> bool {
         validate_sep41_token(&env, &token).is_ok()
     }
+
+    // ── Emergency Migration to cold storage (Issue #679) ──────────────────
+
+    /// Initiates an emergency migration of the vault's assets to a cold storage destination (Issue #679).
+    ///
+    /// Requires owner/governor authorization. Enforces a 48-hour timelock before the migration
+    /// can be executed, giving stakeholders time to detect and respond to unauthorized attempts.
+    pub fn initiate_emergency_migration(
+        env: Env,
+        caller: Address,
+        destination: Address,
+    ) -> Result<(), Error> {
+        let owner = get_owner(&env).ok_or(Error::NotInitialized)?;
+        if caller != owner {
+            return Err(Error::NotAuthorized);
+        }
+        caller.require_auth();
+        if is_zero_address(&env, &destination) {
+            return Err(Error::InvalidParam);
+        }
+
+        let now = env.ledger().timestamp();
+        let executable_at = now
+            .checked_add(EMERGENCY_MIGRATION_TIMELOCK_SECONDS)
+            .ok_or(Error::ArithmeticOverflow)?;
+
+        let migration = EmergencyMigration {
+            destination: destination.clone(),
+            proposed_at: now,
+            executable_at,
+        };
+
+        bump_instance(&env);
+        set_emergency_migration(&env, &migration);
+        events::emergency_migration_initiated(&env, &caller, &destination, executable_at);
+        Ok(())
+    }
+
+    /// Executes a pending emergency migration after the 48-hour timelock has elapsed (Issue #679).
+    ///
+    /// Transfers all vault token balance to the configured cold storage destination.
+    pub fn execute_emergency_migration(env: Env, caller: Address) -> Result<i128, Error> {
+        let owner = get_owner(&env).ok_or(Error::NotInitialized)?;
+        if caller != owner {
+            return Err(Error::NotAuthorized);
+        }
+        caller.require_auth();
+
+        let migration = get_emergency_migration(&env).ok_or(Error::NoMigrationProposed)?;
+        let now = env.ledger().timestamp();
+        if now < migration.executable_at {
+            return Err(Error::TimelockNotExpired);
+        }
+
+        let tk = token_client(&env)?;
+        let balance = tk.balance(&env.current_contract_address());
+        if balance > 0 {
+            tk.transfer(&env.current_contract_address(), &migration.destination, &balance);
+        }
+
+        remove_emergency_migration(&env);
+        bump_instance(&env);
+        events::emergency_migration_executed(&env, &caller, &migration.destination, balance);
+        Ok(balance)
+    }
+
+    /// Cancels a pending emergency migration before or after it becomes executable (Issue #679).
+    pub fn cancel_emergency_migration(env: Env, caller: Address) -> Result<(), Error> {
+        let owner = get_owner(&env).ok_or(Error::NotInitialized)?;
+        if caller != owner {
+            return Err(Error::NotAuthorized);
+        }
+        caller.require_auth();
+
+        let _ = get_emergency_migration(&env).ok_or(Error::NoMigrationProposed)?;
+        remove_emergency_migration(&env);
+        bump_instance(&env);
+        events::emergency_migration_cancelled(&env, &caller);
+        Ok(())
+    }
+
+    /// Read-only: pending emergency migration details, if any (Issue #679).
+    pub fn emergency_migration(env: Env) -> Option<EmergencyMigration> {
+        get_emergency_migration(&env)
+    }
+
+    /// Read-only: alias for emergency_migration (Issue #679).
+    pub fn get_emergency_migration(env: Env) -> Option<EmergencyMigration> {
+        get_emergency_migration(&env)
+    }
+
+    /// Read-only: the emergency migration timelock duration in seconds (Issue #679).
+    pub fn emergency_timelock_seconds(_env: Env) -> u64 {
+        EMERGENCY_MIGRATION_TIMELOCK_SECONDS
+    }
 }
+

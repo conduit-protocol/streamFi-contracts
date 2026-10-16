@@ -11,8 +11,14 @@ use soroban_sdk::{
     Symbol, Vec,
 };
 
-/// Maximum number of transfers permitted in a single batch.
-const MAX_BATCH_SIZE: u32 = 100;
+/// Maximum number of transfers permitted in a single batch (Issue #677).
+///
+/// Bounded to 30 to prevent transaction CPU instruction budget limits in Soroban host.
+pub const MAX_BATCH_SIZE: u32 = 30;
+
+/// Maximum batch limit alias for MAX_BATCH_SIZE (Issue #677).
+pub const MAX_BATCH_LIMIT: u32 = MAX_BATCH_SIZE;
+
 
 /// Behaviour version of this deployment.
 ///
@@ -243,7 +249,7 @@ impl BatchTransferProcessor {
     /// list in the README:
     ///
     /// 1. `recipients.len() == amounts.len()` — else [`Error::LengthMismatch`]
-    /// 2. `amounts.len() <= MAX_BATCH_SIZE` (100) — else [`Error::BatchTooLarge`]
+    /// 2. `amounts.len() <= MAX_BATCH_SIZE` (30) — else [`Error::BatchTooLarge`]
     /// 3. every `amount > 0` — else [`Error::InvalidAmount`]
     /// 4. `sum(amounts)` fits in `i128` — else [`Error::ArithmeticOverflow`]
     /// 5. `token` behaves like a SEP-41 asset — else [`Error::InvalidToken`]

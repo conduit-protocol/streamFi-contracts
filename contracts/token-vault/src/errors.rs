@@ -35,4 +35,9 @@ pub enum Error {
     PendingOwnerExpired = 16,
     /// Target token does not comply with the standard SEP-0041 interface (Issue #696).
     InvalidToken = 17,
+    /// Timelock has not expired yet for emergency migration (Issue #679).
+    TimelockNotExpired = 18,
+    /// No emergency migration has been proposed (Issue #679).
+    NoMigrationProposed = 19,
 }
+

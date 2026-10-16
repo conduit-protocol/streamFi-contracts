@@ -953,3 +953,42 @@ fn test_stream_created_event_payload_includes_salt_and_wasm_hash() {
     let last = events.last().unwrap();
     assert_eq!(last.1.len(), 3); // Topics: (StreamCreated, creator, recipient)
 }
+
+#[test]
+fn test_get_streams_by_creator_paged() {
+    let s = Setup::new();
+    let creator = Address::generate(&s.env);
+    let stream1 = Address::generate(&s.env);
+    let stream2 = Address::generate(&s.env);
+
+    s.env.as_contract(&s.client.address, || {
+        let mut ids = soroban_sdk::Vec::new(&s.env);
+        ids.push_back(1u64);
+        ids.push_back(2u64);
+        s.env
+            .storage()
+            .persistent()
+            .set(&DataKey::BySender(creator.clone()), &ids);
+        s.env
+            .storage()
+            .persistent()
+            .set(&DataKey::StreamAddr(1u64), &stream1);
+        s.env
+            .storage()
+            .persistent()
+            .set(&DataKey::StreamAddr(2u64), &stream2);
+    });
+
+    let paged = s.client.get_streams_by_creator_paged(&creator, &0, &10);
+    assert_eq!(paged.len(), 2);
+    assert_eq!(paged.get(0).unwrap(), stream1);
+    assert_eq!(paged.get(1).unwrap(), stream2);
+
+    let paged_offset = s.client.get_streams_by_creator_paged(&creator, &1, &1);
+    assert_eq!(paged_offset.len(), 1);
+    assert_eq!(paged_offset.get(0).unwrap(), stream2);
+
+    let all = s.client.get_streams_by_creator(&creator);
+    assert_eq!(all.len(), 2);
+}
+

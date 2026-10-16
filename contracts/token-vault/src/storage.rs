@@ -38,6 +38,16 @@ pub enum DataKey {
     TokenAccountBalance(Address, Address),
     /// Persistent storage: optional maximum deposit limit per token (Issue #724).
     TokenMaxLimit(Address),
+    /// Pending emergency migration to cold storage with a timelock (Issue #679).
+    EmergencyMigration,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyMigration {
+    pub destination: Address,
+    pub proposed_at: u64,
+    pub executable_at: u64,
 }
 
 pub fn set_owner(env: &Env, a: &Address) {
@@ -194,3 +204,16 @@ pub fn set_token_max_limit(env: &Env, token: &Address, limit: &i128) {
     env.storage().persistent().set(&key, limit);
     drip_common::ttl::bump_persistent(env, &key);
 }
+
+pub fn set_emergency_migration(env: &Env, m: &EmergencyMigration) {
+    env.storage().instance().set(&DataKey::EmergencyMigration, m);
+}
+
+pub fn get_emergency_migration(env: &Env) -> Option<EmergencyMigration> {
+    env.storage().instance().get(&DataKey::EmergencyMigration)
+}
+
+pub fn remove_emergency_migration(env: &Env) {
+    env.storage().instance().remove(&DataKey::EmergencyMigration);
+}
+

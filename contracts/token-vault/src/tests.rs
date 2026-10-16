@@ -1363,3 +1363,79 @@ fn batch_deposit_while_paused_fails() {
         Err(Ok(Error::ContractPaused))
     );
 }
+
+// ── Emergency Migration tests (Issue #679) ────────────────────────────────
+
+#[test]
+fn emergency_migration_flow_enforces_timelock_and_transfers() {
+    let s = Setup::new(1_000_000);
+    let cold_storage = Address::generate(&s.env);
+    let stranger = Address::generate(&s.env);
+
+    s.client.deposit(&s.owner, &50_000);
+    assert_eq!(s.token.balance(&s.client.address), 50_000);
+
+    // Stranger cannot initiate
+    assert_eq!(
+        s.client.try_initiate_emergency_migration(&stranger, &cold_storage),
+        Err(Ok(Error::NotAuthorized))
+    );
+
+    // Owner initiates
+    let now = s.env.ledger().timestamp();
+    s.client.initiate_emergency_migration(&s.owner, &cold_storage);
+
+    let migration = s.client.emergency_migration().unwrap();
+    assert_eq!(migration.destination, cold_storage);
+    assert_eq!(migration.proposed_at, now);
+    assert_eq!(migration.executable_at, now + 48 * 3600);
+
+    // Stranger cannot execute
+    assert_eq!(
+        s.client.try_execute_emergency_migration(&stranger),
+        Err(Ok(Error::NotAuthorized))
+    );
+
+    // Before 48h timelock expires: fails
+    s.env.ledger().set_timestamp(now + 48 * 3600 - 1);
+    assert_eq!(
+        s.client.try_execute_emergency_migration(&s.owner),
+        Err(Ok(Error::TimelockNotExpired))
+    );
+
+    // At or after 48h: succeeds
+    s.env.ledger().set_timestamp(now + 48 * 3600);
+    let migrated = s.client.execute_emergency_migration(&s.owner);
+    assert_eq!(migrated, 50_000);
+
+    assert_eq!(s.token.balance(&s.client.address), 0);
+    assert_eq!(s.token.balance(&cold_storage), 50_000);
+    assert_eq!(s.client.emergency_migration(), None);
+}
+
+#[test]
+fn emergency_migration_can_be_cancelled() {
+    let s = Setup::new(1_000_000);
+    let cold_storage = Address::generate(&s.env);
+    let stranger = Address::generate(&s.env);
+
+    s.client.initiate_emergency_migration(&s.owner, &cold_storage);
+    assert!(s.client.emergency_migration().is_some());
+
+    // Stranger cannot cancel
+    assert_eq!(
+        s.client.try_cancel_emergency_migration(&stranger),
+        Err(Ok(Error::NotAuthorized))
+    );
+
+    // Owner cancels
+    s.client.cancel_emergency_migration(&s.owner);
+    assert_eq!(s.client.emergency_migration(), None);
+
+    // Cancelling when none is pending fails
+    assert_eq!(
+        s.client.try_cancel_emergency_migration(&s.owner),
+        Err(Ok(Error::NoMigrationProposed))
+    );
+}
+
