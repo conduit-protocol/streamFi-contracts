@@ -30,4 +30,6 @@ pub enum Error {
     StreamUnderfunded = 21,
     /// The requested withdrawal violates the minimum interval rate limit.
     WithdrawalTooFrequent = 22,
+    /// The stream is under an emergency administrative halt (Issue #699).
+    ContractPaused = 23,
 }

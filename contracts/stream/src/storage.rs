@@ -60,6 +60,8 @@ pub enum DataKey {
     /// Kept outside `StreamInfo` so adding rate changes does not alter the
     /// serialized `Config` layout of already-deployed streams.
     RateCheckpoint,
+    /// Emergency pause flag adhering to drip_common::pause (Issue #699).
+    EmergencyPaused,
 }
 
 #[contracttype]

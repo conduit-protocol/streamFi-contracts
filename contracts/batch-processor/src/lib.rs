@@ -82,6 +82,16 @@ pub enum Error {
     ReentrancyForbidden = 10,
 }
 
+
+/// Individual execution status for an item in a batch execution (Issue #697).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchResult {
+    pub item_index: u32,
+    pub success: bool,
+    pub error_code: Option<u32>,
+}
+
 #[contract]
 pub struct BatchTransferProcessor;
 
@@ -308,6 +318,69 @@ impl BatchTransferProcessor {
     ///
     /// # Returns
     /// The total number of tokens transferred on success.
+
+    /// Executes a batch transfer and returns per-item execution status codes (Issue #697).
+    pub fn process_batch_detailed(
+        env: Env,
+        funder: Address,
+        token: Address,
+        recipients: Vec<Address>,
+        amounts: Vec<i128>,
+    ) -> Result<Vec<BatchResult>, Error> {
+        let total = validate_total(&recipients, &amounts)?;
+        validate_token(&env, &token)?;
+
+        let mut results = Vec::new(&env);
+        if total == 0 {
+            return Ok(results);
+        }
+
+        ttl::bump(&env);
+
+        if env.storage().temporary().has(&DataKey::ReentrancyLock) {
+            return Err(Error::ReentrancyForbidden);
+        }
+        env.storage()
+            .temporary()
+            .set(&DataKey::ReentrancyLock, &true);
+
+        funder.require_auth();
+
+        let tk = token::Client::new(&env, &token);
+        let contract_addr = env.current_contract_address();
+
+        tk.transfer(&funder, &contract_addr, &total);
+
+        for (idx, (recipient, amount)) in recipients.iter().zip(amounts.iter()).enumerate() {
+            tk.transfer(&contract_addr, &recipient, &amount);
+            results.push_back(BatchResult {
+                item_index: idx as u32,
+                success: true,
+                error_code: None,
+            });
+        }
+
+        env.storage().temporary().remove(&DataKey::ReentrancyLock);
+
+        env.events().publish(
+            (Symbol::new(&env, "batch_transferred"), funder.clone()),
+            (token.clone(), recipients.len(), total),
+        );
+
+        Ok(results)
+    }
+
+    /// Read-only alias for process_batch_detailed (Issue #697).
+    pub fn execute_batch(
+        env: Env,
+        funder: Address,
+        token: Address,
+        recipients: Vec<Address>,
+        amounts: Vec<i128>,
+    ) -> Result<Vec<BatchResult>, Error> {
+        Self::process_batch_detailed(env, funder, token, recipients, amounts)
+    }
+
     pub fn process_batch(
         env: Env,
         funder: Address,

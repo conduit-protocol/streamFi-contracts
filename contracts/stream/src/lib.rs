@@ -401,6 +401,36 @@ impl DripStream {
     }
 
     /// Sender or delegated operator pauses the stream.
+
+    /// Read-only: whether the stream is under an emergency administrative freeze (Issue #699).
+    pub fn is_emergency_paused(env: Env) -> bool {
+        drip_common::pause::is_paused(&env, &DataKey::EmergencyPaused)
+    }
+
+    /// Freezes the stream under an emergency administrative halt (Issue #699).
+    pub fn emergency_pause(env: Env, caller: Address) -> Result<(), Error> {
+        caller.require_auth();
+        if Self::is_emergency_paused(env.clone()) {
+            return Err(Error::AlreadyPaused);
+        }
+        ttl::bump(&env);
+        drip_common::pause::set_paused(&env, &DataKey::EmergencyPaused, true);
+        events::emergency_paused(&env, &caller, env.ledger().timestamp());
+        Ok(())
+    }
+
+    /// Lifts the emergency administrative freeze (Issue #699).
+    pub fn emergency_unpause(env: Env, caller: Address) -> Result<(), Error> {
+        caller.require_auth();
+        if !Self::is_emergency_paused(env.clone()) {
+            return Err(Error::NotPaused);
+        }
+        ttl::bump(&env);
+        drip_common::pause::set_paused(&env, &DataKey::EmergencyPaused, false);
+        events::emergency_unpaused(&env, &caller, env.ledger().timestamp());
+        Ok(())
+    }
+
     pub fn pause(env: Env, caller: Address) -> Result<(), Error> {
         state::with_guard(&env, |env| Self::_pause(env, &caller))
     }

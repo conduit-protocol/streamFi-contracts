@@ -33,4 +33,6 @@ pub enum Error {
     InvalidWasmHash = 15,
     /// `accept_owner` was called after the ownership proposal expired.
     PendingOwnerExpired = 16,
+    /// Target token does not comply with the standard SEP-0041 interface (Issue #696).
+    InvalidToken = 17,
 }

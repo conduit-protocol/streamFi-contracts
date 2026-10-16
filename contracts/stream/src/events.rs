@@ -250,3 +250,19 @@ pub fn min_withdrawal_interval_set(env: &Env, sender: &Address, interval_seconds
         interval_seconds,
     );
 }
+
+pub fn emergency_paused(env: &Env, caller: &Address, timestamp: u64) {
+    let sequence = next_sequence(env);
+    env.events().publish(
+        (symbol_short!("emg_pause"), caller.clone(), sequence),
+        timestamp,
+    );
+}
+
+pub fn emergency_unpaused(env: &Env, caller: &Address, timestamp: u64) {
+    let sequence = next_sequence(env);
+    env.events().publish(
+        (symbol_short!("emg_unps"), caller.clone(), sequence),
+        timestamp,
+    );
+}

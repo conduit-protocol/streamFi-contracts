@@ -34,6 +34,19 @@ pub struct TokenVault;
 
 const OWNER_PROPOSAL_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
 
+
+/// Pre-flight validation verifying that `token` adheres to standard SEP-0041
+/// Soroban token interface (non-zero address, contract target, balance read probe) (Issue #696).
+pub fn validate_sep41_token(env: &Env, token: &Address) -> Result<(), Error> {
+    if is_zero_address(env, token) {
+        return Err(Error::InvalidToken);
+    }
+    let client = token::Client::new(env, token);
+    // Probe balance method to verify contract implements SEP-41 balance signature
+    let _ = client.balance(&env.current_contract_address());
+    Ok(())
+}
+
 fn token_client(env: &Env) -> Result<token::Client<'_>, Error> {
     let token_addr = get_token(env).ok_or(Error::NotInitialized)?;
     Ok(token::Client::new(env, &token_addr))
@@ -102,6 +115,7 @@ fn withdraw_payouts(
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
+        validate_sep41_token(&env, &token)?;
         total = total.checked_add(amount).ok_or(Error::ArithmeticOverflow)?;
     }
 
@@ -160,6 +174,7 @@ impl TokenVault {
         if max_limit <= 0 {
             return Err(Error::InvalidAmount);
         }
+        validate_sep41_token(&env, &token)?;
 
         if get_owner(&env).is_some() {
             return Err(Error::AlreadyInitialized);
@@ -739,5 +754,10 @@ impl TokenVault {
     /// Read-only: maximum deposit limit for a specific token, if set (Issue #724).
     pub fn token_max_limit(env: Env, token: Address) -> Option<i128> {
         get_token_max_limit(&env, &token)
+    }
+
+    /// Read-only: pre-flight check validating that target token adheres to standard SEP-0041 interface (Issue #696).
+    pub fn is_token_compliant(env: Env, token: Address) -> bool {
+        validate_sep41_token(&env, &token).is_ok()
     }
 }

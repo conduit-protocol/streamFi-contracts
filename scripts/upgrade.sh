@@ -42,12 +42,40 @@ cargo build --target wasm32-unknown-unknown --release --quiet
 
 WASM_DIR="$ROOT_DIR/target/wasm32-unknown-unknown/release"
 
+# Compute sha256 checksum and verify matching uploaded hash (Issue #698)
+verify_wasm_checksum() {
+  local wasm_file="$1"
+  local expected_hash="$2"
+
+  if [[ ! -f "$wasm_file" ]]; then
+    echo "❌  WASM file $wasm_file does not exist." >&2
+    exit 1
+  fi
+
+  local local_hash
+  if command -v sha256sum &>/dev/null; then
+    local_hash=$(sha256sum "$wasm_file" | awk '{print $1}')
+  else
+    local_hash=$(shasum -a 256 "$wasm_file" | awk '{print $1}')
+  fi
+
+  echo "🔍  Verifying WASM checksum: local=$local_hash uploaded=$expected_hash"
+  if [[ "$local_hash" != "$expected_hash" ]]; then
+    echo "❌  Checksum mismatch! Local WASM ($local_hash) does not match uploaded hash ($expected_hash)." >&2
+    echo "    Aborting upgrade to prevent deploying mismatched bytecode." >&2
+    exit 1
+  fi
+  echo "✅  Checksum verified successfully."
+}
+
+
 if [[ "$CONTRACT" == "factory" ]]; then
   echo "📤  Uploading new DripFactory WASM…"
   NEW_HASH=$(stellar contract upload \
     --wasm "$WASM_DIR/drip_factory.wasm" \
     --network "$NETWORK" --source dev --quiet)
   echo "    New hash: $NEW_HASH"
+  verify_wasm_checksum "$WASM_DIR/drip_factory.wasm" "$NEW_HASH"
   stellar contract invoke \
     --id "$FACTORY_ID" \
     --network "$NETWORK" --source dev \
@@ -60,6 +88,7 @@ elif [[ "$CONTRACT" == "governor" ]]; then
     --wasm "$WASM_DIR/drip_governor.wasm" \
     --network "$NETWORK" --source dev --quiet)
   echo "    New hash: $NEW_HASH"
+  verify_wasm_checksum "$WASM_DIR/drip_governor.wasm" "$NEW_HASH"
   stellar contract invoke \
     --id "$GOVERNOR_ID" \
     --network "$NETWORK" --source dev \
@@ -72,6 +101,7 @@ elif [[ "$CONTRACT" == "oracle" ]]; then
     --wasm "$WASM_DIR/drip_oracle.wasm" \
     --network "$NETWORK" --source dev --quiet)
   echo "    New hash: $NEW_HASH"
+  verify_wasm_checksum "$WASM_DIR/drip_oracle.wasm" "$NEW_HASH"
   stellar contract invoke \
     --id "$ORACLE_ID" \
     --network "$NETWORK" --source dev \
@@ -84,6 +114,7 @@ elif [[ "$CONTRACT" == "batch-processor" ]]; then
     --wasm "$WASM_DIR/drip_batch_processor.wasm" \
     --network "$NETWORK" --source dev --quiet)
   echo "    New hash: $NEW_HASH"
+  verify_wasm_checksum "$WASM_DIR/drip_batch_processor.wasm" "$NEW_HASH"
   stellar contract invoke \
     --id "$BATCH_PROCESSOR_ID" \
     --network "$NETWORK" --source dev \
@@ -96,6 +127,7 @@ elif [[ "$CONTRACT" == "token-vault" ]]; then
     --wasm "$WASM_DIR/token_vault.wasm" \
     --network "$NETWORK" --source dev --quiet)
   echo "    New hash: $NEW_HASH"
+  verify_wasm_checksum "$WASM_DIR/token_vault.wasm" "$NEW_HASH"
   stellar contract invoke \
     --id "$TOKEN_VAULT_ID" \
     --network "$NETWORK" --source dev \
