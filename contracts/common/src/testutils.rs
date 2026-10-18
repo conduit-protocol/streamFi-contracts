@@ -1,7 +1,10 @@
 //! Test helpers, mock environments, and assertion utilities.
 //! Gated behind the `testutils` feature flag (Issue #709).
 
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    Address, Env,
+};
 
 /// Generates a test address for unit and integration testing.
 pub fn create_test_address(env: &Env) -> Address {

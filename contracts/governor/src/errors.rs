@@ -37,4 +37,8 @@ pub enum Error {
     TimelockNotMet = 16,
     /// Quorum threshold not met for proposal execution.
     QuorumNotMet = 17,
+    /// Voter has already cast a vote on this proposal.
+    AlreadyVoted = 18,
+    /// Voter had zero checkpointed voting weight at the proposal's snapshot ledger.
+    InsufficientVotingWeight = 19,
 }

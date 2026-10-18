@@ -12,8 +12,10 @@ use crate::storage::DataKey;
 
 // Exposed as `pub` so callers can reuse the same threshold/extend-to values
 // for the persistent BySender/ByRecipient/StreamAddr registry entries.
-pub use drip_common::ttl::{bump_instance, bump_persistent};
-pub use drip_common::{TTL_EXTEND_TO as EXTEND_TO, TTL_THRESHOLD as THRESHOLD};
+pub use drip_common::ttl::{
+    bump_instance, bump_persistent, EXTEND_TTL_LEDGERS, EXTEND_TTL_LEDGERS as EXTEND_TO,
+    MIN_TTL_LEDGERS, MIN_TTL_LEDGERS as THRESHOLD,
+};
 
 /// How many persistent entries the bounded walker bumps per call. Sized so
 /// the gas cost of any single `pause`/`unpause`/`upgrade_stream_wasm`

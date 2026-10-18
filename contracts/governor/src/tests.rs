@@ -3,7 +3,7 @@
 use super::*;
 use soroban_sdk::{
     symbol_short,
-    testutils::{Address as _, Events as _},
+    testutils::{Address as _, Events as _, Ledger as _},
     Address, Env, IntoVal,
 };
 
@@ -272,4 +272,51 @@ fn test_two_step_admin_transfer_flow() {
     assert_eq!(client.pending_admin(), None);
     assert_eq!(client.has_role(&Role::Admin, &new_admin), true);
     assert_eq!(client.has_role(&Role::Admin, &authority), false);
+}
+
+#[test]
+fn test_proposal_vote_tally_snapshotting_prevents_double_vote_transfer() {
+    use soroban_sdk::testutils::Ledger as _;
+
+    let (env, authority, fee_recipient, factory_address) = create_test_env();
+    let contract_id = env.register_contract(None, DripGovernor);
+    let client = DripGovernorClient::new(&env, &contract_id);
+
+    client.initialize(&authority, &fee_recipient, &factory_address);
+
+    let voter_a = Address::generate(&env);
+    let wallet_b = Address::generate(&env);
+
+    // At ledger 10, voter_a holds 100 voting weight
+    env.ledger().set_sequence_number(10);
+    client.checkpoint_balance(&authority, &voter_a, &100);
+    assert_eq!(client.get_prior_votes(&voter_a, &10), 100);
+
+    // At ledger 15, proposal is created -> snapshot_ledger is anchored at 15
+    env.ledger().set_sequence_number(15);
+    let proposal_id = client.propose(&authority, &3600);
+    assert_eq!(client.proposal_snapshot_ledger(&proposal_id), 15);
+
+    // voter_a casts vote -> tallies 100 votes from snapshot at ledger 15
+    client.cast_vote(&voter_a, &proposal_id, &true);
+    let snap = client.get_proposal_snapshot(&proposal_id);
+    assert_eq!(snap.for_votes, 100);
+    assert_eq!(snap.snapshot_ledger, 15);
+
+    // voter_a cannot vote a second time directly
+    assert_eq!(
+        client.try_cast_vote(&voter_a, &proposal_id, &true),
+        Err(Ok(Error::AlreadyVoted))
+    );
+
+    // At ledger 20 (after proposal snapshot ledger 15), voter_a moves tokens to wallet_b
+    env.ledger().set_sequence_number(20);
+    client.checkpoint_balance(&authority, &voter_a, &0);
+    client.checkpoint_balance(&authority, &wallet_b, &100);
+
+    // wallet_b had 0 weight at snapshot ledger 15 -> double-vote attempt is rejected!
+    assert_eq!(
+        client.try_cast_vote(&wallet_b, &proposal_id, &true),
+        Err(Ok(Error::InsufficientVotingWeight))
+    );
 }

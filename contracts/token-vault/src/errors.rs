@@ -39,5 +39,7 @@ pub enum Error {
     TimelockNotExpired = 18,
     /// No emergency migration has been proposed (Issue #679).
     NoMigrationProposed = 19,
+    /// Reentrant invocation detected during an active external token transfer.
+    ReentrancyDetected = 20,
 }
 

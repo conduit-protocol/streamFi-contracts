@@ -1465,4 +1465,46 @@ fn test_deposit_with_fee_emits_token_deposited_event() {
     assert_eq!(s.client.balance(), Some(950));
 }
 
+#[test]
+fn test_reentrancy_guard_blocks_nested_transfers() {
+    let s = Setup::new(1_000_000);
+    s.client.deposit(&s.owner, &10_000);
+
+    // Simulate active transient reentrancy lock during an external token call
+    s.env.as_contract(&s.client.address, || {
+        s.env
+            .storage()
+            .temporary()
+            .set(&crate::storage::DataKey::ReentrancyLock, &true);
+    });
+
+    assert_eq!(
+        s.client.try_deposit(&s.owner, &1_000),
+        Err(Ok(Error::ReentrancyDetected))
+    );
+    assert_eq!(
+        s.client.try_withdraw(&s.owner, &s.user, &1_000),
+        Err(Ok(Error::ReentrancyDetected))
+    );
+    assert_eq!(
+        s.client
+            .try_deposit_token(&s.owner, &s.token.address, &1_000),
+        Err(Ok(Error::ReentrancyDetected))
+    );
+    assert_eq!(
+        s.client
+            .try_withdraw_token(&s.owner, &s.token.address, &s.user, &1_000),
+        Err(Ok(Error::ReentrancyDetected))
+    );
+
+    // Clear lock and verify transfers succeed again and clean up transient lock
+    s.env.as_contract(&s.client.address, || {
+        s.env
+            .storage()
+            .temporary()
+            .remove(&crate::storage::DataKey::ReentrancyLock);
+    });
+    assert!(s.client.try_withdraw(&s.owner, &s.user, &1_000).is_ok());
+}
+
 

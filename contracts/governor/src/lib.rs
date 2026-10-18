@@ -32,7 +32,7 @@ pub use config::GovernorConfig;
 pub use errors::Error;
 pub use role::{Role, RoleMembersPage};
 use storage::DataKey;
-pub use storage::{Proposal, ProposalStatus};
+pub use storage::{BalanceCheckpoint, Proposal, ProposalStatus, VoteTallySnapshot};
 
 /// Returns `true` when the governor is under an emergency pause.
 ///
@@ -735,6 +735,41 @@ impl DripGovernor {
 
     // ── Proposals (Admin-gated) ──────────────────────────────────────────────
 
+    /// Record a token balance / voting weight checkpoint for `voter` at the current ledger.
+    ///
+    /// Only an `Admin` may record governance token checkpoints. Checkpoints anchor
+    /// voting weights to the proposal's `snapshot_ledger` so transferring tokens to
+    /// a second wallet after proposal creation cannot be used to double-vote.
+    pub fn checkpoint_balance(
+        env: Env,
+        caller: Address,
+        voter: Address,
+        weight: u64,
+    ) -> Result<(), Error> {
+        role::require_role_or_admin(&env, &caller, Role::Admin)?;
+        ttl::bump(&env);
+        storage::record_checkpoint(&env, &voter, weight);
+        Ok(())
+    }
+
+    /// Read-only: returns the checkpointed voting weight for `account` at `ledger_sequence`.
+    pub fn get_prior_votes(env: Env, account: Address, ledger_sequence: u32) -> u64 {
+        storage::get_checkpoint_weight(&env, &account, ledger_sequence).unwrap_or(0)
+    }
+
+    /// Read-only: returns the proposal's snapshot ledger sequence.
+    pub fn proposal_snapshot_ledger(env: Env, proposal_id: u64) -> Result<u32, Error> {
+        storage::get_proposal_snapshot_ledger(&env, proposal_id).ok_or(Error::ProposalNotFound)
+    }
+
+    /// Read-only: returns the proposal's vote tally snapshot anchored at its snapshot ledger.
+    pub fn get_proposal_snapshot(
+        env: Env,
+        proposal_id: u64,
+    ) -> Result<storage::VoteTallySnapshot, Error> {
+        storage::get_vote_tally_snapshot(&env, proposal_id).ok_or(Error::ProposalNotFound)
+    }
+
     /// Create a new governance proposal.
     ///
     /// Only an `Admin` may create proposals. The proposal has an execution
@@ -753,14 +788,25 @@ impl DripGovernor {
             .get(&DataKey::ProposalCounter)
             .unwrap_or(0);
         let proposal_id = counter + 1;
+        let snapshot_ledger = env.ledger().sequence();
+        let total_supply = Self::governance_supply(env.clone());
 
         let proposal = storage::Proposal {
             author: caller.clone(),
             created_at: env.ledger().timestamp(),
+            snapshot_ledger,
             execution_window_secs,
             status: storage::ProposalStatus::Pending,
             for_votes: 0,
             against_votes: 0,
+        };
+
+        let snapshot = storage::VoteTallySnapshot {
+            proposal_id,
+            snapshot_ledger,
+            for_votes: 0,
+            against_votes: 0,
+            total_supply,
         };
 
         env.storage()
@@ -769,6 +815,8 @@ impl DripGovernor {
         env.storage()
             .instance()
             .set(&DataKey::ProposalCounter, &proposal_id);
+        storage::set_proposal_snapshot_ledger(&env, proposal_id, snapshot_ledger);
+        storage::save_vote_tally_snapshot(&env, &snapshot);
 
         Ok(proposal_id)
     }
@@ -822,18 +870,9 @@ impl DripGovernor {
 
         let min_quorum_bps = config::load(&env)?.min_quorum_bps;
         if min_quorum_bps > 0 {
-            let total_supply: u64 = env
-                .storage()
-                .instance()
-                .get(&DataKey::GovernanceSupply)
-                .unwrap_or_else(|| {
-                    let admin_count: u32 = env
-                        .storage()
-                        .instance()
-                        .get(&DataKey::AdminCount)
-                        .unwrap_or(1);
-                    admin_count as u64
-                });
+            let total_supply: u64 = storage::get_vote_tally_snapshot(&env, proposal_id)
+                .map(|s| s.total_supply)
+                .unwrap_or_else(|| Self::governance_supply(env.clone()));
             let quorum_threshold = ((total_supply as u128 * min_quorum_bps as u128 + 9_999) / 10_000) as u64;
             let total_votes = proposal.for_votes.saturating_add(proposal.against_votes);
             if total_votes < quorum_threshold {
@@ -894,6 +933,10 @@ impl DripGovernor {
         voter.require_auth();
         ttl::bump(&env);
 
+        if storage::has_voted(&env, proposal_id, &voter) {
+            return Err(Error::AlreadyVoted);
+        }
+
         let mut proposal: storage::Proposal = env
             .storage()
             .instance()
@@ -905,19 +948,37 @@ impl DripGovernor {
         }
 
         let elapsed = env.ledger().timestamp().saturating_sub(proposal.created_at);
-        if elapsed > proposal.execution_window_secs {
+        if elapsed > proposal.execution_window_secs.saturating_add(Self::MIN_EXECUTION_DELAY) {
             return Err(Error::ProposalExpired);
         }
 
+        let weight = match storage::get_checkpoint_weight(&env, &voter, proposal.snapshot_ledger) {
+            Some(0) => return Err(Error::InsufficientVotingWeight),
+            Some(w) => w,
+            None => 1,
+        };
+
         if support {
-            proposal.for_votes = proposal.for_votes.saturating_add(1);
+            proposal.for_votes = proposal.for_votes.saturating_add(weight);
         } else {
-            proposal.against_votes = proposal.against_votes.saturating_add(1);
+            proposal.against_votes = proposal.against_votes.saturating_add(weight);
         }
 
         env.storage()
             .instance()
             .set(&DataKey::Proposal(proposal_id), &proposal);
+
+        let snapshot = storage::VoteTallySnapshot {
+            proposal_id,
+            snapshot_ledger: proposal.snapshot_ledger,
+            for_votes: proposal.for_votes,
+            against_votes: proposal.against_votes,
+            total_supply: storage::get_vote_tally_snapshot(&env, proposal_id)
+                .map(|s| s.total_supply)
+                .unwrap_or_else(|| Self::governance_supply(env.clone())),
+        };
+        storage::save_vote_tally_snapshot(&env, &snapshot);
+        storage::record_voter_receipt(&env, proposal_id, &voter, weight);
 
         events::vote_cast(&env, &voter, proposal_id, support, rationale);
         Ok(())

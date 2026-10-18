@@ -40,6 +40,8 @@ pub enum DataKey {
     TokenMaxLimit(Address),
     /// Pending emergency migration to cold storage with a timelock (Issue #679).
     EmergencyMigration,
+    /// Transient reentrancy guard lock flag for external token transfers.
+    ReentrancyLock,
 }
 
 #[contracttype]

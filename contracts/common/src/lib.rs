@@ -8,23 +8,14 @@ pub mod ttl;
 #[cfg(any(test, feature = "testutils"))]
 pub mod testutils;
 
-pub use ttl::{bump_instance_ttl, bump_persistent_ttl, ensure_active_ttl};
+pub use ttl::{
+    bump_instance_ttl, bump_persistent_ttl, ensure_active_ttl, TtlConfig, EXTEND_TTL_LEDGERS,
+    MAINNET_EXTEND_TTL_LEDGERS, MAINNET_MIN_TTL_LEDGERS, MAINNET_TTL_CONFIG, MIN_TTL_LEDGERS,
+    TESTNET_EXTEND_TTL_LEDGERS, TESTNET_MIN_TTL_LEDGERS, TESTNET_TTL_CONFIG, TTL_EXTEND_TO,
+    TTL_THRESHOLD,
+};
 
 use soroban_sdk::{Address, Env};
-
-/// TTL threshold for instance storage extension.
-/// When the remaining TTL falls below this value, extend to `TTL_EXTEND_TO`.
-/// 100,000 ledgers × ~5s/ledger ≈ 5.8 days. This threshold is checked on every
-/// state-mutating call to prevent contract archival. Keeps streams active as long
-/// as they are being used; idle streams can still expire.
-pub const TTL_THRESHOLD: u32 = 100_000;
-
-/// Target TTL for instance storage extension.
-/// Extended to this value when `TTL_THRESHOLD` is reached.
-/// 200,000 ledgers × ~5s/ledger ≈ 11.6 days. Provides ~5.8 day safety margin
-/// after threshold is hit, ensuring a state-mutating call happens within that window
-/// before reaching Soroban's hard limits (e.g., stream::ttl::MAX_PAUSE_SECS).
-pub const TTL_EXTEND_TO: u32 = 200_000;
 
 /// Returns true when `address` is a known zero/degenerate address.
 ///

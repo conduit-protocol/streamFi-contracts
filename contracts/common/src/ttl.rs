@@ -17,10 +17,91 @@ use soroban_sdk::Env;
 
 use crate::rbac::StorageKey;
 
-pub use crate::{TTL_EXTEND_TO, TTL_THRESHOLD};
+/// Standardized TTL configuration parameters (in ledgers) for a target network.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TtlConfig {
+    /// Minimum remaining TTL (in ledgers) before an entry is extended.
+    pub min_ttl_ledgers: u32,
+    /// Target TTL (in ledgers) to extend an entry to when below `min_ttl_ledgers`.
+    pub extend_ttl_ledgers: u32,
+}
 
-/// Extends the contract's instance storage TTL to [`TTL_EXTEND_TO`] whenever
-/// the remaining TTL drops below [`TTL_THRESHOLD`].
+/// Testnet minimum TTL threshold: 17,280 ledgers × ~5s/ledger ≈ 1 day.
+pub const TESTNET_MIN_TTL_LEDGERS: u32 = 17_280;
+
+/// Testnet target TTL extension: 34,560 ledgers × ~5s/ledger ≈ 2 days.
+pub const TESTNET_EXTEND_TTL_LEDGERS: u32 = 34_560;
+
+/// Mainnet minimum TTL threshold: 100,000 ledgers × ~5s/ledger ≈ 5.8 days.
+pub const MAINNET_MIN_TTL_LEDGERS: u32 = 100_000;
+
+/// Mainnet target TTL extension: 200,000 ledgers × ~5s/ledger ≈ 11.6 days.
+pub const MAINNET_EXTEND_TTL_LEDGERS: u32 = 200_000;
+
+/// Standardized TTL configuration for Stellar Testnet.
+pub const TESTNET_TTL_CONFIG: TtlConfig = TtlConfig {
+    min_ttl_ledgers: TESTNET_MIN_TTL_LEDGERS,
+    extend_ttl_ledgers: TESTNET_EXTEND_TTL_LEDGERS,
+};
+
+/// Standardized TTL configuration for Stellar Mainnet.
+pub const MAINNET_TTL_CONFIG: TtlConfig = TtlConfig {
+    min_ttl_ledgers: MAINNET_MIN_TTL_LEDGERS,
+    extend_ttl_ledgers: MAINNET_EXTEND_TTL_LEDGERS,
+};
+
+/// Testnet-specific TTL constants module.
+pub mod testnet {
+    pub const MIN_TTL_LEDGERS: u32 = super::TESTNET_MIN_TTL_LEDGERS;
+    pub const EXTEND_TTL_LEDGERS: u32 = super::TESTNET_EXTEND_TTL_LEDGERS;
+    pub const CONFIG: super::TtlConfig = super::TESTNET_TTL_CONFIG;
+}
+
+/// Mainnet-specific TTL constants module.
+pub mod mainnet {
+    pub const MIN_TTL_LEDGERS: u32 = super::MAINNET_MIN_TTL_LEDGERS;
+    pub const EXTEND_TTL_LEDGERS: u32 = super::MAINNET_EXTEND_TTL_LEDGERS;
+    pub const CONFIG: super::TtlConfig = super::MAINNET_TTL_CONFIG;
+}
+
+/// Centralized minimum TTL threshold (in ledgers) before storage is extended.
+///
+/// Defaults to [`MAINNET_MIN_TTL_LEDGERS`] (100,000 ledgers ≈ 5.8 days), or
+/// [`TESTNET_MIN_TTL_LEDGERS`] when built with the `testnet` feature enabled
+/// (and `mainnet` not enabled).
+#[cfg(all(feature = "testnet", not(feature = "mainnet")))]
+pub const MIN_TTL_LEDGERS: u32 = TESTNET_MIN_TTL_LEDGERS;
+
+/// Centralized minimum TTL threshold (in ledgers) before storage is extended.
+///
+/// Defaults to [`MAINNET_MIN_TTL_LEDGERS`] (100,000 ledgers ≈ 5.8 days).
+#[cfg(not(all(feature = "testnet", not(feature = "mainnet"))))]
+pub const MIN_TTL_LEDGERS: u32 = MAINNET_MIN_TTL_LEDGERS;
+
+/// Centralized target TTL extension (in ledgers) applied when remaining TTL
+/// drops below [`MIN_TTL_LEDGERS`].
+///
+/// Defaults to [`MAINNET_EXTEND_TTL_LEDGERS`] (200,000 ledgers ≈ 11.6 days), or
+/// [`TESTNET_EXTEND_TTL_LEDGERS`] when built with the `testnet` feature enabled
+/// (and `mainnet` not enabled).
+#[cfg(all(feature = "testnet", not(feature = "mainnet")))]
+pub const EXTEND_TTL_LEDGERS: u32 = TESTNET_EXTEND_TTL_LEDGERS;
+
+/// Centralized target TTL extension (in ledgers) applied when remaining TTL
+/// drops below [`MIN_TTL_LEDGERS`].
+///
+/// Defaults to [`MAINNET_EXTEND_TTL_LEDGERS`] (200,000 ledgers ≈ 11.6 days).
+#[cfg(not(all(feature = "testnet", not(feature = "mainnet"))))]
+pub const EXTEND_TTL_LEDGERS: u32 = MAINNET_EXTEND_TTL_LEDGERS;
+
+/// Legacy alias for [`MIN_TTL_LEDGERS`].
+pub const TTL_THRESHOLD: u32 = MIN_TTL_LEDGERS;
+
+/// Legacy alias for [`EXTEND_TTL_LEDGERS`].
+pub const TTL_EXTEND_TO: u32 = EXTEND_TTL_LEDGERS;
+
+/// Extends the contract's instance storage TTL to [`EXTEND_TTL_LEDGERS`] whenever
+/// the remaining TTL drops below [`MIN_TTL_LEDGERS`].
 ///
 /// Called from every state-mutating entry point. A no-op when the contract has
 /// no instance storage open (e.g. a read-only invocation), so it is always
@@ -28,7 +109,7 @@ pub use crate::{TTL_EXTEND_TO, TTL_THRESHOLD};
 pub fn bump_instance(env: &Env) {
     env.storage()
         .instance()
-        .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+        .extend_ttl(MIN_TTL_LEDGERS, EXTEND_TTL_LEDGERS);
 }
 
 /// Alias for [`bump_instance`] (Issue #683).
@@ -45,7 +126,7 @@ pub use bump_instance as bump_instance_ttl;
 pub fn bump_persistent<K: StorageKey>(env: &Env, key: &K) {
     env.storage()
         .persistent()
-        .extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND_TO);
+        .extend_ttl(key, MIN_TTL_LEDGERS, EXTEND_TTL_LEDGERS);
 }
 
 /// Alias for [`bump_persistent`] (Issue #683).
@@ -80,17 +161,47 @@ macro_rules! ensure_active_ttl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use soroban_sdk::{contract, contractimpl};
+
+    #[contract]
+    pub struct DummyContract;
+
+    #[contractimpl]
+    impl DummyContract {}
 
     #[test]
     fn test_ensure_active_ttl_does_not_panic() {
         let env = Env::default();
-        ensure_active_ttl(&env);
-        bump_instance_ttl(&env);
+        let contract_id = env.register_contract(None, DummyContract);
+        env.as_contract(&contract_id, || {
+            ensure_active_ttl(&env);
+            bump_instance_ttl(&env);
+        });
     }
 
     #[test]
     fn test_macro_ensure_active_ttl() {
         let env = Env::default();
-        ensure_active_ttl!(&env);
+        let contract_id = env.register_contract(None, DummyContract);
+        env.as_contract(&contract_id, || {
+            ensure_active_ttl!(&env);
+        });
+    }
+
+    #[test]
+    fn test_standardized_ttl_constants() {
+        const {
+            assert!(TESTNET_MIN_TTL_LEDGERS > 0);
+            assert!(TESTNET_EXTEND_TTL_LEDGERS > TESTNET_MIN_TTL_LEDGERS);
+            assert!(MAINNET_MIN_TTL_LEDGERS > 0);
+            assert!(MAINNET_EXTEND_TTL_LEDGERS > MAINNET_MIN_TTL_LEDGERS);
+            assert!(EXTEND_TTL_LEDGERS > MIN_TTL_LEDGERS);
+        }
+        assert_eq!(TTL_THRESHOLD, MIN_TTL_LEDGERS);
+        assert_eq!(TTL_EXTEND_TO, EXTEND_TTL_LEDGERS);
+        assert_eq!(testnet::MIN_TTL_LEDGERS, TESTNET_MIN_TTL_LEDGERS);
+        assert_eq!(testnet::EXTEND_TTL_LEDGERS, TESTNET_EXTEND_TTL_LEDGERS);
+        assert_eq!(mainnet::MIN_TTL_LEDGERS, MAINNET_MIN_TTL_LEDGERS);
+        assert_eq!(mainnet::EXTEND_TTL_LEDGERS, MAINNET_EXTEND_TTL_LEDGERS);
     }
 }

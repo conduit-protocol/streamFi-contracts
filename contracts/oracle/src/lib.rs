@@ -121,6 +121,10 @@ pub enum DataKey {
     MaxStalenessSeconds,
     /// Configurable maximum price deviation in basis points (Issue #680).
     MaxDeviationBps,
+    /// Primary oracle data provider / feed address.
+    PrimaryOracle,
+    /// Secondary fallback oracle data provider / feed address used if primary fails.
+    FallbackOracle,
 }
 
 /// Configuration parameters for the TWAP oracle.
@@ -297,6 +301,12 @@ pub enum Error {
     TooManyPairReporters = 1023,
     /// Last price update exceeds the allowed staleness threshold.
     StalePriceFeed = 1024,
+    /// Price update deviates too rapidly from the previous price, exceeding max_deviation_bps (Issue #680).
+    ExcessivePriceDeviation = 1025,
+    /// Price deviation exceeded (Issue #680).
+    PriceDeviationExceeded = 1026,
+    /// Both primary and fallback oracle feeds failed to return a valid price.
+    FallbackOracleFailed = 1027,
 }
 
 #[contract]
@@ -702,6 +712,14 @@ impl TwapOracle {
             .get(&DataKey::Config)
             .ok_or(Error::OracleNotConfigured)?;
 
+        if env.storage().instance().has(&DataKey::PrimaryOracle)
+            || env.storage().instance().has(&DataKey::FallbackOracle)
+        {
+            if let Ok(price) = resolve_oracle_with_failover(&env, config.max_staleness) {
+                return Ok(price.price);
+            }
+        }
+
         let submitters: Vec<Address> = env
             .storage()
             .persistent()
@@ -725,6 +743,9 @@ impl TwapOracle {
         }
 
         if fresh_prices.is_empty() {
+            if let Ok(fallback_data) = resolve_oracle_with_failover(&env, config.max_staleness) {
+                return Ok(fallback_data.price);
+            }
             if saw_any_submission {
                 return Err(Error::OracleStalePrice);
             }
@@ -736,10 +757,93 @@ impl TwapOracle {
         // enough to return. `PriceStatus` exposes both counts so callers can
         // observe how far below quorum the set is.
         if fresh_prices.len() < config.min_submitters {
+            if let Ok(fallback_data) = resolve_oracle_with_failover(&env, config.max_staleness) {
+                return Ok(fallback_data.price);
+            }
             return Err(Error::InsufficientQuorum);
         }
 
         Ok(median(fresh_prices))
+    }
+
+    /// Configures both the `primary_oracle` and optional `fallback_oracle` feed addresses.
+    ///
+    /// When the primary oracle feed fails (unresponsive contract, missing data, or stale reading),
+    /// price queries automatically fail over to `fallback_oracle`.
+    pub fn set_oracle_feeds(
+        env: Env,
+        caller: Address,
+        primary_oracle: Address,
+        fallback_oracle: Option<Address>,
+    ) -> Result<(), Error> {
+        require_not_paused(&env)?;
+        require_role_or_admin(&env, &caller, Role::Admin)?;
+        bump_instance(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::PrimaryOracle, &primary_oracle);
+        if let Some(fallback) = fallback_oracle {
+            env.storage()
+                .instance()
+                .set(&DataKey::FallbackOracle, &fallback);
+        } else {
+            env.storage().instance().remove(&DataKey::FallbackOracle);
+        }
+        Ok(())
+    }
+
+    /// Sets the primary oracle data provider / feed address. Admin-gated.
+    pub fn set_primary_oracle(
+        env: Env,
+        caller: Address,
+        primary_oracle: Address,
+    ) -> Result<(), Error> {
+        require_not_paused(&env)?;
+        require_role_or_admin(&env, &caller, Role::Admin)?;
+        bump_instance(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::PrimaryOracle, &primary_oracle);
+        Ok(())
+    }
+
+    /// Sets the secondary fallback oracle data provider / feed address. Admin-gated.
+    pub fn set_fallback_oracle(
+        env: Env,
+        caller: Address,
+        fallback_oracle: Address,
+    ) -> Result<(), Error> {
+        require_not_paused(&env)?;
+        require_role_or_admin(&env, &caller, Role::Admin)?;
+        bump_instance(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::FallbackOracle, &fallback_oracle);
+        Ok(())
+    }
+
+    /// Read-only: returns the configured primary oracle address, if any.
+    pub fn primary_oracle(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PrimaryOracle)
+    }
+
+    /// Read-only: returns the configured fallback secondary oracle address, if any.
+    pub fn fallback_oracle(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::FallbackOracle)
+    }
+
+    /// Queries the primary oracle feed and automatically fails over to the secondary
+    /// `fallback_oracle` feed if the primary feed fails or is stale.
+    pub fn get_price_with_fallback(env: Env) -> Result<u64, Error> {
+        with_guard(&env, || {
+            let max_staleness = Self::max_staleness_seconds(env.clone());
+            if env.storage().instance().has(&DataKey::PrimaryOracle)
+                || env.storage().instance().has(&DataKey::FallbackOracle)
+            {
+                return resolve_oracle_with_failover(&env, max_staleness).map(|d| d.price);
+            }
+            Self::get_twap_price_inner(env.clone())
+        })
     }
 
     /// Read-only: the configured minimum-submitter quorum — how many distinct
@@ -823,6 +927,16 @@ impl TwapOracle {
     /// - `NoPriceAvailable` if no price has ever been submitted.
     /// - `StalePriceFeed` if the last price update exceeds the staleness threshold.
     pub fn latest_price(env: Env) -> Result<PriceData, Error> {
+        let max_staleness = Self::max_staleness_seconds(env.clone());
+
+        if env.storage().instance().has(&DataKey::PrimaryOracle)
+            || env.storage().instance().has(&DataKey::FallbackOracle)
+        {
+            if let Ok(data) = resolve_oracle_with_failover(&env, max_staleness) {
+                return Ok(data);
+            }
+        }
+
         let submitters: Vec<Address> = env
             .storage()
             .persistent()
@@ -845,19 +959,6 @@ impl TwapOracle {
         let price = latest
             .or_else(|| env.storage().instance().get(&DataKey::Price))
             .ok_or(Error::NoPriceAvailable)?;
-
-        let max_staleness: u64 = if let Some(config) = env
-            .storage()
-            .instance()
-            .get::<_, OracleConfig>(&DataKey::Config)
-        {
-            config.max_staleness
-        } else {
-            env.storage()
-                .instance()
-                .get(&DataKey::MaxStalenessSeconds)
-                .unwrap_or(0)
-        };
 
         if max_staleness > 0 {
             let elapsed = env.ledger().timestamp().saturating_sub(price.updated_at);
@@ -1201,6 +1302,82 @@ impl TwapOracle {
         events::upgraded(&env, &caller, env.ledger().timestamp());
         Ok(())
     }
+}
+
+/// Queries a single oracle provider address (either a local feeder submission or an
+/// external oracle contract implementing `get_twap_price` / `latest_price`).
+fn query_oracle_feed(env: &Env, feed: &Address, max_staleness: u64) -> Result<PriceData, Error> {
+    let now = env.ledger().timestamp();
+
+    // 1. Check if `feed` has a direct submission stored in this contract.
+    if let Some(data) = env
+        .storage()
+        .persistent()
+        .get::<_, PriceData>(&DataKey::Submission(feed.clone()))
+    {
+        if data.price == 0 {
+            return Err(Error::InvalidPrice);
+        }
+        if max_staleness > 0 && now.saturating_sub(data.updated_at) > max_staleness {
+            return Err(Error::OracleStalePrice);
+        }
+        return Ok(data);
+    }
+
+    // 2. Otherwise, if `feed` is an external oracle contract, try invoking its price endpoints.
+    if feed != &env.current_contract_address() {
+        let twap_res = env.try_invoke_contract::<u64, Error>(
+            feed,
+            &Symbol::new(env, "get_twap_price"),
+            Vec::new(env),
+        );
+        if let Ok(Ok(price)) = twap_res {
+            if price > 0 {
+                return Ok(PriceData {
+                    price,
+                    updated_at: now,
+                });
+            }
+        }
+
+        let latest_res = env.try_invoke_contract::<PriceData, Error>(
+            feed,
+            &Symbol::new(env, "latest_price"),
+            Vec::new(env),
+        );
+        if let Ok(Ok(data)) = latest_res {
+            if data.price > 0
+                && (max_staleness == 0 || now.saturating_sub(data.updated_at) <= max_staleness)
+            {
+                return Ok(data);
+            }
+        }
+    }
+
+    Err(Error::NoPriceAvailable)
+}
+
+/// Queries `primary_oracle` first and automatically fails over to `fallback_oracle`
+/// if the primary oracle feed fails, is unresponsive, or has stale data.
+fn resolve_oracle_with_failover(env: &Env, max_staleness: u64) -> Result<PriceData, Error> {
+    let primary: Option<Address> = env.storage().instance().get(&DataKey::PrimaryOracle);
+    let fallback: Option<Address> = env.storage().instance().get(&DataKey::FallbackOracle);
+
+    let mut primary_err = Error::NoPriceAvailable;
+    if let Some(ref primary_addr) = primary {
+        match query_oracle_feed(env, primary_addr, max_staleness) {
+            Ok(data) => return Ok(data),
+            Err(err) => primary_err = err,
+        }
+    }
+
+    if let Some(ref fallback_addr) = fallback {
+        if let Ok(data) = query_oracle_feed(env, fallback_addr, max_staleness) {
+            return Ok(data);
+        }
+    }
+
+    Err(primary_err)
 }
 
 fn store_oracle_config(env: &Env, caller: &Address, config: OracleConfig) -> Result<(), Error> {
@@ -3767,6 +3944,47 @@ mod tests {
         // Disabling deviation checks (set to 0) allows any price change
         client.set_max_deviation_bps(&admin, &0);
         assert!(client.try_submit_price(&feeder, &50_000_000).is_ok());
+    }
+
+    #[test]
+    fn test_fallback_oracle_feed_automatic_failover() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let config = OracleConfig {
+            decimals: 8,
+            asset_peg: 1,
+            max_staleness: 300,
+            max_price: 0,
+            min_submit_interval: 0,
+            min_submitters: 1,
+        };
+        client.configure_oracle(&admin, &config);
+
+        // Register a secondary oracle contract as fallback
+        let fallback_id = env.register_contract(None, TwapOracle);
+        let fallback_client = TwapOracleClient::new(&env, &fallback_id);
+        fallback_client.initialize(&admin);
+        fallback_client.configure_oracle(&admin, &config);
+        let fallback_feeder = Address::generate(&env);
+        fallback_client.grant_role(&admin, &Role::PriceFeeder, &fallback_feeder);
+        fallback_client.submit_price(&fallback_feeder, &250_000_000);
+
+        let primary_feeder = Address::generate(&env);
+        client.grant_role(&admin, &Role::PriceFeeder, &primary_feeder);
+        client.set_oracle_feeds(&admin, &primary_feeder, &Some(fallback_id.clone()));
+
+        assert_eq!(client.primary_oracle(), Some(primary_feeder.clone()));
+        assert_eq!(client.fallback_oracle(), Some(fallback_id.clone()));
+
+        // Primary feeder hasn't submitted yet -> automatically fails over to fallback oracle (250_000_000)
+        assert_eq!(client.get_twap_price(), 250_000_000);
+        assert_eq!(client.get_price_with_fallback(), 250_000_000);
+
+        // Primary feeder submits fresh price -> primary takes precedence (300_000_000)
+        client.submit_price(&primary_feeder, &300_000_000);
+        assert_eq!(client.get_twap_price(), 300_000_000);
+        assert_eq!(client.get_price_with_fallback(), 300_000_000);
     }
 }
 

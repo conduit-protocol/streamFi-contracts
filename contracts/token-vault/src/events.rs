@@ -232,3 +232,8 @@ pub fn emergency_migration_cancelled(env: &Env, caller: &Address) {
         .publish((symbol_short!("em_cancel"), caller.clone()), ());
 }
 
+pub fn kept_alive(env: &Env, new_ttl: u32) {
+    env.events()
+        .publish((Symbol::new(env, "kept_alive"),), new_ttl);
+}
+
