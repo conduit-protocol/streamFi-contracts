@@ -137,8 +137,10 @@ fn test_cast_vote_with_rationale_emits_detailed_event() {
     // Voter casts vote with rationale
     let voter = Address::generate(&env);
     let rationale = soroban_sdk::String::from_str(&env, "ipfs://QmTransparentGovVoteReason123");
-    
-    assert!(client.try_cast_vote_with_rationale(&voter, &proposal_id, &true, &Some(rationale.clone())).is_ok());
+
+    assert!(client
+        .try_cast_vote_with_rationale(&voter, &proposal_id, &true, &Some(rationale.clone()))
+        .is_ok());
 
     // Also test cast_vote without rationale
     let voter2 = Address::generate(&env);
@@ -250,8 +252,8 @@ fn test_two_step_admin_transfer_flow() {
 
     // Initial check
     assert_eq!(client.pending_admin(), None);
-    assert_eq!(client.has_role(&Role::Admin, &authority), true);
-    assert_eq!(client.has_role(&Role::Admin, &new_admin), false);
+    assert!(client.has_role(&Role::Admin, &authority));
+    assert!(!client.has_role(&Role::Admin, &new_admin));
 
     // Non-admin cannot propose
     let err = client.try_propose_admin(&unauthorized, &new_admin);
@@ -270,8 +272,8 @@ fn test_two_step_admin_transfer_flow() {
 
     // Transfer completed: new_admin is Admin, authority lost Admin, pending cleared
     assert_eq!(client.pending_admin(), None);
-    assert_eq!(client.has_role(&Role::Admin, &new_admin), true);
-    assert_eq!(client.has_role(&Role::Admin, &authority), false);
+    assert!(client.has_role(&Role::Admin, &new_admin));
+    assert!(!client.has_role(&Role::Admin, &authority));
 }
 
 #[test]
@@ -415,4 +417,56 @@ fn test_quorum_calculation_with_small_supply_and_low_threshold() {
     let voter1 = Address::generate(&env);
     assert!(client.try_cast_vote(&voter1, &proposal_id, &true).is_ok());
     assert!(client.try_execute_proposal(&proposal_id).is_ok());
+}
+
+#[test]
+fn proposals_are_indexed_by_status_transitions() {
+    let (env, authority, fee_recipient, factory_address) = create_test_env();
+    let contract_id = env.register_contract(None, DripGovernor);
+    let client = DripGovernorClient::new(&env, &contract_id);
+
+    client.initialize(&authority, &fee_recipient, &factory_address);
+
+    let first = client.propose(&authority, &3600);
+    let second = client.propose(&authority, &3600);
+
+    assert_eq!(
+        client.proposals_by_status(&ProposalStatus::Pending),
+        soroban_sdk::vec![&env, first, second]
+    );
+    assert!(client
+        .proposals_by_status(&ProposalStatus::Active)
+        .is_empty());
+
+    let voter = Address::generate(&env);
+    assert!(client.try_cast_vote(&voter, &first, &true).is_ok());
+    assert_eq!(
+        client.proposals_by_status(&ProposalStatus::Pending),
+        soroban_sdk::vec![&env, second]
+    );
+    assert_eq!(
+        client.proposals_by_status(&ProposalStatus::Active),
+        soroban_sdk::vec![&env, first]
+    );
+
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 604_800);
+    assert!(client.try_execute_proposal(&second).is_ok());
+    assert_eq!(
+        client.proposals_by_status(&ProposalStatus::Executed),
+        soroban_sdk::vec![&env, second]
+    );
+    assert!(client
+        .proposals_by_status(&ProposalStatus::Pending)
+        .is_empty());
+
+    let third = client.propose(&authority, &3600);
+    assert!(client.try_cancel_proposal(&authority, &third).is_ok());
+    assert_eq!(
+        client.proposals_by_status(&ProposalStatus::Cancelled),
+        soroban_sdk::vec![&env, third]
+    );
+    assert!(client
+        .proposals_by_status(&ProposalStatus::Pending)
+        .is_empty());
 }

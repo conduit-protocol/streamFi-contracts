@@ -41,5 +41,6 @@ pub enum Error {
     NoMigrationProposed = 19,
     /// Reentrant invocation detected during an active external token transfer.
     ReentrancyDetected = 20,
+    /// A single deposit exceeded `MAX_VAULT_DEPOSIT`.
+    DepositExceedsMax = 21,
 }
-

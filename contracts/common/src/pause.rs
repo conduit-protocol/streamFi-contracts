@@ -105,12 +105,7 @@ pub fn set_paused_with_cooldown<K: StorageKey>(
     unpause_cooldown: Option<u64>,
 ) -> Result<(), PausedError> {
     let now = env.ledger().timestamp();
-    let current_state: Option<PauseState> = env
-        .storage()
-        .instance()
-        .get(paused_key)
-        .ok()
-        .flatten();
+    let current_state: Option<PauseState> = env.storage().instance().get(paused_key);
 
     // Check unpause cooldown if pausing and previous unpaused_at is recent
     if paused {
@@ -119,7 +114,7 @@ pub fn set_paused_with_cooldown<K: StorageKey>(
                 // We're currently unpaused; check if we're still in cooldown
                 if let Some(last_unpaused) = current.unpaused_at {
                     if let Some(cooldown) = unpause_cooldown {
-                        if now < last_unpaused.saturating_add(cooldown) {
+                        if now <= last_unpaused.saturating_add(cooldown) {
                             return Err(PausedError::ContractPaused);
                         }
                     }
@@ -132,7 +127,11 @@ pub fn set_paused_with_cooldown<K: StorageKey>(
         paused,
         paused_at: if paused { now } else { 0 },
         max_duration: if paused { max_duration } else { None },
-        unpaused_at: if !paused && current_state.is_some() { Some(now) } else { None },
+        unpaused_at: if !paused && current_state.is_some() {
+            Some(now)
+        } else {
+            None
+        },
         unpause_cooldown,
     };
     env.storage().instance().set(paused_key, &state);
@@ -144,7 +143,11 @@ pub fn set_paused_with_cooldown<K: StorageKey>(
 /// Performs no authorization and no state-transition validation: the caller
 /// (the contract's own `pause`/`unpause`) owns both, and is responsible for
 /// emitting the matching event and bumping TTL.
-pub fn set_paused<K: StorageKey>(env: &Env, paused_key: &K, paused: bool) -> Result<(), PausedError> {
+pub fn set_paused<K: StorageKey>(
+    env: &Env,
+    paused_key: &K,
+    paused: bool,
+) -> Result<(), PausedError> {
     set_paused_with_duration(env, paused_key, paused, None)
 }
 

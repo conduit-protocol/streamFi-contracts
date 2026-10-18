@@ -13,7 +13,7 @@
 //! constants: a duplicated literal is exactly the kind of drift this module
 //! exists to prevent.
 
-use soroban_sdk::Env;
+use soroban_sdk::{contracterror, contracttype, token, Address, Env};
 
 use crate::rbac::StorageKey;
 
@@ -132,6 +132,132 @@ pub fn bump_persistent<K: StorageKey>(env: &Env, key: &K) {
 /// Alias for [`bump_persistent`] (Issue #683).
 pub use bump_persistent as bump_persistent_ttl;
 
+/// Fixed protocol reward (in stroops) paid for each key whose TTL is extended
+/// through the keeper reward pool.
+pub const DEFAULT_KEEPER_REWARD_PER_KEY: i128 = 1_000_000;
+
+/// On-chain pool that pays keepers for maintaining persistent storage.
+///
+/// `balance` is the amount of the configured reward token escrowed for TTL
+/// maintenance, and `reward_per_key` is the fixed amount paid for every
+/// successful [`bump_persistent_with_reward`] call. Contracts store this value
+/// under their own instance-storage key, so the pool stays optional per
+/// contract.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeeperRewardPool {
+    pub reward_per_key: i128,
+    pub balance: i128,
+}
+
+/// Errors returned by the keeper reward-pool helpers.
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum KeeperRewardError {
+    /// The reward per key is zero or negative.
+    InvalidReward = 1,
+    /// The supplied funding amount is zero or negative.
+    InvalidAmount = 2,
+    /// The pool does not hold enough tokens to pay the next reward.
+    InsufficientPoolBalance = 3,
+}
+
+/// Creates or replaces the keeper reward pool under `pool_key`.
+///
+/// The pool starts with a zero balance; fund it with
+/// [`fund_keeper_reward_pool`]. The reward must be positive so every successful
+/// bump has a non-zero incentive.
+pub fn configure_keeper_reward_pool<PK: StorageKey>(
+    env: &Env,
+    pool_key: &PK,
+    reward_per_key: i128,
+) -> Result<KeeperRewardPool, KeeperRewardError> {
+    if reward_per_key <= 0 {
+        return Err(KeeperRewardError::InvalidReward);
+    }
+
+    let pool = KeeperRewardPool {
+        reward_per_key,
+        balance: 0,
+    };
+    env.storage().instance().set(pool_key, &pool);
+    Ok(pool)
+}
+
+/// Reads the keeper reward pool stored under `pool_key`.
+pub fn keeper_reward_pool<PK: StorageKey>(env: &Env, pool_key: &PK) -> Option<KeeperRewardPool> {
+    env.storage().instance().get(pool_key)
+}
+
+/// Transfers `amount` of `token` from `funder` into the contract and adds it to
+/// the reward pool's balance.
+pub fn fund_keeper_reward_pool<PK: StorageKey>(
+    env: &Env,
+    pool_key: &PK,
+    token: &Address,
+    funder: &Address,
+    amount: i128,
+) -> Result<KeeperRewardPool, KeeperRewardError> {
+    if amount <= 0 {
+        return Err(KeeperRewardError::InvalidAmount);
+    }
+
+    let mut pool: KeeperRewardPool = env
+        .storage()
+        .instance()
+        .get(pool_key)
+        .ok_or(KeeperRewardError::InvalidReward)?;
+    pool.balance = pool
+        .balance
+        .checked_add(amount)
+        .ok_or(KeeperRewardError::InvalidAmount)?;
+
+    funder.require_auth();
+    token::Client::new(env, token).transfer(funder, &env.current_contract_address(), &amount);
+    env.storage().instance().set(pool_key, &pool);
+    Ok(pool)
+}
+
+/// Extends the persistent entry under `key` and pays the keeper the pool's
+/// fixed reward from the contract's escrowed balance.
+///
+/// The entry must exist before this call — `extend_ttl` on a missing entry is a
+/// host error. The reward transfer happens only after the TTL bump, so the
+/// keeper cannot be paid for a bump that did not occur. Returns the amount paid.
+pub fn bump_persistent_with_reward<K: StorageKey, PK: StorageKey>(
+    env: &Env,
+    key: &K,
+    pool_key: &PK,
+    token: &Address,
+    keeper: &Address,
+) -> Result<i128, KeeperRewardError> {
+    let mut pool: KeeperRewardPool = env
+        .storage()
+        .instance()
+        .get(pool_key)
+        .ok_or(KeeperRewardError::InvalidReward)?;
+
+    if pool.reward_per_key <= 0 {
+        return Err(KeeperRewardError::InvalidReward);
+    }
+    if pool.balance < pool.reward_per_key {
+        return Err(KeeperRewardError::InsufficientPoolBalance);
+    }
+
+    bump_persistent(env, key);
+
+    token::Client::new(env, token).transfer(
+        &env.current_contract_address(),
+        keeper,
+        &pool.reward_per_key,
+    );
+
+    pool.balance -= pool.reward_per_key;
+    env.storage().instance().set(pool_key, &pool);
+    Ok(pool.reward_per_key)
+}
+
 /// Automatically checks and renews the instance TTL if within threshold (Issue #683).
 /// Safe to call on state reads or writes to keep active entries from expiring.
 pub fn ensure_active_ttl(env: &Env) {
@@ -161,13 +287,20 @@ macro_rules! ensure_active_ttl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{contract, contractimpl};
+    use soroban_sdk::{contract, contractimpl, contracttype, testutils::Address as _, token};
 
     #[contract]
     pub struct DummyContract;
 
     #[contractimpl]
     impl DummyContract {}
+
+    #[contracttype]
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum TestKey {
+        RewardPool,
+        PersistentEntry,
+    }
 
     #[test]
     fn test_ensure_active_ttl_does_not_panic() {
@@ -185,6 +318,78 @@ mod tests {
         let contract_id = env.register_contract(None, DummyContract);
         env.as_contract(&contract_id, || {
             ensure_active_ttl!(&env);
+        });
+    }
+
+    #[test]
+    fn keeper_reward_pool_pays_fixed_reward_per_bumped_key() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, DummyContract);
+        let keeper = Address::generate(&env);
+        let funder = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token_addr = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        token::StellarAssetClient::new(&env, &token_addr).mint(&funder, &5_000_000);
+
+        env.as_contract(&contract_id, || {
+            configure_keeper_reward_pool(&env, &TestKey::RewardPool, DEFAULT_KEEPER_REWARD_PER_KEY)
+                .unwrap();
+            fund_keeper_reward_pool(&env, &TestKey::RewardPool, &token_addr, &funder, 5_000_000)
+                .unwrap();
+            env.storage()
+                .persistent()
+                .set(&TestKey::PersistentEntry, &1u32);
+
+            let paid = bump_persistent_with_reward(
+                &env,
+                &TestKey::PersistentEntry,
+                &TestKey::RewardPool,
+                &token_addr,
+                &keeper,
+            )
+            .unwrap();
+            assert_eq!(paid, DEFAULT_KEEPER_REWARD_PER_KEY);
+
+            let pool = keeper_reward_pool(&env, &TestKey::RewardPool).unwrap();
+            assert_eq!(pool.balance, 5_000_000 - DEFAULT_KEEPER_REWARD_PER_KEY);
+        });
+
+        assert_eq!(
+            token::Client::new(&env, &token_addr).balance(&keeper),
+            DEFAULT_KEEPER_REWARD_PER_KEY
+        );
+    }
+
+    #[test]
+    fn keeper_reward_pool_rejects_a_bump_when_unfunded() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, DummyContract);
+        let keeper = Address::generate(&env);
+        let token_addr = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
+
+        env.as_contract(&contract_id, || {
+            configure_keeper_reward_pool(&env, &TestKey::RewardPool, DEFAULT_KEEPER_REWARD_PER_KEY)
+                .unwrap();
+            env.storage()
+                .persistent()
+                .set(&TestKey::PersistentEntry, &1u32);
+
+            assert_eq!(
+                bump_persistent_with_reward(
+                    &env,
+                    &TestKey::PersistentEntry,
+                    &TestKey::RewardPool,
+                    &token_addr,
+                    &keeper,
+                ),
+                Err(KeeperRewardError::InsufficientPoolBalance)
+            );
         });
     }
 

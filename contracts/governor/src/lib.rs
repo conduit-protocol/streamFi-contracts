@@ -24,7 +24,9 @@ mod storage;
 mod tests;
 mod ttl;
 
-use soroban_sdk::{String, contract, contractimpl, panic_with_error, Address, BytesN, Env, Symbol, Vec};
+use soroban_sdk::{
+    contract, contractimpl, panic_with_error, Address, BytesN, Env, String, Symbol, Vec,
+};
 
 use drip_common::is_zero_address;
 
@@ -49,7 +51,7 @@ fn is_paused(env: &Env) -> bool {
 /// Writes the emergency-pause flag. Only `governor_pause`/`governor_unpause`
 /// call this, and both have already gated the caller and the transition.
 fn set_paused(env: &Env, paused: bool) {
-    drip_common::pause::set_paused(env, &DataKey::Paused, paused);
+    let _ = drip_common::pause::set_paused(env, &DataKey::Paused, paused);
 }
 
 /// Assert that the governor is not paused. Returns `ContractPaused` if it is.
@@ -146,12 +148,7 @@ impl DripGovernor {
     ///
     /// The page is capped at 100 accounts. The index is maintained by the
     /// single-account and batch role mutation methods.
-    pub fn role_members(
-        env: Env,
-        role: Role,
-        offset: u32,
-        limit: u32,
-    ) -> RoleMembersPage {
+    pub fn role_members(env: Env, role: Role, offset: u32, limit: u32) -> RoleMembersPage {
         role::role_members(&env, role, offset, limit)
     }
 
@@ -815,10 +812,20 @@ impl DripGovernor {
         env.storage()
             .instance()
             .set(&DataKey::ProposalCounter, &proposal_id);
+        storage::add_proposal_to_status_index(&env, proposal_id, storage::ProposalStatus::Pending);
         storage::set_proposal_snapshot_ledger(&env, proposal_id, snapshot_ledger);
         storage::save_vote_tally_snapshot(&env, &snapshot);
 
         Ok(proposal_id)
+    }
+
+    /// Read-only: every proposal currently in `status` (Issue #848).
+    ///
+    /// Backed by the `DataKey::ProposalsByStatus` index maintained on every
+    /// status transition, so voting portals can paginate one status without
+    /// loading every proposal entry.
+    pub fn proposals_by_status(env: Env, status: ProposalStatus) -> Vec<u64> {
+        storage::proposals_by_status(&env, status)
     }
 
     /// Execute a proposal that has passed voting.
@@ -850,13 +857,15 @@ impl DripGovernor {
     pub fn execute_proposal(env: Env, proposal_id: u64) -> Result<(), Error> {
         ttl::bump(&env);
 
-        let mut proposal: storage::Proposal = env
+        let proposal: storage::Proposal = env
             .storage()
             .instance()
             .get(&DataKey::Proposal(proposal_id))
             .ok_or(Error::ProposalNotFound)?;
 
-        if proposal.status != storage::ProposalStatus::Pending {
+        if proposal.status != storage::ProposalStatus::Pending
+            && proposal.status != storage::ProposalStatus::Active
+        {
             return Err(Error::ProposalNotPending);
         }
 
@@ -864,7 +873,11 @@ impl DripGovernor {
         if elapsed < Self::MIN_EXECUTION_DELAY {
             return Err(Error::TimelockNotMet);
         }
-        if elapsed > proposal.execution_window_secs.saturating_add(Self::MIN_EXECUTION_DELAY) {
+        if elapsed
+            > proposal
+                .execution_window_secs
+                .saturating_add(Self::MIN_EXECUTION_DELAY)
+        {
             return Err(Error::ProposalExpired);
         }
 
@@ -873,29 +886,27 @@ impl DripGovernor {
             let total_supply: u64 = storage::get_vote_tally_snapshot(&env, proposal_id)
                 .map(|s| s.total_supply)
                 .unwrap_or_else(|| Self::governance_supply(env.clone()));
-            let quorum_threshold = ((total_supply as u128 * min_quorum_bps as u128 + 9_999) / 10_000) as u64;
+            let quorum_threshold = (total_supply as u128 * min_quorum_bps as u128 / 10_000) as u64;
             let total_votes = proposal.for_votes.saturating_add(proposal.against_votes);
             if total_votes < quorum_threshold {
                 return Err(Error::QuorumNotMet);
             }
         }
 
-        proposal.status = storage::ProposalStatus::Executed;
-        env.storage()
-            .instance()
-            .set(&DataKey::Proposal(proposal_id), &proposal);
+        storage::set_proposal_status(&env, proposal_id, storage::ProposalStatus::Executed);
 
         Ok(())
     }
 
-    /// Cancel a proposal before voting starts.
+    /// Cancel a proposal before it is executed.
     ///
-    /// Only the proposal author may cancel. Fails with `ProposalNotPending`
-    /// if the proposal has been executed or cancelled.
+    /// Only the proposal author may cancel, whether the proposal is still
+    /// pending or already active. Fails with `ProposalNotPending` if it has
+    /// already been executed or cancelled.
     pub fn cancel_proposal(env: Env, caller: Address, proposal_id: u64) -> Result<(), Error> {
         ttl::bump(&env);
 
-        let mut proposal: storage::Proposal = env
+        let proposal: storage::Proposal = env
             .storage()
             .instance()
             .get(&DataKey::Proposal(proposal_id))
@@ -905,20 +916,24 @@ impl DripGovernor {
             return Err(Error::NotAuthorized);
         }
 
-        if proposal.status != storage::ProposalStatus::Pending {
+        if proposal.status != storage::ProposalStatus::Pending
+            && proposal.status != storage::ProposalStatus::Active
+        {
             return Err(Error::ProposalNotPending);
         }
 
-        proposal.status = storage::ProposalStatus::Cancelled;
-        env.storage()
-            .instance()
-            .set(&DataKey::Proposal(proposal_id), &proposal);
+        storage::set_proposal_status(&env, proposal_id, storage::ProposalStatus::Cancelled);
 
         Ok(())
     }
 
     /// Cast a vote on a proposal (Issue #718).
-    pub fn cast_vote(env: Env, voter: Address, proposal_id: u64, support: bool) -> Result<(), Error> {
+    pub fn cast_vote(
+        env: Env,
+        voter: Address,
+        proposal_id: u64,
+        support: bool,
+    ) -> Result<(), Error> {
         Self::cast_vote_with_rationale(env, voter, proposal_id, support, None)
     }
 
@@ -943,12 +958,18 @@ impl DripGovernor {
             .get(&DataKey::Proposal(proposal_id))
             .ok_or(Error::ProposalNotFound)?;
 
-        if proposal.status != storage::ProposalStatus::Pending {
+        if proposal.status != storage::ProposalStatus::Pending
+            && proposal.status != storage::ProposalStatus::Active
+        {
             return Err(Error::ProposalNotPending);
         }
 
         let elapsed = env.ledger().timestamp().saturating_sub(proposal.created_at);
-        if elapsed > proposal.execution_window_secs.saturating_add(Self::MIN_EXECUTION_DELAY) {
+        if elapsed
+            > proposal
+                .execution_window_secs
+                .saturating_add(Self::MIN_EXECUTION_DELAY)
+        {
             return Err(Error::ProposalExpired);
         }
 
@@ -967,6 +988,7 @@ impl DripGovernor {
         env.storage()
             .instance()
             .set(&DataKey::Proposal(proposal_id), &proposal);
+        storage::set_proposal_status(&env, proposal_id, storage::ProposalStatus::Active);
 
         let snapshot = storage::VoteTallySnapshot {
             proposal_id,

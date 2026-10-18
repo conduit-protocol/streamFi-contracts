@@ -36,6 +36,13 @@ pub struct TokenVault;
 const OWNER_PROPOSAL_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
 pub const EMERGENCY_MIGRATION_TIMELOCK_SECONDS: u64 = 48 * 60 * 60;
 
+/// Maximum amount accepted by a single deposit (10^30 stroops).
+///
+/// Streaming math multiplies deposits by rates and durations; keeping every
+/// single deposit well below `i128::MAX` leaves headroom for those products
+/// instead of allowing them to overflow downstream.
+pub const MAX_VAULT_DEPOSIT: i128 = 1_000_000_000_000_000_000_000_000_000_000;
+
 /// Lightweight transient reentrancy guard macro protecting external token transfers.
 ///
 /// Sets `DataKey::ReentrancyLock` in temporary storage before executing `$body`
@@ -142,7 +149,7 @@ fn withdraw_payouts(
         let owner = get_owner(env).ok_or(Error::NotInitialized)?;
         require_owner_or_operator(env, caller, &owner)?;
 
-        if payouts.len() == 0 {
+        if payouts.is_empty() {
             return Err(Error::InvalidAmount);
         }
 
@@ -175,8 +182,7 @@ fn withdraw_payouts(
             expected_balance = expected_balance
                 .checked_sub(amount)
                 .ok_or(Error::ArithmeticOverflow)?;
-            tk.transfer(&env.current_contract_address(), &to, &amount)
-                .map_err(|_| Error::WithdrawTransferFailed)?;
+            tk.transfer(&env.current_contract_address(), &to, &amount);
             let new_balance = vault_balance(env)?;
             if new_balance != expected_balance {
                 return Err(Error::WithdrawTransferFailed);
@@ -240,6 +246,9 @@ impl TokenVault {
             if amount <= 0 {
                 return Err(Error::InvalidAmount);
             }
+            if amount > MAX_VAULT_DEPOSIT {
+                return Err(Error::DepositExceedsMax);
+            }
 
             let _owner = get_owner(&env).ok_or(Error::NotInitialized)?;
             let balance = vault_balance(&env)?;
@@ -253,8 +262,7 @@ impl TokenVault {
             }
 
             let tk = token_client(&env)?;
-            tk.transfer(&from, &env.current_contract_address(), &amount)
-                .map_err(|_| Error::DepositTransferFailed)?;
+            tk.transfer(&from, &env.current_contract_address(), &amount);
             let new_balance = tk.balance(&env.current_contract_address());
             if new_balance > max {
                 return Err(Error::LimitExceeded);
@@ -288,6 +296,9 @@ impl TokenVault {
         if fee_amount < 0 || gross_amount <= 0 || fee_amount >= gross_amount {
             return Err(Error::InvalidAmount);
         }
+        if gross_amount > MAX_VAULT_DEPOSIT {
+            return Err(Error::DepositExceedsMax);
+        }
         let net_amount = gross_amount
             .checked_sub(fee_amount)
             .ok_or(Error::ArithmeticOverflow)?;
@@ -314,6 +325,9 @@ impl TokenVault {
                 if deposit.amount <= 0 {
                     return Err(Error::InvalidAmount);
                 }
+                if deposit.amount > MAX_VAULT_DEPOSIT {
+                    return Err(Error::DepositExceedsMax);
+                }
                 deposit.from.require_auth();
                 total_deposit = total_deposit
                     .checked_add(deposit.amount)
@@ -332,8 +346,7 @@ impl TokenVault {
             let contract_addr = env.current_contract_address();
 
             for deposit in deposits.iter() {
-                tk.transfer(&deposit.from, &contract_addr, &deposit.amount)
-                    .map_err(|_| Error::DepositTransferFailed)?;
+                tk.transfer(&deposit.from, &contract_addr, &deposit.amount);
                 let current_balance = tk.balance(&contract_addr);
                 events::deposited(&env, &deposit.from, deposit.amount, current_balance);
             }
@@ -719,6 +732,9 @@ impl TokenVault {
             if amount <= 0 {
                 return Err(Error::InvalidAmount);
             }
+            if amount > MAX_VAULT_DEPOSIT {
+                return Err(Error::DepositExceedsMax);
+            }
 
             if let Some(max) = get_token_max_limit(&env, &token) {
                 let tk_client = token::Client::new(&env, &token);
@@ -732,8 +748,7 @@ impl TokenVault {
             }
 
             let tk = token::Client::new(&env, &token);
-            tk.transfer(&from, &env.current_contract_address(), &amount)
-                .map_err(|_| Error::DepositTransferFailed)?;
+            tk.transfer(&from, &env.current_contract_address(), &amount);
 
             let current_acc_balance = get_token_account_balance(&env, &token, &from);
             let new_acc_balance = current_acc_balance
@@ -742,7 +757,12 @@ impl TokenVault {
             set_token_account_balance(&env, &token, &from, new_acc_balance);
 
             bump_instance(&env);
-            events::deposited(&env, &from, amount, tk.balance(&env.current_contract_address()));
+            events::deposited(
+                &env,
+                &from,
+                amount,
+                tk.balance(&env.current_contract_address()),
+            );
             Ok(())
         })
     }
@@ -780,8 +800,7 @@ impl TokenVault {
                 return Err(Error::LimitExceeded);
             }
 
-            tk.transfer(&env.current_contract_address(), &to, &amount)
-                .map_err(|_| Error::WithdrawTransferFailed)?;
+            tk.transfer(&env.current_contract_address(), &to, &amount);
 
             if current_acc_balance >= amount {
                 set_token_account_balance(&env, &token, &caller, current_acc_balance - amount);
@@ -893,7 +912,11 @@ impl TokenVault {
             let tk = token_client(&env)?;
             let balance = tk.balance(&env.current_contract_address());
             if balance > 0 {
-                tk.transfer(&env.current_contract_address(), &migration.destination, &balance);
+                tk.transfer(
+                    &env.current_contract_address(),
+                    &migration.destination,
+                    &balance,
+                );
             }
 
             remove_emergency_migration(&env);
@@ -933,4 +956,3 @@ impl TokenVault {
         EMERGENCY_MIGRATION_TIMELOCK_SECONDS
     }
 }
-

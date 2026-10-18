@@ -7,6 +7,12 @@ pub enum ProposalStatus {
     Pending = 0,
     Executed = 1,
     Cancelled = 2,
+    /// Voting has started: at least one vote has been cast, but the proposal
+    /// has not been executed or cancelled yet.
+    Active = 3,
+    /// The proposal did not pass. Reserved for the status index so governance
+    /// tooling can query the full lifecycle.
+    Defeated = 4,
 }
 
 /// Historical token balance / voting weight checkpoint at a specific ledger sequence.
@@ -145,6 +151,77 @@ pub enum DataKey {
     /// Bytecode hash for proposal `u64` execution verification (Issue #774).
     /// Stored to enable on-chain verification that executed bytecode matches the proposal.
     ProposalExecutionBytecodeHash(u64),
+    /// Proposal IDs grouped by their current status (Issue #848).
+    ///
+    /// Maintained on every status transition so voting portals can paginate
+    /// proposals for one status without scanning the whole `Proposal` map.
+    ProposalsByStatus(ProposalStatus),
+}
+
+/// Adds `proposal_id` to the status index for `status` if it is not present.
+pub fn add_proposal_to_status_index(env: &Env, proposal_id: u64, status: ProposalStatus) {
+    let key = DataKey::ProposalsByStatus(status);
+    let mut ids: Vec<u64> = env
+        .storage()
+        .instance()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+
+    for id in ids.iter() {
+        if id == proposal_id {
+            return;
+        }
+    }
+
+    ids.push_back(proposal_id);
+    env.storage().instance().set(&key, &ids);
+}
+
+/// Removes `proposal_id` from the status index for `status`.
+pub fn remove_proposal_from_status_index(env: &Env, proposal_id: u64, status: ProposalStatus) {
+    let key = DataKey::ProposalsByStatus(status);
+    let ids: Vec<u64> = env
+        .storage()
+        .instance()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+
+    let mut updated = Vec::new(env);
+    for id in ids.iter() {
+        if id != proposal_id {
+            updated.push_back(id);
+        }
+    }
+
+    env.storage().instance().set(&key, &updated);
+}
+
+/// Returns every proposal currently indexed under `status`, in creation order.
+pub fn proposals_by_status(env: &Env, status: ProposalStatus) -> Vec<u64> {
+    env.storage()
+        .instance()
+        .get(&DataKey::ProposalsByStatus(status))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Moves a proposal to `new_status`, keeping both status indexes consistent.
+///
+/// Returns `false` when no proposal exists under `proposal_id`.
+pub fn set_proposal_status(env: &Env, proposal_id: u64, new_status: ProposalStatus) -> bool {
+    let proposal_key = DataKey::Proposal(proposal_id);
+    let Some(mut proposal) = env.storage().instance().get::<_, Proposal>(&proposal_key) else {
+        return false;
+    };
+
+    if proposal.status != new_status {
+        let old_status = proposal.status;
+        remove_proposal_from_status_index(env, proposal_id, old_status);
+        proposal.status = new_status;
+        env.storage().instance().set(&proposal_key, &proposal);
+        add_proposal_to_status_index(env, proposal_id, new_status);
+    }
+
+    true
 }
 
 /// Records a token balance checkpoint for `account` at the current ledger sequence.
@@ -218,9 +295,10 @@ pub fn get_checkpoint_weight(env: &Env, account: &Address, snapshot_ledger: u32)
 
 /// Stores the snapshot ledger for `proposal_id`.
 pub fn set_proposal_snapshot_ledger(env: &Env, proposal_id: u64, snapshot_ledger: u32) {
-    env.storage()
-        .instance()
-        .set(&DataKey::ProposalSnapshotLedger(proposal_id), &snapshot_ledger);
+    env.storage().instance().set(
+        &DataKey::ProposalSnapshotLedger(proposal_id),
+        &snapshot_ledger,
+    );
 }
 
 /// Reads the snapshot ledger for `proposal_id`.
@@ -232,9 +310,10 @@ pub fn get_proposal_snapshot_ledger(env: &Env, proposal_id: u64) -> Option<u32> 
 
 /// Saves the proposal vote tally snapshot anchored at the proposal's snapshot ledger.
 pub fn save_vote_tally_snapshot(env: &Env, snapshot: &VoteTallySnapshot) {
-    env.storage()
-        .instance()
-        .set(&DataKey::ProposalVoteSnapshot(snapshot.proposal_id), snapshot);
+    env.storage().instance().set(
+        &DataKey::ProposalVoteSnapshot(snapshot.proposal_id),
+        snapshot,
+    );
 }
 
 /// Loads the proposal vote tally snapshot for `proposal_id`.
@@ -257,4 +336,3 @@ pub fn record_voter_receipt(env: &Env, proposal_id: u64, voter: &Address, weight
         .instance()
         .set(&DataKey::VoterReceipt(proposal_id, voter.clone()), &weight);
 }
-

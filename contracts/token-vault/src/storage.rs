@@ -118,7 +118,7 @@ pub fn get_operator_withdraw_limit(env: &Env) -> Option<i128> {
 }
 
 pub fn set_paused(env: &Env, paused: bool) {
-    drip_common::pause::set_paused(env, &DataKey::Paused, paused);
+    let _ = drip_common::pause::set_paused(env, &DataKey::Paused, paused);
 }
 
 pub fn is_paused(env: &Env) -> bool {
@@ -181,11 +181,13 @@ pub fn get_owner_proposal_ttl(env: &Env) -> Option<u64> {
     env.storage().instance().get(&DataKey::OwnerProposalTtl)
 }
 
-
 pub fn get_token_account_balance(env: &Env, token: &Address, account: &Address) -> i128 {
     env.storage()
         .persistent()
-        .get(&DataKey::TokenAccountBalance(token.clone(), account.clone()))
+        .get(&DataKey::TokenAccountBalance(
+            token.clone(),
+            account.clone(),
+        ))
         .unwrap_or(0)
 }
 
@@ -208,7 +210,9 @@ pub fn set_token_max_limit(env: &Env, token: &Address, limit: &i128) {
 }
 
 pub fn set_emergency_migration(env: &Env, m: &EmergencyMigration) {
-    env.storage().instance().set(&DataKey::EmergencyMigration, m);
+    env.storage()
+        .instance()
+        .set(&DataKey::EmergencyMigration, m);
 }
 
 pub fn get_emergency_migration(env: &Env) -> Option<EmergencyMigration> {
@@ -216,6 +220,7 @@ pub fn get_emergency_migration(env: &Env) -> Option<EmergencyMigration> {
 }
 
 pub fn remove_emergency_migration(env: &Env) {
-    env.storage().instance().remove(&DataKey::EmergencyMigration);
+    env.storage()
+        .instance()
+        .remove(&DataKey::EmergencyMigration);
 }
-

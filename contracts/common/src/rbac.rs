@@ -46,7 +46,9 @@
 //! `AdminCount`). If future growth makes the list unbounded, migrate to
 //! `persistent()` with explicit TTL management.
 
-use soroban_sdk::{Address, Env, IntoVal, TryFromVal, Val, Vec as SorobanVec, symbol_short};
+use soroban_sdk::{
+    symbol_short, Address, Env, IntoVal, String, TryFromVal, Val, Vec as SorobanVec,
+};
 
 // ── Events ─────────────────────────────────────────────────────────────────
 
@@ -135,10 +137,14 @@ where
 {
     if has_role(env, role_key) {
         // Update expiration if already held
-        env.storage().instance().set(role_key, &RoleAssignment { expires_at });
+        env.storage()
+            .instance()
+            .set(role_key, &RoleAssignment { expires_at });
         return false;
     }
-    env.storage().instance().set(role_key, &RoleAssignment { expires_at });
+    env.storage()
+        .instance()
+        .set(role_key, &RoleAssignment { expires_at });
     if is_admin {
         let next = admin_count(env, admin_count_key) + 1;
         env.storage().instance().set(admin_count_key, &next);
@@ -188,7 +194,15 @@ where
     AK: StorageKey,
     MK: StorageKey,
 {
-    grant_with_expiration(env, role_key, admin_count_key, members_key, is_admin, account, None)
+    grant_with_expiration(
+        env,
+        role_key,
+        admin_count_key,
+        members_key,
+        is_admin,
+        account,
+        None,
+    )
 }
 
 /// Revokes the role identified by `role_key` from an account with event logging.
@@ -209,6 +223,7 @@ where
 /// **Note:** Oracle-specific side-effects (e.g. removing a `PriceFeeder`
 /// from the submitters set) belong at the call site, gated on the
 /// `Ok(true)` return value.
+#[allow(clippy::too_many_arguments)]
 pub fn revoke_with_event<RK, AK, MK>(
     env: &Env,
     role_key: &RK,
@@ -253,11 +268,12 @@ where
     // Emit role revocation event
     let event = RoleRevokedEvent {
         account: account.clone(),
-        role: role_name.to_string(),
+        role: String::from_str(env, role_name),
         revoked_by: revoked_by.cloned(),
         revoked_at: env.ledger().timestamp(),
     };
-    env.events().publish(("rbac", symbol_short!("revoked")), event);
+    env.events()
+        .publish(("rbac", symbol_short!("revoked")), event);
 
     Ok(true)
 }
@@ -278,7 +294,16 @@ where
     AK: StorageKey,
     MK: StorageKey,
 {
-    revoke_with_event(env, role_key, admin_count_key, members_key, is_admin, account, None, "")
+    revoke_with_event(
+        env,
+        role_key,
+        admin_count_key,
+        members_key,
+        is_admin,
+        account,
+        None,
+        "",
+    )
 }
 
 /// Returns every account currently holding a role.
@@ -460,7 +485,6 @@ mod tests {
 
     // ── has_role ──────────────────────────────────────────────────────────────
 
-    
     #[test]
     fn grant_with_expiration_expires_correctly() {
         let env = Env::default();
@@ -939,7 +963,7 @@ mod tests {
             grant_role(&env, TestRole::Admin, &admin3, true);
 
             // Revoke middle admin
-            revoke_role(&env, TestRole::Admin, &admin2, true);
+            let _ = revoke_role(&env, TestRole::Admin, &admin2, true);
 
             // Members list should still contain admin1 and admin3
             let members = role_members(&env, &members_key(&TestRole::Admin));

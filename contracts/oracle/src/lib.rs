@@ -129,7 +129,24 @@ pub enum DataKey {
     /// Specifies the maximum age in seconds for Stellar asset prices before they are
     /// considered stale and rejected. Allows independent configuration from generic
     /// asset pair feeds when sourcing prices from Stellar's native market data.
-    StellarAssetStalenessThresholdSecs,
+    StellarAssetStalenessSecs,
+    /// **Persistent storage.** Per-token heartbeat configuration keyed by the
+    /// token address (Issue #850). Tokens with different update cadences —
+    /// stablecoins versus volatile assets — can set independent staleness
+    /// tolerances instead of sharing the single global `max_staleness`.
+    AssetOracleConfig(Address),
+}
+
+/// Per-token oracle configuration.
+///
+/// Stablecoins update less frequently than volatile assets, so the heartbeat
+/// tolerance that decides whether a report is fresh is configured per token
+/// rather than globally (Issue #850).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssetOracleConfig {
+    /// Maximum age in seconds of a pair report before it is considered stale.
+    pub heartbeat_timeout_seconds: u64,
 }
 
 /// Configuration parameters for the TWAP oracle.
@@ -312,6 +329,9 @@ pub enum Error {
     PriceDeviationExceeded = 1026,
     /// Both primary and fallback oracle feeds failed to return a valid price.
     FallbackOracleFailed = 1027,
+    /// A per-asset heartbeat timeout of zero was configured. A zero timeout
+    /// would make every report stale immediately (Issue #850).
+    InvalidHeartbeatTimeout = 1028,
 }
 
 #[contract]
@@ -627,23 +647,23 @@ impl TwapOracle {
                     .get::<_, PriceData>(&DataKey::Price)
                 {
                     if last_price_data.price > 0 {
-                        let diff = if price > last_price_data.price {
-                            price - last_price_data.price
-                        } else {
-                            last_price_data.price - price
-                        };
+                        let diff = price.abs_diff(last_price_data.price);
                         let deviation_bps = (diff as u128)
                             .checked_mul(10_000)
                             .ok_or(Error::ArithmeticOverflow)?
                             / (last_price_data.price as u128);
                         if deviation_bps > max_deviation as u128 {
-                            events::price_rejected(&env, &caller, price, symbol_short!("deviation"));
+                            events::price_rejected(
+                                &env,
+                                &caller,
+                                price,
+                                symbol_short!("deviation"),
+                            );
                             return Err(Error::ExcessivePriceDeviation);
                         }
                     }
                 }
             }
-
 
             // Rate-limit: reject a re-submission from this feeder if it arrives
             // before `min_submit_interval` seconds have elapsed since their last
@@ -1006,6 +1026,37 @@ impl TwapOracle {
         Ok(())
     }
 
+    /// Sets the heartbeat timeout for a specific token's pair feed (Issue #850).
+    ///
+    /// The timeout is stored per token address in persistent storage, so
+    /// assets with different update cadences can use independent freshness
+    /// windows. A timeout of zero is rejected.
+    pub fn set_asset_oracle_config(
+        env: Env,
+        caller: Address,
+        token: Address,
+        config: AssetOracleConfig,
+    ) -> Result<(), Error> {
+        require_not_paused(&env)?;
+        require_role_or_admin(&env, &caller, Role::Admin)?;
+        if config.heartbeat_timeout_seconds == 0 {
+            return Err(Error::InvalidHeartbeatTimeout);
+        }
+
+        bump_instance(&env);
+        let key = DataKey::AssetOracleConfig(token);
+        env.storage().persistent().set(&key, &config);
+        ttl::bump_persistent(&env, &key);
+        Ok(())
+    }
+
+    /// Read-only: the per-token oracle configuration, if one has been set.
+    pub fn asset_oracle_config(env: Env, token: Address) -> Option<AssetOracleConfig> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::AssetOracleConfig(token))
+    }
+
     /// Read-only: get configured maximum staleness seconds.
     pub fn max_staleness_seconds(env: Env) -> u64 {
         if let Some(config) = env
@@ -1045,7 +1096,6 @@ impl TwapOracle {
             .get(&DataKey::MaxDeviationBps)
             .unwrap_or(0)
     }
-
 
     /// Converts a nominal token amount into its fiat equivalent.
     ///
@@ -1424,7 +1474,6 @@ fn store_oracle_config(env: &Env, caller: &Address, config: OracleConfig) -> Res
     Ok(())
 }
 
-
 /// True while a reporter may contribute to pair-price aggregation.
 fn is_authorized_pair_reporter(env: &Env, reporter: &Address) -> bool {
     has_role(env, Role::PriceFeeder, reporter) || has_role(env, Role::Admin, reporter)
@@ -1502,7 +1551,30 @@ fn add_symbol_pair_reporter(
     Ok(())
 }
 
+/// Freshness window for reports on `asset`.
+///
+/// Uses the per-token heartbeat when configured (Issue #850), otherwise falls
+/// back to the global staleness setting and finally the legacy pair window for
+/// deployments that never configured either.
+fn asset_heartbeat_secs(env: &Env, asset: &Address) -> u64 {
+    if let Some(config) = env
+        .storage()
+        .persistent()
+        .get::<_, AssetOracleConfig>(&DataKey::AssetOracleConfig(asset.clone()))
+    {
+        return config.heartbeat_timeout_seconds;
+    }
+
+    let global = TwapOracle::max_staleness_seconds(env.clone());
+    if global > 0 {
+        global
+    } else {
+        PAIR_REPORT_FRESHNESS_SECS
+    }
+}
+
 fn aggregate_pair_price(env: &Env, base: &Address, quote: &Address) -> Result<u128, Error> {
+    let heartbeat = asset_heartbeat_secs(env, base);
     let reporters_key = DataKey::PairReporters(base.clone(), quote.clone());
     let reporters: Vec<Address> = env
         .storage()
@@ -1530,7 +1602,7 @@ fn aggregate_pair_price(env: &Env, base: &Address, quote: &Address) -> Result<u1
         let key = DataKey::PairSubmission(base.clone(), quote.clone(), reporter);
         if let Some(data) = env.storage().persistent().get::<_, PairPriceData>(&key) {
             saw_authorized_submission = true;
-            if now.saturating_sub(data.updated_at) <= PAIR_REPORT_FRESHNESS_SECS {
+            if now.saturating_sub(data.updated_at) <= heartbeat {
                 fresh.push_back(data.price);
             }
         }
@@ -1919,7 +1991,7 @@ fn is_paused(env: &Env) -> bool {
 /// Writes the emergency-pause flag. Only `pause`/`unpause` call this, and both
 /// have already gated the caller and the transition.
 fn set_paused(env: &Env, paused: bool) {
-    pause::set_paused(env, &DataKey::Paused, paused);
+    let _ = pause::set_paused(env, &DataKey::Paused, paused);
 }
 
 /// The pause gate: `Err(ContractPaused)` while the oracle is halted.
@@ -3626,6 +3698,53 @@ mod tests {
     // ── Issue #695: decentralized pair-price aggregation ───────────────────
 
     #[test]
+    fn per_asset_heartbeat_timeout_overrides_global_freshness() {
+        let (env, client, admin) = setup();
+        client.initialize(&admin);
+
+        let base = Address::generate(&env);
+        let quote = Address::generate(&env);
+        let feeder = Address::generate(&env);
+        client.grant_role(&admin, &Role::PriceFeeder, &feeder);
+
+        let heartbeat = AssetOracleConfig {
+            heartbeat_timeout_seconds: 60,
+        };
+        client.set_asset_oracle_config(&admin, &base, &heartbeat);
+        assert_eq!(client.asset_oracle_config(&base), Some(heartbeat));
+
+        let start = env.ledger().timestamp();
+        client.set_price(&feeder, &base, &quote, &100u128);
+
+        env.ledger().set_timestamp(start + 60);
+        assert_eq!(client.get_price(&base, &quote), 100u128);
+
+        env.ledger().set_timestamp(start + 61);
+        assert_eq!(
+            client.try_get_price(&base, &quote),
+            Err(Ok(Error::OracleStalePrice))
+        );
+    }
+
+    #[test]
+    fn asset_oracle_config_rejects_zero_heartbeat() {
+        let (_env, client, admin) = setup();
+        client.initialize(&admin);
+        let token = Address::generate(&_env);
+
+        assert_eq!(
+            client.try_set_asset_oracle_config(
+                &admin,
+                &token,
+                &AssetOracleConfig {
+                    heartbeat_timeout_seconds: 0,
+                },
+            ),
+            Err(Ok(Error::InvalidHeartbeatTimeout))
+        );
+    }
+
+    #[test]
     fn pair_price_uses_median_of_fresh_authorized_reporters() {
         let (env, client, admin) = setup();
         client.initialize(&admin);
@@ -3901,7 +4020,10 @@ mod tests {
         assert_eq!(res, Err(Ok(Error::StalePriceFeed)));
 
         // get_stored_price alias also returns StalePriceFeed
-        assert_eq!(client.try_get_stored_price(), Err(Ok(Error::StalePriceFeed)));
+        assert_eq!(
+            client.try_get_stored_price(),
+            Err(Ok(Error::StalePriceFeed))
+        );
 
         // Submitting fresh price restores health
         client.submit_price(&feeder, &52_000_000);
@@ -3911,6 +4033,7 @@ mod tests {
     #[test]
     fn test_price_deviation_circuit_breaker() {
         let (env, client, admin) = setup();
+        client.initialize(&admin);
         let feeder = Address::generate(&env);
         client.grant_role(&admin, &Role::PriceFeeder, &feeder);
 
@@ -3992,4 +4115,3 @@ mod tests {
         assert_eq!(client.get_price_with_fallback(), 300_000_000);
     }
 }
-

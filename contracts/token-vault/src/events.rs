@@ -60,12 +60,9 @@ pub fn token_deposited(
         fee_amount,
         net_amount,
     };
-    env.events().publish(
-        (Symbol::new(env, "TokenDeposited"), from.clone()),
-        payload,
-    );
+    env.events()
+        .publish((Symbol::new(env, "TokenDeposited"), from.clone()), payload);
 }
-
 
 /// Emitted by `withdraw` after tokens are paid out of the vault.
 ///
@@ -236,4 +233,3 @@ pub fn kept_alive(env: &Env, new_ttl: u32) {
     env.events()
         .publish((Symbol::new(env, "kept_alive"),), new_ttl);
 }
-

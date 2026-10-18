@@ -4,4 +4,4 @@
 //! [`drip_common::ttl`], so every contract renews storage on the same
 //! schedule.
 
-pub use drip_common::ttl::{bump_instance, bump_persistent};
+pub use drip_common::ttl::bump_instance;

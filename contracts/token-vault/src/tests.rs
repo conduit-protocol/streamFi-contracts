@@ -88,12 +88,29 @@ fn balance_and_max_limit_getters_report_current_state() {
 }
 
 #[test]
-fn deposit_rejects_amount_that_would_overflow_i128() {
+fn deposit_rejects_amount_above_max_vault_deposit() {
     let s = Setup::new(i128::MAX);
+    let too_large = crate::MAX_VAULT_DEPOSIT + 1;
 
-    s.client.deposit(&s.owner, &(i128::MAX - 10));
-    let result = s.client.try_deposit(&s.owner, &20);
-    assert_eq!(result, Err(Ok(Error::ArithmeticOverflow)));
+    assert_eq!(
+        s.client.try_deposit(&s.owner, &too_large),
+        Err(Ok(Error::DepositExceedsMax))
+    );
+    assert_eq!(
+        s.client.try_deposit_with_fee(&s.owner, &too_large, &1),
+        Err(Ok(Error::DepositExceedsMax))
+    );
+    assert_eq!(
+        s.client.try_batch_deposit(&soroban_sdk::vec![
+            &s.env,
+            DepositSpec {
+                from: s.owner.clone(),
+                amount: too_large
+            }
+        ]),
+        Err(Ok(Error::DepositExceedsMax))
+    );
+    assert_eq!(s.token.balance(&s.client.address), 0);
 }
 
 #[test]
@@ -1377,13 +1394,15 @@ fn emergency_migration_flow_enforces_timelock_and_transfers() {
 
     // Stranger cannot initiate
     assert_eq!(
-        s.client.try_initiate_emergency_migration(&stranger, &cold_storage),
+        s.client
+            .try_initiate_emergency_migration(&stranger, &cold_storage),
         Err(Ok(Error::NotAuthorized))
     );
 
     // Owner initiates
     let now = s.env.ledger().timestamp();
-    s.client.initiate_emergency_migration(&s.owner, &cold_storage);
+    s.client
+        .initiate_emergency_migration(&s.owner, &cold_storage);
 
     let migration = s.client.emergency_migration().unwrap();
     assert_eq!(migration.destination, cold_storage);
@@ -1419,7 +1438,8 @@ fn emergency_migration_can_be_cancelled() {
     let cold_storage = Address::generate(&s.env);
     let stranger = Address::generate(&s.env);
 
-    s.client.initiate_emergency_migration(&s.owner, &cold_storage);
+    s.client
+        .initiate_emergency_migration(&s.owner, &cold_storage);
     assert!(s.client.emergency_migration().is_some());
 
     // Stranger cannot cancel
@@ -1506,5 +1526,3 @@ fn test_reentrancy_guard_blocks_nested_transfers() {
     });
     assert!(s.client.try_withdraw(&s.owner, &s.user, &1_000).is_ok());
 }
-
-

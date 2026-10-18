@@ -4,15 +4,17 @@
 
 pub mod pause;
 pub mod rbac;
-pub mod ttl;
 #[cfg(any(test, feature = "testutils"))]
 pub mod testutils;
+pub mod ttl;
 
 pub use ttl::{
-    bump_instance_ttl, bump_persistent_ttl, ensure_active_ttl, TtlConfig, EXTEND_TTL_LEDGERS,
-    MAINNET_EXTEND_TTL_LEDGERS, MAINNET_MIN_TTL_LEDGERS, MAINNET_TTL_CONFIG, MIN_TTL_LEDGERS,
-    TESTNET_EXTEND_TTL_LEDGERS, TESTNET_MIN_TTL_LEDGERS, TESTNET_TTL_CONFIG, TTL_EXTEND_TO,
-    TTL_THRESHOLD,
+    bump_instance_ttl, bump_persistent_ttl, bump_persistent_with_reward,
+    configure_keeper_reward_pool, ensure_active_ttl, fund_keeper_reward_pool, keeper_reward_pool,
+    KeeperRewardError, KeeperRewardPool, TtlConfig, DEFAULT_KEEPER_REWARD_PER_KEY,
+    EXTEND_TTL_LEDGERS, MAINNET_EXTEND_TTL_LEDGERS, MAINNET_MIN_TTL_LEDGERS, MAINNET_TTL_CONFIG,
+    MIN_TTL_LEDGERS, TESTNET_EXTEND_TTL_LEDGERS, TESTNET_MIN_TTL_LEDGERS, TESTNET_TTL_CONFIG,
+    TTL_EXTEND_TO, TTL_THRESHOLD,
 };
 
 use soroban_sdk::{Address, Env};

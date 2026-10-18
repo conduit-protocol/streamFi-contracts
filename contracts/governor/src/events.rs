@@ -75,7 +75,10 @@ pub fn propose_authority(env: &Env, caller: &Address, new_authority: &Address) {
 /// Emitted when an `Admin` cancels a pending authority proposal.
 pub fn revoke_propose_authority(env: &Env, caller: &Address, pending_authority: &Address) {
     env.events().publish(
-        (Symbol::new(env, "authority_proposal_revoked"), caller.clone()),
+        (
+            Symbol::new(env, "authority_proposal_revoked"),
+            caller.clone(),
+        ),
         pending_authority.clone(),
     );
 }
@@ -194,9 +197,10 @@ pub fn set_min_quorum_bps(
 
 /// Emitted when a proposal is queued for execution after passing quorum and vote threshold.
 /// Records the proposal ID and the execution window deadline (timestamp when execution becomes valid).
+#[allow(dead_code)]
 pub fn proposal_execution_queued(env: &Env, proposal_id: u64, execution_time: u64) {
     env.events().publish(
-        (symbol_short!("exec_queue"), proposal_id),
+        (Symbol::new(env, "exec_queue"), proposal_id),
         execution_time,
     );
 }
