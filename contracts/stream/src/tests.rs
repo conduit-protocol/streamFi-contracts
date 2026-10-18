@@ -2805,3 +2805,23 @@ fn test_non_cancelable_stream_rejects_cancel() {
 }
 
 
+
+#[test]
+fn test_stream_auto_completion_at_exact_duration() {
+    let s = Setup::new(100, 1000, false);
+    let start = s.env.ledger().timestamp();
+    
+    s.advance_secs(999);
+    let before_end = s.client.withdrawable();
+    assert!(before_end > 0);
+    
+    s.advance_secs(1);
+    
+    let at_end = s.client.withdrawable();
+    assert_eq!(at_end, 1000);
+    
+    let withdrawn = s.client.withdraw(&at_end);
+    assert_eq!(withdrawn, 1000);
+    
+    assert_eq!(s.client.balance(), 0);
+}

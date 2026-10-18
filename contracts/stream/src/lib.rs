@@ -15,7 +15,7 @@ use drip_common::{is_zero_address, pause};
 
 pub use errors::Error;
 pub use storage::{CliffConfig, SplitConfig, StreamConfig, StreamStatus, StreamSummary};
-use storage::{DataKey, RateCheckpoint, StreamInfo, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED};
+use storage::{DataKey, RateCheckpoint, StreamInfo, FLAG_CLAWBACK_ENABLED, FLAG_PAUSED, FLAG_REGULATED_ASSET};
 
 #[contract]
 pub struct DripStream;
@@ -90,6 +90,7 @@ impl DripStream {
         end_time: u64,
         clawback_enabled: bool,
         force_cancel_pause_secs: u64,
+        is_regulated_asset: bool,
     ) {
         if env.storage().instance().has(&DataKey::Config) {
             panic_with_error!(&env, Error::AlreadyInitialized);
@@ -167,6 +168,9 @@ impl DripStream {
         if clawback_enabled {
             flags |= FLAG_CLAWBACK_ENABLED;
         }
+        if is_regulated_asset {
+            flags |= FLAG_REGULATED_ASSET;
+        }
 
         let s = env.storage().instance();
         s.set(&DataKey::StorageVersion, &storage::CURRENT_STORAGE_VERSION);
@@ -203,6 +207,7 @@ impl DripStream {
                 withdrawn: 0,
                 paused_at: 0,
                 event_sequence: 0,
+                cumulative_fees: 0,
             },
         );
 

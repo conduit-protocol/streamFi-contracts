@@ -92,7 +92,11 @@ pub fn streamed_amount(env: &Env, info: &StreamInfo) -> Result<i128, Error> {
 }
 
 /// Calculates linear streamed amount: `rate_per_second * elapsed`, returning `Error::ArithmeticOverflow` on overflow (Issue #681).
+/// Optimized to prevent precision loss by checking for zero cases first (Issue #784).
 pub fn calculate_streamed_amount(rate_per_second: i128, elapsed: u64) -> Result<i128, Error> {
+    if rate_per_second == 0 || elapsed == 0 {
+        return Ok(0);
+    }
     rate_per_second
         .checked_mul(elapsed as i128)
         .ok_or(Error::ArithmeticOverflow)
