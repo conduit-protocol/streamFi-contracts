@@ -125,6 +125,11 @@ pub enum DataKey {
     PrimaryOracle,
     /// Secondary fallback oracle data provider / feed address used if primary fails.
     FallbackOracle,
+    /// Staleness check threshold for Stellar native asset price feeds (Issue #776).
+    /// Specifies the maximum age in seconds for Stellar asset prices before they are
+    /// considered stale and rejected. Allows independent configuration from generic
+    /// asset pair feeds when sourcing prices from Stellar's native market data.
+    StellarAssetStalenessThresholdSecs,
 }
 
 /// Configuration parameters for the TWAP oracle.

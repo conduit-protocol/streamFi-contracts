@@ -320,3 +320,99 @@ fn test_proposal_vote_tally_snapshotting_prevents_double_vote_transfer() {
         Err(Ok(Error::InsufficientVotingWeight))
     );
 }
+
+#[test]
+fn test_quorum_calculation_with_fractional_tokens() {
+    let (env, authority, fee_recipient, factory_address) = create_test_env();
+    let contract_id = env.register_contract(None, DripGovernor);
+    let client = DripGovernorClient::new(&env, &contract_id);
+
+    client.initialize(&authority, &fee_recipient, &factory_address);
+
+    // Set governance supply to odd number (11) and min_quorum_bps to 4545 (≈45%)
+    // 11 * 4545 / 10000 = 4.9995, which truncates to 4 votes required
+    client.set_governance_supply(&authority, &11);
+    client.set_min_quorum_bps(&authority, &4545);
+
+    let proposal_id = client.propose(&authority, &3600);
+
+    // Advance ledger timestamp to satisfy timelock delay
+    let current_time = env.ledger().timestamp();
+    env.ledger().set_timestamp(current_time + 604_800);
+
+    // 3 votes -> 3 < 4 -> fails with QuorumNotMet
+    let voter1 = Address::generate(&env);
+    let voter2 = Address::generate(&env);
+    let voter3 = Address::generate(&env);
+    assert!(client.try_cast_vote(&voter1, &proposal_id, &true).is_ok());
+    assert!(client.try_cast_vote(&voter2, &proposal_id, &true).is_ok());
+    assert!(client.try_cast_vote(&voter3, &proposal_id, &true).is_ok());
+    assert_eq!(
+        client.try_execute_proposal(&proposal_id),
+        Err(Ok(Error::QuorumNotMet))
+    );
+
+    // 4th vote -> total = 4 >= 4 -> quorum met!
+    let voter4 = Address::generate(&env);
+    assert!(client.try_cast_vote(&voter4, &proposal_id, &true).is_ok());
+    assert!(client.try_execute_proposal(&proposal_id).is_ok());
+}
+
+#[test]
+fn test_quorum_calculation_with_100_percent_threshold() {
+    let (env, authority, fee_recipient, factory_address) = create_test_env();
+    let contract_id = env.register_contract(None, DripGovernor);
+    let client = DripGovernorClient::new(&env, &contract_id);
+
+    client.initialize(&authority, &fee_recipient, &factory_address);
+
+    // Set governance supply to 7 and min_quorum_bps to 10000 (100%)
+    client.set_governance_supply(&authority, &7);
+    client.set_min_quorum_bps(&authority, &10_000);
+
+    let proposal_id = client.propose(&authority, &3600);
+
+    // Advance ledger timestamp to satisfy timelock delay
+    let current_time = env.ledger().timestamp();
+    env.ledger().set_timestamp(current_time + 604_800);
+
+    // 6 votes out of 7 -> fails with QuorumNotMet (need all 7)
+    for _ in 0..6 {
+        let voter = Address::generate(&env);
+        assert!(client.try_cast_vote(&voter, &proposal_id, &true).is_ok());
+    }
+    assert_eq!(
+        client.try_execute_proposal(&proposal_id),
+        Err(Ok(Error::QuorumNotMet))
+    );
+
+    // 7th vote -> quorum met!
+    let voter7 = Address::generate(&env);
+    assert!(client.try_cast_vote(&voter7, &proposal_id, &true).is_ok());
+    assert!(client.try_execute_proposal(&proposal_id).is_ok());
+}
+
+#[test]
+fn test_quorum_calculation_with_small_supply_and_low_threshold() {
+    let (env, authority, fee_recipient, factory_address) = create_test_env();
+    let contract_id = env.register_contract(None, DripGovernor);
+    let client = DripGovernorClient::new(&env, &contract_id);
+
+    client.initialize(&authority, &fee_recipient, &factory_address);
+
+    // Set governance supply to 3 and min_quorum_bps to 3334 (≈33.34%)
+    // 3 * 3334 / 10000 = 1.0002, which truncates to 1 vote required
+    client.set_governance_supply(&authority, &3);
+    client.set_min_quorum_bps(&authority, &3334);
+
+    let proposal_id = client.propose(&authority, &3600);
+
+    // Advance ledger timestamp to satisfy timelock delay
+    let current_time = env.ledger().timestamp();
+    env.ledger().set_timestamp(current_time + 604_800);
+
+    // Single vote meets quorum (1 >= 1)
+    let voter1 = Address::generate(&env);
+    assert!(client.try_cast_vote(&voter1, &proposal_id, &true).is_ok());
+    assert!(client.try_execute_proposal(&proposal_id).is_ok());
+}

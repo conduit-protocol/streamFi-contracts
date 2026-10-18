@@ -191,3 +191,12 @@ pub fn set_min_quorum_bps(
         (old_min_quorum_bps, new_min_quorum_bps),
     );
 }
+
+/// Emitted when a proposal is queued for execution after passing quorum and vote threshold.
+/// Records the proposal ID and the execution window deadline (timestamp when execution becomes valid).
+pub fn proposal_execution_queued(env: &Env, proposal_id: u64, execution_time: u64) {
+    env.events().publish(
+        (symbol_short!("exec_queue"), proposal_id),
+        execution_time,
+    );
+}
