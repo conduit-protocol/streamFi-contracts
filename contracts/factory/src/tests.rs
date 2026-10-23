@@ -155,6 +155,70 @@ fn rapid_repeated_calls_never_diverge_from_the_invoked_sequence() {
     }
 }
 
+// ── Issue #819: deploy::set_stream_wasm_hash ────────────────────────────────
+
+fn set_hash(s: &Setup, hash: &BytesN<32>) -> Result<(), Error> {
+    s.env.as_contract(&s.client.address, || {
+        crate::deploy::set_stream_wasm_hash(&s.env, hash)
+    })
+}
+
+#[test]
+fn set_stream_wasm_hash_updates_hash_for_new_streams_and_emits_event() {
+    let s = Setup::new();
+    let before = s.event_count();
+    let new_hash = BytesN::from_array(&s.env, &[7u8; 32]);
+
+    assert_eq!(set_hash(&s, &new_hash), Ok(()));
+
+    assert_eq!(s.client.stream_wasm_hash(), new_hash);
+    assert_eq!(s.event_count(), before + 1);
+}
+
+#[test]
+fn set_stream_wasm_hash_is_a_noop_for_the_current_hash() {
+    let s = Setup::new();
+    let current = BytesN::from_array(&s.env, &[1u8; 32]);
+    let before = s.event_count();
+
+    assert_eq!(set_hash(&s, &current), Ok(()));
+
+    assert_eq!(s.client.stream_wasm_hash(), current);
+    assert_eq!(s.event_count(), before);
+}
+
+#[test]
+fn set_stream_wasm_hash_rejects_zero_hash_and_keeps_the_old_one() {
+    let s = Setup::new();
+    let zero = BytesN::from_array(&s.env, &[0u8; 32]);
+
+    assert_eq!(set_hash(&s, &zero), Err(Error::InvalidWasmHash));
+    assert_eq!(
+        s.client.stream_wasm_hash(),
+        BytesN::from_array(&s.env, &[1u8; 32])
+    );
+}
+
+#[test]
+fn set_stream_wasm_hash_requires_governor_auth() {
+    // No `mock_all_auths`: the governor never signs, so the call must fail.
+    let env = Env::default();
+    let contract_id = env.register_contract(None, DripFactory);
+    let client = DripFactoryClient::new(&env, &contract_id);
+    client.initialize(
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &Address::generate(&env),
+    );
+
+    let result = client.try_upgrade_stream_wasm(&BytesN::from_array(&env, &[2u8; 32]));
+
+    assert!(result.is_err());
+    assert_eq!(
+        client.stream_wasm_hash(),
+        BytesN::from_array(&env, &[1u8; 32])
+    );
+}
+
 // ── Issue #86: upgrade_stream_wasm input validation ─────────────────────────
 
 #[test]

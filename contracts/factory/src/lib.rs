@@ -919,7 +919,8 @@ impl DripFactory {
         Self::protocol_fee_bps(env).unwrap_or(default_bps)
     }
 
-    /// Update the stored stream WASM hash.
+    /// Update the stored stream WASM hash (governor only). Delegates to
+    /// [`deploy::set_stream_wasm_hash`].
     ///
     /// Called after a new stream contract version is uploaded so subsequent
     /// `create_stream` calls deploy the new implementation. Existing streams
@@ -929,42 +930,7 @@ impl DripFactory {
     /// so the persistent-by-ID registry stays alive during protocol-upgrade
     /// activity even if no `create_stream` calls happen between upgrades.
     pub fn upgrade_stream_wasm(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
-        // Only governor may update the wasm hash.
-        let governor: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::GovernorAddress)
-            .ok_or(Error::NotInitialized)?;
-        governor.require_auth();
-
-        // ── Boundary / null checks ───────────────────────────────────────
-        // Reject all-zero WASM hashes — deploying with a zero hash would
-        // deploy a no-op contract, effectively burning all funds sent to
-        // future `create_stream` calls with no way to recover them.
-        if is_zero_wasm_hash(&env, &new_wasm_hash) {
-            return Err(Error::InvalidWasmHash);
-        }
-
-        // ── Lifecycle check ──────────────────────────────────────────────
-        // Block upgrades while the factory is under an emergency pause.
-        // A paused factory should accept no state mutations at all, even
-        // from the governor, so the halt remains comprehensive.
-        pause::require_not_paused(&env)?;
-
-        let old_wasm_hash: BytesN<32> = env
-            .storage()
-            .instance()
-            .get(&DataKey::StreamWasmHash)
-            .ok_or(Error::NotInitialized)?;
-        ttl::bump_instance(&env);
-        ttl::bump_persistent_bucket(&env);
-        if old_wasm_hash != new_wasm_hash {
-            env.storage()
-                .instance()
-                .set(&DataKey::StreamWasmHash, &new_wasm_hash);
-            events::stream_contract_upgraded(&env, &old_wasm_hash, &new_wasm_hash);
-        }
-        Ok(())
+        deploy::set_stream_wasm_hash(&env, &new_wasm_hash)
     }
 
     /// Read-only: the WASM hash currently configured for stream deployments (Issue #626).

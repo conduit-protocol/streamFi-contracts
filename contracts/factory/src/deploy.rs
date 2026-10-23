@@ -2,6 +2,7 @@ use soroban_sdk::{Address, BytesN, Env, Symbol, Val, Vec};
 
 use crate::errors::Error;
 use crate::storage::DataKey;
+use crate::{events, pause, ttl};
 
 /// Deploy a new DripStream instance and call its `initialize` function.
 ///
@@ -53,4 +54,46 @@ pub fn deploy_stream(
     let _: () = env.invoke_contract(&addr, &Symbol::new(env, "initialize"), init_args);
 
     Ok(addr)
+}
+
+/// Governance-guarded update of the WASM hash used for newly deployed streams.
+///
+/// Only the governor may call this. Streams created after the call deploy the
+/// new code; streams that already exist are independent contracts and are
+/// unaffected. Re-setting the current hash is a no-op and emits no event.
+///
+/// Checked in order: governor auth, non-zero hash, factory not paused.
+/// Also bumps the instance and persistent-bucket TTLs, so the registry stays
+/// alive during protocol-upgrade activity.
+pub fn set_stream_wasm_hash(env: &Env, new_wasm_hash: &BytesN<32>) -> Result<(), Error> {
+    let governor: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::GovernorAddress)
+        .ok_or(Error::NotInitialized)?;
+    governor.require_auth();
+
+    // A zero hash would deploy a no-op contract, burning funds sent to future
+    // `create_stream` calls with no way to recover them.
+    if *new_wasm_hash == BytesN::from_array(env, &[0u8; 32]) {
+        return Err(Error::InvalidWasmHash);
+    }
+
+    // A paused factory accepts no state changes, even from the governor.
+    pause::require_not_paused(env)?;
+
+    let old_wasm_hash: BytesN<32> = env
+        .storage()
+        .instance()
+        .get(&DataKey::StreamWasmHash)
+        .ok_or(Error::NotInitialized)?;
+    ttl::bump_instance(env);
+    ttl::bump_persistent_bucket(env);
+    if old_wasm_hash != *new_wasm_hash {
+        env.storage()
+            .instance()
+            .set(&DataKey::StreamWasmHash, new_wasm_hash);
+        events::stream_contract_upgraded(env, &old_wasm_hash, new_wasm_hash);
+    }
+    Ok(())
 }
