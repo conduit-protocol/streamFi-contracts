@@ -663,3 +663,111 @@ fn test_max_batch_size_limit_is_thirty() {
     assert_eq!(crate::MAX_BATCH_LIMIT, 30);
     assert_eq!(crate::MAX_BATCH_SIZE, 30);
 }
+
+// ── CPU / memory benchmark across batch sizes (issue #818) ──────────────────
+
+/// Batch sizes tracked by the benchmark. 40 and 50 are above `MAX_BATCH_SIZE`
+/// and are expected to be rejected up front, before any transfer.
+const BENCH_SIZES: [u32; 5] = [10, 20, 30, 40, 50];
+
+/// Resource ceilings for `process_batch`, measured at the three accepted
+/// sizes (10: 1.85M, 20: 3.59M, 30: 5.45M CPU; 30: 0.80M memory) with ~25 %
+/// headroom. A failure means a change made the batch loop
+/// noticeably more expensive; re-measure (the failure message prints the
+/// numbers) and raise the ceiling only if the extra cost is intended.
+const CPU_CEILING_10: u64 = 2_300_000;
+const CPU_CEILING_20: u64 = 4_500_000;
+const CPU_CEILING_30: u64 = 6_800_000;
+const MEM_CEILING_30: u64 = 1_000_000;
+
+/// Runs one `process_batch` call of `n` unit transfers and returns the
+/// `(cpu_instructions, memory_bytes)` the host metered for it.
+fn measure_process_batch(n: u32) -> (u64, u64) {
+    let s = Setup::new();
+    let recipients = s.recipients(n);
+    let amounts = s.filled(1, n);
+
+    s.env.budget().reset_unlimited();
+    s.env.budget().reset_tracker();
+    let total = s
+        .client
+        .process_batch(&s.funder, &s.token_addr, &recipients, &amounts);
+    let cpu = s.env.budget().cpu_instruction_cost();
+    let mem = s.env.budget().memory_bytes_cost();
+
+    assert_eq!(total, n as i128);
+    (cpu, mem)
+}
+
+#[test]
+fn bench_process_batch_resource_usage_by_size() {
+    let sizes = [10u32, 20, 30];
+    let ceilings = [CPU_CEILING_10, CPU_CEILING_20, CPU_CEILING_30];
+    let mut previous = (0u64, 0u64);
+
+    for (n, ceiling) in sizes.iter().zip(ceilings) {
+        let (cpu, mem) = measure_process_batch(*n);
+        std::println!("batch={n:>2} cpu={cpu} mem={mem}");
+
+        assert!(
+            cpu <= ceiling,
+            "process_batch({n}) used {cpu} CPU instructions, over the {ceiling} ceiling"
+        );
+        // Bigger batches must cost more, never less.
+        assert!(
+            cpu > previous.0,
+            "CPU did not grow from the previous size at {n}"
+        );
+        assert!(
+            mem > previous.1,
+            "memory did not grow from the previous size at {n}"
+        );
+        previous = (cpu, mem);
+    }
+
+    assert!(
+        previous.1 <= MEM_CEILING_30,
+        "process_batch(30) used {} memory bytes, over the {MEM_CEILING_30} ceiling",
+        previous.1
+    );
+}
+
+#[test]
+fn bench_process_batch_cost_grows_roughly_linearly() {
+    let (cpu_10, _) = measure_process_batch(10);
+    let (cpu_30, _) = measure_process_batch(30);
+
+    // Per-item cost at 30 must stay within 1.5x the per-item cost at 10.
+    // A quadratic loop (e.g. a nested scan) would blow through this.
+    assert!(
+        cpu_30 * 10 <= cpu_10 * 30 * 3 / 2,
+        "cost is no longer linear: 10 items = {cpu_10}, 30 items = {cpu_30}"
+    );
+}
+
+#[test]
+fn bench_oversized_batches_are_rejected_cheaply() {
+    let (cpu_10, _) = measure_process_batch(10);
+
+    for n in BENCH_SIZES.into_iter().filter(|n| *n > MAX_BATCH_SIZE) {
+        let s = Setup::new();
+        let recipients = s.recipients(n);
+        let amounts = s.filled(1, n);
+
+        s.env.budget().reset_unlimited();
+        s.env.budget().reset_tracker();
+        let result = s
+            .client
+            .try_process_batch(&s.funder, &s.token_addr, &recipients, &amounts);
+        let cpu = s.env.budget().cpu_instruction_cost();
+        std::println!("batch={n:>2} rejected cpu={cpu}");
+
+        assert_eq!(result, Err(Ok(Error::BatchTooLarge)));
+        // Rejection happens before any transfer, so it must cost less than
+        // actually processing even the smallest benchmarked batch.
+        assert!(
+            cpu < cpu_10,
+            "rejecting a {n}-item batch cost {cpu}, not less than processing 10 ({cpu_10})"
+        );
+    }
+}

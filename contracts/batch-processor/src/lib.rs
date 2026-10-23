@@ -7,7 +7,8 @@ mod tests;
 
 use drip_common::is_zero_address;
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, token, Address, BytesN, Env, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
+    Symbol, Vec,
 };
 
 /// Maximum number of transfers permitted in a single batch (Issue #677).
