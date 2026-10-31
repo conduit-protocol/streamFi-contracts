@@ -289,7 +289,7 @@ pub fn keeper_reward_pool_configured(
 
     let sequence = next_sequence(env);
     env.events().publish(
-        (symbol_short!("keeper_cfg"), caller.clone(), sequence),
+        (symbol_short!("keepercfg"), caller.clone(), sequence),
         (reward_token.clone(), reward_per_ping),
     );
 }
@@ -304,7 +304,7 @@ pub fn keeper_reward_pool_funded(
 
     let sequence = next_sequence(env);
     env.events().publish(
-        (symbol_short!("keeper_fnd"), funder.clone(), sequence),
+        (symbol_short!("keeperfnd"), funder.clone(), sequence),
         (reward_token.clone(), amount),
     );
 }

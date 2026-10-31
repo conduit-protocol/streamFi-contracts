@@ -69,7 +69,7 @@ pub fn protocol_fee_charged(env: &Env, fee_recipient: &Address, fee: i128) {
 /// Data:   `(token, amount)` — the token address and amount collected (in stroops).
 pub fn protocol_fee_collected(env: &Env, token: &Address, recipient: &Address, amount: i128) {
     env.events().publish(
-        (symbol_short!("pfee_collected"), recipient.clone()),
+        (Symbol::new(env, "pfee_collected"), recipient.clone()),
         (token.clone(), amount),
     );
 }
