@@ -817,18 +817,6 @@ impl DripGovernor {
         Ok(())
     }
 
-    /// Sets the timelock delay (seconds) between proposal creation and execution (Issue #967).
-    ///
-    /// Only an `Admin` may call this.
-    pub fn set_timelock_delay(env: Env, caller: Address, seconds: u64) -> Result<(), Error> {
-        assert_not_paused(&env)?;
-        role::require_role_or_admin(&env, &caller, Role::Admin)?;
-        let old_seconds = config::load(&env)?.timelock_delay_secs;
-        config::set_timelock_delay(&env, seconds);
-        events::set_timelock_delay(&env, &caller, old_seconds, seconds);
-        Ok(())
-    }
-
     /// Read-only: current minimum quorum in basis points.
     pub fn min_quorum_bps(env: Env) -> Result<u32, Error> {
         Ok(config::load(&env)?.min_quorum_bps)
@@ -1046,20 +1034,22 @@ impl DripGovernor {
             .get(&DataKey::Proposal(proposal_id))
             .ok_or(Error::ProposalNotFound)?;
 
-        if proposal.status != storage::ProposalStatus::Pending
-            && proposal.status != storage::ProposalStatus::Active
+        if storage::is_proposal_executed(&env, proposal_id)
+            || (proposal.status != storage::ProposalStatus::Pending
+                && proposal.status != storage::ProposalStatus::Active)
         {
             return Err(Error::ProposalNotPending);
         }
 
-        let timelock_secs = config::load(&env)?
-            .timelock_delay_secs
-            .max(Self::MIN_EXECUTION_DELAY);
         let elapsed = env.ledger().timestamp().saturating_sub(proposal.created_at);
-        if elapsed < timelock_secs {
+        if elapsed < Self::MIN_EXECUTION_DELAY {
             return Err(Error::TimelockNotMet);
         }
-        if elapsed > proposal.execution_window_secs.saturating_add(timelock_secs) {
+        if elapsed
+            > proposal
+                .execution_window_secs
+                .saturating_add(Self::MIN_EXECUTION_DELAY)
+        {
             return Err(Error::ProposalExpired);
         }
 
@@ -1078,6 +1068,7 @@ impl DripGovernor {
             }
         }
 
+        storage::mark_proposal_executed(&env, proposal_id);
         refund_proposal_stake(&env, proposal_id, &proposal.author)?;
         storage::set_proposal_status(&env, proposal_id, storage::ProposalStatus::Executed);
 
@@ -1138,36 +1129,6 @@ impl DripGovernor {
         storage::archive_vote_record(&env, proposal_id, &proposal);
         storage::set_proposal_status(&env, proposal_id, storage::ProposalStatus::Cancelled);
         events::proposal_cancelled_by_admin(&env, &caller, proposal_id, &reason_hash);
-        Ok(())
-    }
-
-    /// Emergency-cancel a queued proposal (Issue #968).
-    ///
-    /// Only a `SecurityGuardian` may call this. A proposal is queued while it is
-    /// `Pending` or `Active`; executed, cancelled, or defeated proposals fail with
-    /// `ProposalNotPending`.
-    pub fn emergency_cancel_proposal(
-        env: Env,
-        caller: Address,
-        proposal_id: u64,
-    ) -> Result<(), Error> {
-        role::require_role(&env, &caller, Role::SecurityGuardian)?;
-        ttl::bump(&env);
-
-        let proposal: storage::Proposal = env
-            .storage()
-            .instance()
-            .get(&DataKey::Proposal(proposal_id))
-            .ok_or(Error::ProposalNotFound)?;
-        if proposal.status != storage::ProposalStatus::Pending
-            && proposal.status != storage::ProposalStatus::Active
-        {
-            return Err(Error::ProposalNotPending);
-        }
-
-        storage::archive_vote_record(&env, proposal_id, &proposal);
-        storage::set_proposal_status(&env, proposal_id, storage::ProposalStatus::Cancelled);
-        events::proposal_emergency_cancelled(&env, &caller, proposal_id);
         Ok(())
     }
 
