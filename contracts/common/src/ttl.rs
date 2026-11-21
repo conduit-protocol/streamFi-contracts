@@ -445,12 +445,19 @@ mod check_and_bump_ttl_tests {
     #[contractimpl]
     impl TtlProbeContract {}
 
-    /// Forces the instance TTL to exactly `ttl` ledgers from the current ledger.
-    /// `extend_ttl(u32::MAX, ttl)` always applies because the TTL is below u32::MAX.
+    /// Moves the test ledger forward until the instance has exactly `ttl`
+    /// ledgers remaining. Soroban TTL APIs can only extend lifetime, not shorten it,
+    /// so advancing the ledger is the valid way to construct a lower-TTL fixture.
     fn set_instance_ttl(env: &Env, contract: &Address, ttl: u32) {
-        env.as_contract(contract, || {
-            env.storage().instance().extend_ttl(u32::MAX, ttl);
-        });
+        let current = instance_ttl(env, contract);
+        if current > ttl {
+            env.ledger()
+                .with_mut(|li| li.sequence_number += current - ttl);
+        } else if current < ttl {
+            env.as_contract(contract, || {
+                env.storage().instance().extend_ttl(ttl, ttl);
+            });
+        }
     }
 
     fn instance_ttl(env: &Env, contract: &Address) -> u32 {

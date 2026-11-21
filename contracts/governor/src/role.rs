@@ -166,6 +166,7 @@ pub fn require_role_or_admin(env: &Env, caller: &Address, role: Role) -> Result<
 /// This separates regular parameter tuning from emergency pause authority.
 ///
 /// Bumps instance TTL on success.
+#[allow(dead_code)]
 pub fn require_emergency_responder(env: &Env, caller: &Address) -> Result<(), Error> {
     require_role_or_admin(env, caller, Role::Pauser)
 }

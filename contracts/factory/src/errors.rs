@@ -80,4 +80,8 @@ pub enum Error {
     MetadataUriTooLong = 39,
     /// `set_pause_flags` was given bits outside `PauseFlags::ALL` (Issue #975).
     InvalidPauseFlags = 40,
+    /// A requested stream WASM hash is not registered/available for deployment.
+    WasmHashNotRegistered = 310,
+    /// The factory is paused for maintenance and cannot deploy new streams.
+    FactoryPaused = 311,
 }

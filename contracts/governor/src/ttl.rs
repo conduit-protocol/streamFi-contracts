@@ -19,6 +19,17 @@ pub use drip_common::ttl::bump_instance as bump;
 /// execution_window_secs to cover the full proposal lifetime from creation through
 /// potential delayed execution.
 pub fn extend_for_proposal(env: &soroban_sdk::Env, timelock_secs: u64, execution_window_secs: u64) {
-    let total_lifetime = timelock_secs.saturating_add(execution_window_secs);
-    drip_common::ttl::extend_instance(env, total_lifetime);
+    // Stellar closes a ledger roughly every five seconds. Round up so the
+    // requested wall-clock lifetime is never shortened by conversion.
+    const SECONDS_PER_LEDGER: u64 = 5;
+    let total_secs = timelock_secs.saturating_add(execution_window_secs);
+    let lifecycle_ledgers = total_secs
+        .saturating_add(SECONDS_PER_LEDGER - 1)
+        / SECONDS_PER_LEDGER;
+    let lifecycle_ledgers = u32::try_from(lifecycle_ledgers).unwrap_or(u32::MAX);
+
+    // Keep the normal protocol TTL floor, but if a proposal can live longer,
+    // raise both the threshold and target to that full lifecycle.
+    let target = lifecycle_ledgers.max(drip_common::ttl::EXTEND_TTL_LEDGERS);
+    drip_common::ttl::check_and_bump_ttl(env, target, target);
 }

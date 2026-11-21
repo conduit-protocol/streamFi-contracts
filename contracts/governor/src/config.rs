@@ -66,6 +66,7 @@ pub fn load(env: &Env) -> Result<GovernorConfig, Error> {
 
 /// Validate and set the minimum voting period (Issue #772).
 /// Ensures voting period is at least MIN_VOTING_PERIOD_LEDGERS to prevent attacks.
+#[allow(dead_code)]
 pub fn set_voting_period(env: &Env, voting_period_ledgers: u32) -> Result<(), Error> {
     if voting_period_ledgers < MIN_VOTING_PERIOD_LEDGERS {
         return Err(Error::InvalidParam);
@@ -77,6 +78,7 @@ pub fn set_voting_period(env: &Env, voting_period_ledgers: u32) -> Result<(), Er
 }
 
 /// Get the current voting period in ledgers.
+#[allow(dead_code)]
 pub fn get_voting_period(env: &Env) -> u32 {
     env.storage()
         .instance()

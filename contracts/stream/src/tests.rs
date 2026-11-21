@@ -995,9 +995,25 @@ fn delayed_consumer_retains_payloads_and_can_detect_sequence_gaps() {
     let all_events = s.env.events().all();
     let stream_events: std::vec::Vec<_> = all_events
         .iter()
-        .filter(|(contract, _, _)| contract == &s.client.address)
+        .filter(|(contract, topics, _)| {
+            if contract != &s.client.address {
+                return false;
+            }
+            let first: Option<soroban_sdk::Symbol> =
+                topics.get(0).and_then(|v| v.try_into_val(&s.env).ok());
+            matches!(
+                first,
+                Some(symbol)
+                    if symbol == symbol_short!("created")
+                        || symbol == symbol_short!("paused")
+                        || symbol == symbol_short!("resumed")
+                        || symbol == symbol_short!("topped_up")
+            )
+        })
         .collect();
 
+    // Other stream-side bookkeeping events may coexist, but the four
+    // sequenced consumer events must remain intact and ordered.
     assert_eq!(stream_events.len(), 4);
 
     // Event topics come back as `Vec<Val>` (which implements `PartialEq`) so
@@ -3575,9 +3591,12 @@ fn resume_emits_stream_resumed_event() {
 fn rejected_double_pause_emits_no_stream_paused_event() {
     let s = Setup::new(100, 3_600, false);
     s.client.pause(&s.sender);
+    let before = s.env.events().all().len();
     let result = s.client.try_pause(&s.sender);
     assert_eq!(result, Err(Ok(Error::AlreadyPaused)));
-    assert!(!has_event_named(&s.env, "StreamPaused"));
+    // The first successful pause remains in history; the rejected retry must
+    // not append another event.
+    assert_eq!(s.env.events().all().len(), before);
 }
 
 #[test]

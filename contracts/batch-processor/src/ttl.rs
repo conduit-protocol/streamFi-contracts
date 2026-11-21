@@ -72,7 +72,6 @@ pub fn bump_adaptive_for_streams(env: &Env, stream_ids: &Vec<Address>) -> u32 {
 }
 
 /// Automated key and instance TTL extension helpers (Issue #762).
-
 /// Bumps temporary storage key TTL to default thresholds.
 pub fn bump_temporary_key<K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>>(env: &Env, key: &K) {
     env.storage().temporary().extend_ttl(

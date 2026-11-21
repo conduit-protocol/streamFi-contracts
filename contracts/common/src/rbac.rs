@@ -1127,7 +1127,10 @@ mod tests {
             assert_eq!(admin_count(&env, &ADMIN_COUNT), 2);
 
             env.ledger().set_timestamp(1_050);
-            assert_eq!(revoke_role(&env, TestRole::Admin, &temp_admin, true), Ok(true));
+            assert_eq!(
+                revoke_role(&env, TestRole::Admin, &temp_admin, true),
+                Ok(true)
+            );
             assert_eq!(admin_count(&env, &ADMIN_COUNT), 1);
             assert!(has_role(&env, &role_key(TestRole::Admin, &root)));
         });
@@ -1148,10 +1151,7 @@ mod tests {
             grant_role_until(&env, TestRole::Admin, &temp_admin, true, Some(2_000));
             assert_eq!(admin_count(&env, &ADMIN_COUNT), 2);
             assert!(has_role(&env, &role_key(TestRole::Admin, &temp_admin)));
-            assert_eq!(
-                role_members(&env, &members_key(&TestRole::Admin)).len(),
-                2
-            );
+            assert_eq!(role_members(&env, &members_key(&TestRole::Admin)).len(), 2);
         });
     }
 
@@ -1234,45 +1234,3 @@ mod tests {
         });
     }
 }
-===NOTES
-{"message":"Not Found","documentation_url":"https://docs.github.com/rest/repos/contents#get-repository-content","status":"404"}gh: Not Found (HTTP 404)
-===GREP
-Cargo.toml
-contracts/batch-processor/Cargo.toml
-contracts/common/Cargo.toml
-contracts/common/src
-contracts/common/src/lib.rs
-contracts/common/src/pause.rs
-contracts/common/src/rbac.rs
-contracts/common/src/testutils.rs
-contracts/common/src/ttl.rs
-contracts/factory/Cargo.toml
-contracts/governor/Cargo.toml
-contracts/governor/src
-contracts/governor/src/config.rs
-contracts/governor/src/errors.rs
-contracts/governor/src/events.rs
-contracts/governor/src/lib.rs
-contracts/governor/src/role.rs
-contracts/governor/src/storage.rs
-contracts/governor/src/tests.rs
-contracts/governor/src/ttl.rs
-contracts/oracle/Cargo.toml
-contracts/stream/Cargo.toml
-contracts/token-vault/Cargo.toml
-tests/audit_round_2_regression.rs
-tests/batch_transfer_processor.rs
-tests/factory_batch_cancel.rs
-tests/factory_batch_create.rs
-tests/factory_deploy.rs
-tests/factory_pause.rs
-tests/factory_ttl.rs
-tests/gas_snapshot.rs
-tests/governor_config.rs
-tests/governor_rbac.rs
-tests/oracle_stress_test.rs
-tests/reentrancy_stress_test.rs
-tests/stream_clawback.rs
-tests/stream_lifecycle.rs
-tests/stream_pause_resume.rs
-tests/yield_rebate.rs

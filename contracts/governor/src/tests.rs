@@ -4,7 +4,7 @@ use super::*;
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events as _, Ledger as _},
-    token, Address, Env, IntoVal,
+    token, Address, BytesN, Env, IntoVal, TryFromVal,
 };
 
 fn create_test_env() -> (Env, Address, Address, Address) {
@@ -348,6 +348,7 @@ fn test_admin_cancellation_archives_votes_and_emits_reason_hash() {
     let client = DripGovernorClient::new(&env, &contract_id);
 
     client.initialize(&authority, &fee_recipient, &factory_address);
+    configure_proposal_stake(&env, &client, &authority);
     let proposal_id = client.propose(&authority, &3600);
     let for_voter = Address::generate(&env);
     let abstain_voter = Address::generate(&env);
@@ -372,7 +373,8 @@ fn test_admin_cancellation_archives_votes_and_emits_reason_hash() {
         )
             .into_val(&env)
     );
-    assert_eq!(data, reason_hash.into_val(&env));
+    let decoded = BytesN::<32>::try_from_val(&env, &data).unwrap();
+    assert_eq!(decoded, reason_hash);
 }
 
 #[test]
@@ -383,6 +385,7 @@ fn test_decaying_checkpoint_weights_are_used_at_proposal_snapshots() {
     let voter = Address::generate(&env);
 
     client.initialize(&authority, &fee_recipient, &factory_address);
+    configure_proposal_stake(&env, &client, &authority);
 
     // Checkpoint weights represent voting power as progressively shorter
     // lock-ups decay; each proposal must use the weight at its own snapshot.

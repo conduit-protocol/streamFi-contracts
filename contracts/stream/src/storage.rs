@@ -21,7 +21,7 @@ pub const FLAG_REGULATED_ASSET: u32 = 1 << 3;
 pub const CURRENT_STORAGE_VERSION: u32 = 1;
 
 #[contracttype]
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum DataKey {
     /// Single-key representation of all stream fields.
     /// Consolidates all stream metadata into one storage read instead of eleven

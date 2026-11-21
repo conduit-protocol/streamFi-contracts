@@ -322,7 +322,8 @@ impl DripFactory {
         env.storage().instance().set(&DataKey::CreateLock, &true);
 
         // ── All validation passed — safe to touch state now ──────────────
-        ttl::bump_instance(&env);
+        // Every successful deployment renews the factory instance lifetime.
+        ttl::extend_factory_ttl(&env);
 
         // ── Pull deposit + protocol fee from sender ──────────────────────
         // Using the aliased `tok` to avoid any future shadowing issues.
