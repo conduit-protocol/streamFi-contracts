@@ -35,7 +35,7 @@ pub use config::GovernorConfig;
 pub use errors::Error;
 pub use role::{Role, RoleMembersPage};
 use storage::DataKey;
-pub use storage::{BalanceCheckpoint, Proposal, ProposalStatus, VoteRecord, VoteTallySnapshot};
+pub use storage::{Action, BalanceCheckpoint, Proposal, ProposalStatus, ProposalVeto, VoteRecord, VoteTallySnapshot};
 
 /// Returns `true` when the governor is under an emergency pause.
 ///
@@ -189,14 +189,17 @@ impl DripGovernor {
     /// The deploy `authority` is granted the administration and parameter
     /// roles. An `Executor` must be explicitly assigned before proposals can
     /// be executed, keeping execution authority independently delegable.
+    ///
+    /// Validates voting delay and timelock boundaries to prevent flash-loan
+    /// governance attacks and ensure sufficient review time (Issue #908).
     pub fn initialize(
         env: Env,
         authority: Address,
         fee_recipient: Address,
         factory_address: Address,
-    ) {
+    ) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::FactoryAddress) {
-            panic_with_error!(&env, Error::AlreadyInitialized);
+            return Err(Error::AlreadyInitialized);
         }
         ttl::bump(&env);
 
@@ -211,11 +214,14 @@ impl DripGovernor {
         s.set(&DataKey::MinQuorumBps, &0_u32);
         s.set(&DataKey::MinProposalStake, &0_i128);
 
+        config::set_voting_period(&env, config::MIN_VOTING_PERIOD_LEDGERS)?;
+
         role::grant(&env, Role::Admin, &authority);
         role::grant(&env, Role::FeeManager, &authority);
         role::grant(&env, Role::RateManager, &authority);
         role::grant(&env, Role::Pauser, &authority);
         events::initialized(&env, &authority, &fee_recipient, &factory_address);
+        Ok(())
     }
 
     // ── Reads ────────────────────────────────────────────────────────────
@@ -911,12 +917,18 @@ impl DripGovernor {
         storage::get_vote_record(&env, proposal_id).ok_or(Error::ProposalNotFound)
     }
 
-    /// Create a new governance proposal.
+    /// Create a new governance proposal with batched actions (Issue #911).
     ///
     /// Only an `Admin` may create proposals. The proposal has an execution
     /// window (in seconds) within which it must be executed after passing.
     /// If not executed within the window, the proposal expires.
-    pub fn propose(env: Env, caller: Address, execution_window_secs: u64) -> Result<u64, Error> {
+    /// Actions are batched and executed atomically when the proposal passes.
+    pub fn propose(
+        env: Env,
+        caller: Address,
+        execution_window_secs: u64,
+        actions: Vec<Action>,
+    ) -> Result<u64, Error> {
         role::require_role(&env, &caller, Role::Admin)?;
         if execution_window_secs == 0 {
             return Err(Error::InvalidParam);
@@ -951,6 +963,7 @@ impl DripGovernor {
             status: storage::ProposalStatus::Pending,
             for_votes: 0,
             against_votes: 0,
+            actions,
         };
 
         let snapshot = storage::VoteTallySnapshot {
@@ -981,6 +994,7 @@ impl DripGovernor {
         storage::add_proposal_to_status_index(&env, proposal_id, storage::ProposalStatus::Pending);
         storage::set_proposal_snapshot_ledger(&env, proposal_id, snapshot_ledger);
         storage::save_vote_tally_snapshot(&env, &snapshot);
+        storage::save_token_supply_snapshot(&env, proposal_id, total_supply);
 
         Ok(proposal_id)
     }
@@ -1019,7 +1033,8 @@ impl DripGovernor {
     /// Fails with `TimelockNotMet` if the proposal has not elapsed MIN_EXECUTION_DELAY.
     /// Fails with `ProposalExpired` if the execution window has elapsed.
     /// Fails with `ProposalNotPending` if the proposal has been executed or cancelled.
-    /// Fails with `QuorumNotMet` if total votes (for_votes + against_votes) do not reach minimum quorum.
+    /// Fails with `QuorumNotMet` if total votes do not reach dynamic quorum based on
+    /// active token supply (Issue #910).
     pub fn execute_proposal(
         env: Env,
         executor: Address,
@@ -1054,10 +1069,15 @@ impl DripGovernor {
 
         let min_quorum_bps = config::load(&env)?.min_quorum_bps;
         if min_quorum_bps > 0 {
-            let total_supply: u64 = storage::get_vote_tally_snapshot(&env, proposal_id)
-                .map(|s| s.total_supply)
+            let snapshot_supply = storage::get_token_supply_snapshot(&env, proposal_id)
                 .unwrap_or_else(|| Self::governance_supply(env.clone()));
-            let quorum_threshold = (total_supply as u128 * min_quorum_bps as u128 / 10_000) as u64;
+            let current_supply = Self::governance_supply(env.clone());
+            let active_supply = if current_supply < snapshot_supply {
+                current_supply
+            } else {
+                snapshot_supply
+            };
+            let quorum_threshold = (active_supply as u128 * min_quorum_bps as u128 / 10_000) as u64;
             let total_votes = proposal
                 .for_votes
                 .saturating_add(proposal.against_votes)
@@ -1158,5 +1178,48 @@ impl DripGovernor {
         proposal_id: u64,
     ) -> Result<(), Error> {
         cast_ballot(env, voter, proposal_id, None, None)
+    }
+
+    /// Veto a proposal as security guardian or emergency multisig (Issue #909).
+    ///
+    /// Only an `Admin` may veto proposals. Marks the proposal as vetoed and
+    /// records the guardian address with justification hash for community transparency.
+    pub fn veto_proposal(
+        env: Env,
+        caller: Address,
+        proposal_id: u64,
+        justification_hash: String,
+    ) -> Result<(), Error> {
+        role::require_role(&env, &caller, Role::Admin)?;
+        ttl::bump(&env);
+
+        let proposal: storage::Proposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::Proposal(proposal_id))
+            .ok_or(Error::ProposalNotFound)?;
+
+        if proposal.status != storage::ProposalStatus::Pending
+            && proposal.status != storage::ProposalStatus::Active
+        {
+            return Err(Error::ProposalNotPending);
+        }
+
+        let veto_record = storage::ProposalVeto {
+            guardian: caller.clone(),
+            justification_hash: justification_hash.clone(),
+            timestamp: env.ledger().timestamp(),
+        };
+
+        storage::record_veto(&env, proposal_id, &veto_record);
+        storage::set_proposal_status(&env, proposal_id, storage::ProposalStatus::Vetoed);
+        events::proposal_vetoed(&env, proposal_id, &caller, &justification_hash, env.ledger().timestamp());
+
+        Ok(())
+    }
+
+    /// Read-only: get the veto record for a proposal if it has been vetoed (Issue #909).
+    pub fn get_proposal_veto(env: Env, proposal_id: u64) -> Result<ProposalVeto, Error> {
+        storage::get_veto_record(&env, proposal_id).ok_or(Error::ProposalNotFound)
     }
 }

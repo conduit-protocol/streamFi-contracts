@@ -9,6 +9,14 @@ use crate::Error;
 /// Prevents flash-loan voting attacks and allows DAO participants time to react.
 pub const MIN_VOTING_PERIOD_LEDGERS: u32 = 17280;
 
+/// Minimum voting delay: 3600 seconds (~1 hour) (Issue #908).
+/// Prevents flash-loan governance attacks and allows decentralized review.
+pub const MIN_VOTING_DELAY: u64 = 3600;
+
+/// Minimum timelock delay: 86400 seconds (~24 hours) (Issue #908).
+/// Ensures sufficient time between proposal passing and execution for emergency intervention.
+pub const MIN_TIMELOCK_DELAY: u64 = 86400;
+
 #[contracttype]
 #[derive(Clone)]
 pub struct GovernorConfig {

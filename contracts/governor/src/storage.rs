@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Env, Vec};
+use soroban_sdk::{contracttype, Address, Env, String, Vec};
 
 /// Proposal status.
 #[contracttype]
@@ -13,6 +13,21 @@ pub enum ProposalStatus {
     /// The proposal did not pass. Reserved for the status index so governance
     /// tooling can query the full lifecycle.
     Defeated = 4,
+    /// The proposal was vetoed by security guardian or emergency multisig.
+    Vetoed = 5,
+}
+
+/// Represents a single executable action within a proposal.
+/// Allows batching multiple contract calls in a single governance proposal (Issue #911).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Action {
+    /// Target contract address for this action.
+    pub target: Address,
+    /// Function selector/name to invoke on the target contract.
+    pub function: String,
+    /// Serialized parameters for the action execution.
+    pub params: Vec<u8>,
 }
 
 /// Historical token balance / voting weight checkpoint at a specific ledger sequence.
@@ -63,6 +78,20 @@ pub struct Proposal {
     pub for_votes: u64,
     /// Number of votes cast against.
     pub against_votes: u64,
+    /// Batched actions to execute atomically when proposal passes (Issue #911).
+    pub actions: Vec<Action>,
+}
+
+/// Record of a proposal veto action by security guardian or emergency multisig (Issue #909).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProposalVeto {
+    /// Address of the guardian or multisig that vetoed the proposal.
+    pub guardian: Address,
+    /// IPFS hash or content identifier for the veto justification.
+    pub justification_hash: String,
+    /// Timestamp when the proposal was vetoed.
+    pub timestamp: u64,
 }
 
 /// Protocol administration roles.
@@ -181,6 +210,10 @@ pub enum DataKey {
     VoteRecord(u64),
     /// Abstain-vote tally for proposal `u64`.
     ProposalAbstainVotes(u64),
+    /// Veto record for proposal `u64` (Issue #909).
+    ProposalVetoRecord(u64),
+    /// Token supply at proposal snapshot for dynamic quorum calculations (Issue #910).
+    ProposalTokenSupplySnapshot(u64),
 }
 
 /// Adds `proposal_id` to the status index for `status` if it is not present.
@@ -408,4 +441,32 @@ pub fn record_voter_receipt(env: &Env, proposal_id: u64, voter: &Address, weight
     env.storage()
         .instance()
         .set(&DataKey::VoterReceipt(proposal_id, voter.clone()), &weight);
+}
+
+/// Records a veto action for a proposal with guardian address and justification hash (Issue #909).
+pub fn record_veto(env: &Env, proposal_id: u64, veto: &ProposalVeto) {
+    env.storage()
+        .instance()
+        .set(&DataKey::ProposalVetoRecord(proposal_id), veto);
+}
+
+/// Retrieves the veto record for a proposal if it has been vetoed (Issue #909).
+pub fn get_veto_record(env: &Env, proposal_id: u64) -> Option<ProposalVeto> {
+    env.storage()
+        .instance()
+        .get(&DataKey::ProposalVetoRecord(proposal_id))
+}
+
+/// Saves the token supply snapshot at proposal creation for dynamic quorum calculations (Issue #910).
+pub fn save_token_supply_snapshot(env: &Env, proposal_id: u64, supply: u64) {
+    env.storage()
+        .instance()
+        .set(&DataKey::ProposalTokenSupplySnapshot(proposal_id), &supply);
+}
+
+/// Retrieves the token supply snapshot for dynamic quorum calculations (Issue #910).
+pub fn get_token_supply_snapshot(env: &Env, proposal_id: u64) -> Option<u64> {
+    env.storage()
+        .instance()
+        .get(&DataKey::ProposalTokenSupplySnapshot(proposal_id))
 }

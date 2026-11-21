@@ -241,3 +241,18 @@ pub fn proposal_execution_queued(env: &Env, proposal_id: u64, execution_time: u6
         execution_time,
     );
 }
+
+/// Emitted when a proposal is vetoed by security guardian or emergency multisig (Issue #909).
+/// Publishes the guardian address, proposal ID, and justification hash for community transparency.
+pub fn proposal_vetoed(
+    env: &Env,
+    proposal_id: u64,
+    guardian: &Address,
+    justification_hash: &String,
+    timestamp: u64,
+) {
+    env.events().publish(
+        (Symbol::new(env, "proposal_vetoed"), proposal_id),
+        (guardian.clone(), justification_hash.clone(), timestamp),
+    );
+}
