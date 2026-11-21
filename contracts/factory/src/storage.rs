@@ -349,4 +349,8 @@ pub enum DataKey {
     /// Value: `Vec<WasmVersionInfo>` — oldest first. The last entry always matches
     /// `DataKey::StreamWasmHash`.
     WasmVersionHistory,
+    /// **Instance storage.** Pending protocol fee collector update proposal under timelock (Issue #905).
+    PendingFeeCollectorUpdate,
+    /// **Instance storage.** Active protocol fee collector address set via timelocked execution (Issue #905).
+    FeeCollectorAddress,
 }

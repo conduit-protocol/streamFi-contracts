@@ -183,6 +183,15 @@ pub struct FeeUpdateProposal {
     pub eta_ledger: u32,
 }
 
+/// Proposal for updating the protocol fee collector address subject to timelock (Issue #905).
+#[soroban_sdk::contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeCollectorUpdateProposal {
+    pub proposed_collector: Address,
+    pub proposed_at_ledger: u32,
+    pub eta_ledger: u32,
+}
+
 /// Proposes a protocol fee update subject to a timelock delay of at least `MIN_DELAY` ledgers (Issue #766).
 pub fn propose_fee_update(env: &Env, proposed_fee_bps: u32) -> Result<u32, Error> {
     if proposed_fee_bps > 10_000 {
@@ -237,6 +246,59 @@ pub fn pending_fee_update(env: &Env) -> Option<FeeUpdateProposal> {
     env.storage()
         .instance()
         .get(&crate::storage::DataKey::PendingFeeUpdate)
+}
+
+/// Proposes a protocol fee collector update subject to a timelock delay of at least `MIN_DELAY` ledgers (Issue #905).
+pub fn propose_fee_collector_update(env: &Env, proposed_collector: &Address) -> Result<u32, Error> {
+    let current_ledger = env.ledger().sequence();
+    let eta_ledger = current_ledger.saturating_add(MIN_DELAY);
+    let proposal = FeeCollectorUpdateProposal {
+        proposed_collector: proposed_collector.clone(),
+        proposed_at_ledger: current_ledger,
+        eta_ledger,
+    };
+    env.storage()
+        .instance()
+        .set(&crate::storage::DataKey::PendingFeeCollectorUpdate, &proposal);
+    crate::events::fee_collector_update_proposed(env, proposed_collector, eta_ledger);
+    Ok(eta_ledger)
+}
+
+/// Executes a pending protocol fee collector update once `MIN_DELAY` ledgers have elapsed (Issue #905).
+pub fn execute_fee_collector_update(env: &Env) -> Result<(), Error> {
+    let proposal: FeeCollectorUpdateProposal = env
+        .storage()
+        .instance()
+        .get(&crate::storage::DataKey::PendingFeeCollectorUpdate)
+        .ok_or(Error::NoPendingFeeUpdate)?;
+
+    let current_ledger = env.ledger().sequence();
+    if current_ledger < proposal.eta_ledger {
+        return Err(Error::TimelockNotMet);
+    }
+
+    let old_collector = env
+        .storage()
+        .instance()
+        .get::<_, Address>(&crate::storage::DataKey::FeeCollectorAddress)
+        .ok_or(Error::NotInitialized)?;
+
+    env.storage()
+        .instance()
+        .set(&crate::storage::DataKey::FeeCollectorAddress, &proposal.proposed_collector);
+    env.storage()
+        .instance()
+        .remove(&crate::storage::DataKey::PendingFeeCollectorUpdate);
+
+    crate::events::fee_collector_update_executed(env, &old_collector, &proposal.proposed_collector);
+    Ok(())
+}
+
+/// Read pending fee collector update proposal, if any (Issue #905).
+pub fn pending_fee_collector_update(env: &Env) -> Option<FeeCollectorUpdateProposal> {
+    env.storage()
+        .instance()
+        .get(&crate::storage::DataKey::PendingFeeCollectorUpdate)
 }
 
 /// Read active protocol fee override if set via timelocked execution.

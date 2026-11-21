@@ -21,7 +21,7 @@ use drip_common::is_zero_address;
 use drip_common::pause::PauseFlags;
 
 pub use errors::Error;
-pub use governance::{FeeUpdateProposal, WasmVersionInfo};
+pub use governance::{FeeCollectorUpdateProposal, FeeUpdateProposal, WasmVersionInfo};
 pub use pause::PauseType;
 use storage::DataKey;
 pub use storage::{
@@ -1304,6 +1304,42 @@ impl DripFactory {
     /// Read-only: get pending fee update proposal, if any (Issue #766).
     pub fn pending_fee_update(env: Env) -> Option<governance::FeeUpdateProposal> {
         governance::pending_fee_update(&env)
+    }
+
+    /// Proposes a protocol fee collector update subject to MIN_DELAY timelock (Issue #905).
+    pub fn propose_fee_collector_update(env: Env, proposed_collector: Address) -> Result<u32, Error> {
+        let governor: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::GovernorAddress)
+            .ok_or(Error::NotInitialized)?;
+        governor.require_auth();
+        ttl::bump_instance(&env);
+        governance::propose_fee_collector_update(&env, &proposed_collector)
+    }
+
+    /// Executes a pending protocol fee collector update after MIN_DELAY ledgers have elapsed (Issue #905).
+    pub fn execute_fee_collector_update(env: Env) -> Result<(), Error> {
+        let governor: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::GovernorAddress)
+            .ok_or(Error::NotInitialized)?;
+        governor.require_auth();
+        ttl::bump_instance(&env);
+        governance::execute_fee_collector_update(&env)
+    }
+
+    /// Read-only: get pending fee collector update proposal, if any (Issue #905).
+    pub fn pending_fee_collector_update(env: Env) -> Option<governance::FeeCollectorUpdateProposal> {
+        governance::pending_fee_collector_update(&env)
+    }
+
+    /// Read-only: get current protocol fee collector address, if any (Issue #905).
+    pub fn fee_collector(env: Env) -> Option<Address> {
+        env.storage()
+            .instance()
+            .get(&DataKey::FeeCollectorAddress)
     }
 
     /// Read-only: cumulative protocol fee volume collected for a given token (Issue #768).

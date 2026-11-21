@@ -137,6 +137,22 @@ pub fn fee_update_executed(env: &Env, old_fee_bps: u32, new_fee_bps: u32) {
     );
 }
 
+/// Emitted when a protocol fee collector update is proposed under timelock (Issue #905).
+pub fn fee_collector_update_proposed(env: &Env, proposed_collector: &Address, eta_ledger: u32) {
+    env.events().publish(
+        (Symbol::new(env, "fee_collector_proposed"),),
+        (proposed_collector.clone(), eta_ledger),
+    );
+}
+
+/// Emitted when a timelocked protocol fee collector update is executed (Issue #905).
+pub fn fee_collector_update_executed(env: &Env, old_collector: &Address, new_collector: &Address) {
+    env.events().publish(
+        (Symbol::new(env, "fee_collector_executed"),),
+        (old_collector.clone(), new_collector.clone()),
+    );
+}
+
 /// Deprecation notice for a stream WASM version superseded by a governance
 /// upgrade (Issue #902). Published once per superseded version, alongside
 /// `StreamContractUpgraded`.

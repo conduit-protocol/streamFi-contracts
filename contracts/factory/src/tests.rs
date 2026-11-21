@@ -1463,3 +1463,69 @@ fn test_deterministic_salt_generation() {
     let salt_diff_token = s.client.derive_salt(&sender, &recipient, &nonce, &other_token);
     assert_ne!(salt1, salt_diff_token);
 }
+
+/// Stress test: deploy 50 streams sequentially and verify storage and query consistency (Issue #906).
+///
+/// This test validates that the factory can handle maximum storage capacity under heavy load,
+/// ensuring vector allocations and indices remain consistent across concurrent-like operations.
+#[test]
+fn factory_stress_test_with_fifty_streams() {
+    let s = Setup::new();
+    let mut stream_ids = std::vec::Vec::new();
+
+    // Deploy 50 streams sequentially with unique senders and recipients
+    for i in 0..50u32 {
+        let sender = Address::generate(&s.env);
+        let recipient = Address::generate(&s.env);
+        let token = Address::generate(&s.env);
+
+        let stream_id = s.client.create_stream(
+            &sender,
+            &recipient,
+            &token,
+            &1_000_000i128,                       // deposit
+            &1i128,                                // rate per second
+            &(s.env.ledger().timestamp() + 3600), // start in 1 hour
+            &0u64,                                 // open-ended
+            &true,                                 // clawback enabled
+            &None,                                 // no description
+            &None,                                 // no metadata URI
+        );
+
+        // Ensure no duplicate stream IDs
+        assert!(
+            !stream_ids.contains(&stream_id),
+            "Duplicate stream_id {} at iteration {}",
+            stream_id,
+            i
+        );
+        stream_ids.push(stream_id);
+    }
+
+    // Verify total stream count
+    assert_eq!(s.client.stream_count(), 50);
+
+    // Verify all stream addresses are queryable
+    for (idx, &stream_id) in stream_ids.iter().enumerate() {
+        let addr = s.client.stream_address(&stream_id);
+        assert!(
+            addr.is_some(),
+            "Stream {} (index {}) not found in persistent storage",
+            stream_id,
+            idx
+        );
+    }
+
+    // Spot-check query consistency: verify streams 0, 10, 20, 30, 40, 49 are accessible
+    let spot_check_indices = &[0usize, 10, 20, 30, 40, 49];
+    for &idx in spot_check_indices {
+        let stream_id = stream_ids[idx];
+        let addr = s.client.stream_address(&stream_id);
+        assert!(
+            addr.is_some(),
+            "Spot-check failed: stream_id {} at index {} not queryable",
+            stream_id,
+            idx
+        );
+    }
+}
