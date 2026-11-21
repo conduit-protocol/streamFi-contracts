@@ -47,4 +47,6 @@ pub enum Error {
     ProposalStakeNotConfigured = 21,
     /// Quorum not reached - insufficient turnout (distinct from ProposalDefeated).
     QuorumNotReached = 22,
+    /// Governance proposal timelock has not yet matured before execution (#972).
+    ProposalTimelockNotMatured = 23,
 }

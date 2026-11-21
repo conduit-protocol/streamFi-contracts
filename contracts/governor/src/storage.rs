@@ -91,8 +91,6 @@ pub enum Role {
     RateManager,
     Pauser,
     Executor,
-    /// May emergency-cancel queued (Pending or Active) proposals (Issue #968).
-    SecurityGuardian,
 }
 
 /// Composite key identifying a single (role, account) grant.
@@ -183,8 +181,8 @@ pub enum DataKey {
     VoteRecord(u64),
     /// Abstain-vote tally for proposal `u64`.
     ProposalAbstainVotes(u64),
-    /// Timelock delay in seconds between proposal creation and execution (Issue #967).
-    TimelockDelaySecs,
+    /// Persistent replay guard recording that proposal `u64` has been executed (#971).
+    ProposalExecuted(u64),
 }
 
 /// Adds `proposal_id` to the status index for `status` if it is not present.
@@ -412,4 +410,21 @@ pub fn record_voter_receipt(env: &Env, proposal_id: u64, voter: &Address, weight
     env.storage()
         .instance()
         .set(&DataKey::VoterReceipt(proposal_id, voter.clone()), &weight);
+}
+
+/// Returns `true` if `proposal_id` has already been marked as executed in persistent storage (#971).
+pub fn is_proposal_executed(env: &Env, proposal_id: u64) -> bool {
+    let key = DataKey::ProposalExecuted(proposal_id);
+    let executed = env.storage().persistent().get::<_, bool>(&key).unwrap_or(false);
+    if executed {
+        drip_common::ttl::bump_persistent(env, &key);
+    }
+    executed
+}
+
+/// Marks `proposal_id` as executed in persistent storage so it can never be replayed (#971).
+pub fn mark_proposal_executed(env: &Env, proposal_id: u64) {
+    let key = DataKey::ProposalExecuted(proposal_id);
+    env.storage().persistent().set(&key, &true);
+    drip_common::ttl::bump_persistent(env, &key);
 }
