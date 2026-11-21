@@ -1,8 +1,8 @@
 use soroban_sdk::{contracttype, panic_with_error, Env};
 
-use crate::storage::{DataKey, StreamInfo};
 #[allow(unused_imports)]
 pub use crate::storage::StreamState;
+use crate::storage::{DataKey, MutableStreamState, StreamInfo, StreamMetadata};
 use crate::Error;
 
 /// Calculate stream age in seconds from start_time up to current_time (Issue #808).
@@ -29,8 +29,30 @@ pub fn is_fully_vested(info: &StreamInfo, current_time: u64) -> bool {
 /// the consolidated layout; pre-consolidation streams were migrated on their
 /// first `save()` call (see `save()` for the one-time migration logic).
 pub fn try_load(env: &Env) -> Result<StreamInfo, Error> {
-    let s = env.storage().instance();
-    s.get::<_, StreamInfo>(&DataKey::Config)
+    let storage = env.storage().instance();
+
+    if let (Some(metadata), Some(state)) = (
+        storage.get::<_, StreamMetadata>(&DataKey::Metadata),
+        storage.get::<_, MutableStreamState>(&DataKey::State),
+    ) {
+        return Ok(StreamInfo {
+            sender: metadata.sender,
+            recipient: state.recipient,
+            token: metadata.token,
+            rate_per_second: state.rate_per_second,
+            start_time: metadata.start_time,
+            end_time: state.end_time,
+            withdrawn: state.withdrawn,
+            paused_at: state.paused_at,
+            flags: state.flags,
+            event_sequence: state.event_sequence,
+            cumulative_fees: state.cumulative_fees,
+        });
+    }
+
+    // Backward-compatible read for streams persisted before #942.
+    storage
+        .get::<_, StreamInfo>(&DataKey::Config)
         .ok_or(Error::NotInitialized)
 }
 
@@ -47,7 +69,37 @@ pub fn load(env: &Env) -> StreamInfo {
 /// Pre-consolidation streams were migrated on their first `save()` call
 /// in a prior contract version (legacy keys were removed as part of the upgrade).
 pub fn save(env: &Env, info: &StreamInfo) {
-    env.storage().instance().set(&DataKey::Config, info);
+    let storage = env.storage().instance();
+
+    if !storage.has(&DataKey::Metadata) {
+        storage.set(
+            &DataKey::Metadata,
+            &StreamMetadata {
+                sender: info.sender.clone(),
+                token: info.token.clone(),
+                start_time: info.start_time,
+            },
+        );
+    }
+
+    storage.set(
+        &DataKey::State,
+        &MutableStreamState {
+            recipient: info.recipient.clone(),
+            rate_per_second: info.rate_per_second,
+            end_time: info.end_time,
+            withdrawn: info.withdrawn,
+            paused_at: info.paused_at,
+            flags: info.flags,
+            event_sequence: info.event_sequence,
+            cumulative_fees: info.cumulative_fees,
+        },
+    );
+
+    // Migrate legacy consolidated state after the split representation exists.
+    if storage.has(&DataKey::Config) {
+        storage.remove(&DataKey::Config);
+    }
 }
 
 pub fn assert_not_cancelled(info: &StreamInfo) -> Result<(), Error> {

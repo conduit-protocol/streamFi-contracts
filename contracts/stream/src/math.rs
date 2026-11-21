@@ -5,12 +5,7 @@ use crate::storage::{CliffConfig, DataKey, RateCheckpoint, StreamInfo};
 
 /// Calculates `value * multiplier / divisor` without overflowing an i128
 /// intermediate. Inputs and the result are non-negative.
-pub fn mul_div(
-    env: &Env,
-    value: i128,
-    multiplier: u128,
-    divisor: u128,
-) -> Result<i128, Error> {
+pub fn mul_div(env: &Env, value: i128, multiplier: u128, divisor: u128) -> Result<i128, Error> {
     if value < 0 || divisor == 0 {
         return Err(Error::ArithmeticOverflow);
     }
@@ -313,7 +308,10 @@ mod tests {
 
         // Test half of max
         let half_max = i128::MAX / 2;
-        assert_eq!(rate_duration_saturating(half_max, 2), half_max.saturating_mul(2));
+        assert_eq!(
+            rate_duration_saturating(half_max, 2),
+            half_max.saturating_mul(2)
+        );
         // With 3, it would overflow to max
         assert_eq!(rate_duration_saturating(half_max, 3), i128::MAX);
     }
@@ -421,6 +419,41 @@ mod tests {
         // u64::MAX elapsed time saturates without overflow or panic
         let max_streamed = calculate_decay_stream(initial, u64::MAX, half_life).unwrap();
         assert_eq!(max_streamed, initial);
+    }
+
+    #[test]
+    fn rounding_extremes_never_exceed_deposit() {
+        let rates: [i128; 8] = [
+            1,
+            2,
+            7,
+            1_000_000,
+            1_i128 << 32,
+            1_i128 << 64,
+            i128::MAX / 10_000,
+            i128::MAX / 2,
+        ];
+        let durations: [u64; 8] = [1, 2, 3, 59, 60, 3_600, 86_400, 1_000_000];
+
+        for rate in rates {
+            for duration in durations {
+                match rate.checked_mul(duration as i128) {
+                    Some(deposit) => {
+                        for elapsed in [0, 1, duration / 2, duration] {
+                            let accrued = calculate_streamed_amount(rate, elapsed).unwrap();
+                            assert!(accrued <= deposit);
+                            assert!(accrued >= 0);
+                        }
+                    }
+                    None => {
+                        assert_eq!(
+                            calculate_streamed_amount(rate, duration),
+                            Err(Error::ArithmeticOverflow)
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 

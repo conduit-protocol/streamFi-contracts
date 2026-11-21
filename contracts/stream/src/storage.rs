@@ -21,12 +21,16 @@ pub const FLAG_REGULATED_ASSET: u32 = 1 << 3;
 pub const CURRENT_STORAGE_VERSION: u32 = 1;
 
 #[contracttype]
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum DataKey {
     /// Single-key representation of all stream fields.
     /// Consolidates all stream metadata into one storage read instead of eleven
     /// legacy per-field keys (superseded on first `save()` of pre-consolidation streams).
     Config,
+    /// Immutable/low-churn stream metadata (#942).
+    Metadata,
+    /// Hot mutable stream state (#942).
+    State,
     /// Lock for re-entrancy protection and concurrency control.
     Guard,
     /// Storage layout version, written once at `initialize()`.
@@ -216,6 +220,46 @@ pub struct StreamSummary {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamMetadata {
+    pub sender: Address,
+    pub token: Address,
+    pub start_time: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MutableStreamState {
+    pub recipient: Address,
+    pub rate_per_second: i128,
+    pub end_time: u64,
+    pub withdrawn: i128,
+    pub paused_at: u64,
+    pub flags: u32,
+    pub event_sequence: u64,
+    pub cumulative_fees: i128,
+}
+
+/// Typed wrapper around the packed stream flag word (#943).
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StreamFlags(pub u32);
+
+impl StreamFlags {
+    pub fn contains(self, mask: u32) -> bool {
+        (self.0 & mask) != 0
+    }
+
+    pub fn insert(&mut self, mask: u32) {
+        self.0 |= mask;
+    }
+
+    pub fn remove(&mut self, mask: u32) {
+        self.0 &= !mask;
+    }
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamInfo {
     pub sender: Address,
     pub recipient: Address,
@@ -233,32 +277,36 @@ pub struct StreamInfo {
 impl StreamInfo {
     /// True when the `FLAG_PAUSED` bit (0x01) is set in `flags`.
     pub fn is_paused(&self) -> bool {
-        (self.flags & FLAG_PAUSED) != 0
+        StreamFlags(self.flags).contains(FLAG_PAUSED)
     }
 
     /// True when the `FLAG_CANCELLED` bit (0x04) is set in `flags`.
     pub fn is_cancelled(&self) -> bool {
-        (self.flags & FLAG_CANCELLED) != 0
+        StreamFlags(self.flags).contains(FLAG_CANCELLED)
     }
 
     /// True when the `FLAG_CLAWBACK_ENABLED` bit (0x02) is set in `flags`.
     pub fn is_clawback_enabled(&self) -> bool {
-        (self.flags & FLAG_CLAWBACK_ENABLED) != 0
+        StreamFlags(self.flags).contains(FLAG_CLAWBACK_ENABLED)
     }
 
     /// True when the `FLAG_REGULATED_ASSET` bit (0x08) is set in `flags` (Issue #781).
     pub fn is_regulated_asset(&self) -> bool {
-        (self.flags & FLAG_REGULATED_ASSET) != 0
+        StreamFlags(self.flags).contains(FLAG_REGULATED_ASSET)
     }
 
     /// Mark the stream as cancelled, setting the correct flag bit.
     pub fn mark_cancelled(&mut self) {
-        self.flags |= FLAG_CANCELLED;
+        let mut flags = StreamFlags(self.flags);
+        flags.insert(FLAG_CANCELLED);
+        self.flags = flags.0;
     }
 
     /// Mark the stream as using a regulated asset, setting the correct flag bit (Issue #781).
     pub fn mark_regulated_asset(&mut self) {
-        self.flags |= FLAG_REGULATED_ASSET;
+        let mut flags = StreamFlags(self.flags);
+        flags.insert(FLAG_REGULATED_ASSET);
+        self.flags = flags.0;
     }
 
     /// True when all deposited stream funds have been completely withdrawn or stream is ended and fully drained (Issue #753).

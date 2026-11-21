@@ -1939,17 +1939,23 @@ fn sender_still_can_pause_after_setting_operator() {
 // stream, removes the legacy keys one-time.
 
 #[test]
-fn initialize_writes_only_config() {
+fn initialize_writes_split_metadata_and_state() {
     let s = Setup::new(100, 3600, false);
 
-    let has_config = s.env.as_contract(&s.client.address, || {
+    let (has_metadata, has_state, has_legacy_config) = s.env.as_contract(&s.client.address, || {
         let storage = s.env.storage().instance();
-        storage.has(&DataKey::Config)
+        (
+            storage.has(&DataKey::Metadata),
+            storage.has(&DataKey::State),
+            storage.has(&DataKey::Config),
+        )
     });
 
+    assert!(has_metadata, "Metadata must be written on initialize");
+    assert!(has_state, "State must be written on initialize");
     assert!(
-        has_config,
-        "consolidated Config must be written on initialize"
+        !has_legacy_config,
+        "new streams must not write legacy Config"
     );
 
     // initialize() must expose the full state via load()/info().
@@ -1967,14 +1973,13 @@ fn event_sequence_is_persisted_in_config() {
     s.client.pause(&s.sender);
     s.client.resume(&s.sender);
 
-    let has_config = s.env.as_contract(&s.client.address, || {
-        let storage = s.env.storage().instance();
-        storage.has(&DataKey::Config)
+    let has_state = s.env.as_contract(&s.client.address, || {
+        s.env.storage().instance().has(&DataKey::State)
     });
 
     assert!(
-        has_config,
-        "Config must be present after event-driven updates"
+        has_state,
+        "State must be present after event-driven updates"
     );
 
     let info = s
@@ -1988,18 +1993,24 @@ fn event_sequence_is_persisted_in_config() {
 }
 
 #[test]
-fn state_mutation_writes_only_config() {
+fn state_mutation_keeps_metadata_separate_from_state() {
     let s = Setup::new(100, 3600, false);
     s.advance_secs(100);
     s.client.withdraw(&10_000); // drives state::save
 
-    let has_config = s.env.as_contract(&s.client.address, || {
+    let (has_metadata, has_state, has_legacy_config) = s.env.as_contract(&s.client.address, || {
         let storage = s.env.storage().instance();
-        storage.has(&DataKey::Config)
+        (
+            storage.has(&DataKey::Metadata),
+            storage.has(&DataKey::State),
+            storage.has(&DataKey::Config),
+        )
     });
-    assert!(has_config, "Config must be present after a mutation");
+    assert!(has_metadata);
+    assert!(has_state);
+    assert!(!has_legacy_config);
 
-    // The mutation's effect must be durable through Config.
+    // The mutation's effect must be durable through State.
     let info = s
         .env
         .as_contract(&s.client.address, || crate::state::load(&s.env));
@@ -3114,9 +3125,9 @@ fn recipient_transfer_emits_event_with_old_and_new_recipients() {
 #[test]
 fn elapsed_seconds_calculates_stream_age_correctly() {
     let s = Setup::new(10, 1_000, false);
-    let info = s.env.as_contract(&s.client.address, || {
-        crate::state::load(&s.env)
-    });
+    let info = s
+        .env
+        .as_contract(&s.client.address, || crate::state::load(&s.env));
 
     // Before start
     assert_eq!(info.elapsed_seconds(info.start_time.saturating_sub(10)), 0);
@@ -3547,7 +3558,8 @@ fn top_up_by_funder_rejects_zero_amount() {
 fn has_event_named(env: &Env, name: &str) -> bool {
     let want = soroban_sdk::Symbol::new(env, name);
     for (_addr, topics, _data) in env.events().all().iter() {
-        let first: Option<soroban_sdk::Symbol> = topics.get(0).and_then(|v| v.try_into_val(env).ok());
+        let first: Option<soroban_sdk::Symbol> =
+            topics.get(0).and_then(|v| v.try_into_val(env).ok());
         if first == Some(want.clone()) {
             return true;
         }

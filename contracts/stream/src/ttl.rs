@@ -55,7 +55,21 @@ pub const LEDGER_BUMP: u32 = drip_common::ttl::EXTEND_TTL_LEDGERS;
 
 /// Automatic instance TTL extension on withdraw and top_up (Issue #750).
 pub fn extend_on_activity(env: &soroban_sdk::Env) {
-    env.storage().instance().extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+    env.storage()
+        .instance()
+        .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+}
+
+/// Refresh persistent side-records whenever an active stream is withdrawn (#944).
+pub fn extend_persistent_on_activity(env: &soroban_sdk::Env) {
+    for key in [
+        crate::storage::DataKey::MetadataUri,
+        crate::storage::DataKey::CancelledRecord,
+    ] {
+        if env.storage().persistent().has(&key) {
+            drip_common::ttl::bump_persistent(env, &key);
+        }
+    }
 }
 
 /// Emergency instance TTL extension by any sender, recipient, or third-party (Issue #805).
