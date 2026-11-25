@@ -106,7 +106,7 @@ impl DripFactory {
         if is_zero_address(&env, &governor) {
             panic_with_error!(&env, Error::InvalidGovernor);
         }
-        ttl::bump_instance(&env);
+        ttl::extend_factory_ttl(&env);
 
         env.storage()
             .instance()

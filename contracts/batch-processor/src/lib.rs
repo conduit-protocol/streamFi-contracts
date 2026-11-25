@@ -16,7 +16,7 @@ pub use ttl::MaintenanceReserve;
 /// Maximum number of transfers permitted in a single batch (Issue #677).
 ///
 /// Bounded to 30 to prevent transaction CPU instruction budget limits in Soroban host.
-pub const MAX_BATCH_SIZE: u32 = 30;
+pub const MAX_BATCH_SIZE: u32 = 50;
 
 /// Maximum batch limit alias for MAX_BATCH_SIZE (Issue #677).
 pub const MAX_BATCH_LIMIT: u32 = MAX_BATCH_SIZE;
@@ -44,7 +44,7 @@ pub const MAX_BATCH_LIMIT: u32 = MAX_BATCH_SIZE;
 ///   aggregate allowance before pulling funds via `transfer_from` (issue #925).
 /// - `5` — added admin-only `batch_pause` / `batch_resume` (issue #892) and a
 ///   `batch_metrics` event after every stream batch (issue #891).
-const VERSION: u32 = 5;
+const VERSION: u32 = 6;
 
 /// Instance-storage key space.
 ///
@@ -874,6 +874,51 @@ impl BatchTransferProcessor {
         event_batch_metrics(&env, symbol_short!("cancel"), cancelled_count, started_at);
 
         Ok(cancelled_count)
+    }
+
+    /// Cancel several streams with caller-selectable failure semantics (Issues #963-#964).
+    pub fn batch_cancel_with_mode(
+        env: Env,
+        caller: Address,
+        stream_ids: Vec<Address>,
+        allow_partial: bool,
+    ) -> Result<Vec<BatchResult>, Error> {
+        if stream_ids.len() > MAX_BATCH_SIZE {
+            return Err(Error::BatchTooLarge);
+        }
+        let mut results = Vec::new(&env);
+        if stream_ids.is_empty() {
+            return Ok(results);
+        }
+        caller.require_auth();
+        ttl::bump(&env);
+        for (idx, stream_id) in stream_ids.iter().enumerate() {
+            let mut args = Vec::new(&env);
+            args.push_back(caller.to_val());
+            if !allow_partial {
+                let _: () = env.invoke_contract(&stream_id, &Symbol::new(&env, "cancel"), args);
+                results.push_back(BatchResult { item_index: idx as u32, success: true, error_code: None });
+                continue;
+            }
+            let res = env.try_invoke_contract::<(), soroban_sdk::Error>(
+                &stream_id,
+                &Symbol::new(&env, "cancel"),
+                args,
+            );
+            let (success, error_code) = match res {
+                Ok(Ok(())) => (true, None),
+                Ok(Err(_)) => (false, Some(9998)),
+                Err(Ok(err)) => (false, Some(err.get_code())),
+                Err(Err(soroban_sdk::InvokeError::Contract(code))) => (false, Some(code)),
+                Err(Err(soroban_sdk::InvokeError::Abort)) => (false, Some(9999)),
+            };
+            results.push_back(BatchResult { item_index: idx as u32, success, error_code });
+        }
+        env.events().publish(
+            (Symbol::new(&env, "batch_cancelled"), caller),
+            (stream_ids.len(), allow_partial),
+        );
+        Ok(results)
     }
 
     /// Lenient batch withdrawal across multiple streams (Issue #761).

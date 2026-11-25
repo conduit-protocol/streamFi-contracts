@@ -24,6 +24,11 @@ pub use drip_common::ttl::{
 /// eventually covered across calls.
 pub const BATCH_LIMIT: u32 = 8;
 
+/// Renew the factory instance lifetime on every successful stream deployment (#961).
+pub fn extend_factory_ttl(env: &Env) {
+    bump_instance(env);
+}
+
 /// Bounded TTL walker.
 ///
 /// Advances `DataKey::LastBumpedId` by `BATCH_LIMIT`, wrapping around modulo

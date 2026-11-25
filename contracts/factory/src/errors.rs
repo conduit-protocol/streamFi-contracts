@@ -79,5 +79,9 @@ pub enum Error {
     /// The optional stream metadata URI exceeds 128 bytes (Issue #923).
     MetadataUriTooLong = 39,
     /// `set_pause_flags` was given bits outside `PauseFlags::ALL` (Issue #975).
-    InvalidPauseFlags = 40,
+    InvalidPauseFlags = 40,    /// Requested stream WASM hash is unavailable for deployment (#962).
+    WasmHashNotRegistered = 310,
+    /// Factory is paused and cannot deploy new streams (#962).
+    FactoryPaused = 311,
+
 }
