@@ -27,6 +27,10 @@ pub enum DataKey {
     /// Consolidates all stream metadata into one storage read instead of eleven
     /// legacy per-field keys (superseded on first `save()` of pre-consolidation streams).
     Config,
+    /// Immutable/low-churn stream metadata (#942).
+    Metadata,
+    /// Frequently-mutated stream state (#942).
+    State,
     /// Lock for re-entrancy protection and concurrency control.
     Guard,
     /// Storage layout version, written once at `initialize()`.
@@ -225,6 +229,27 @@ pub struct StreamSummary {
     pub status: StreamStatus,
     pub start_time: u64,
     pub stop_time: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamMetadata {
+    pub sender: Address,
+    pub token: Address,
+    pub start_time: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MutableStreamState {
+    pub recipient: Address,
+    pub rate_per_second: i128,
+    pub end_time: u64,
+    pub withdrawn: i128,
+    pub paused_at: u64,
+    pub flags: u32,
+    pub event_sequence: u64,
+    pub cumulative_fees: i128,
 }
 
 #[contracttype]

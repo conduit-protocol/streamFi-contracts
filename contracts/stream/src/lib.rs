@@ -306,7 +306,10 @@ impl DripStream {
         description: Option<String>,
         metadata_uri: Option<String>,
     ) {
-        if env.storage().instance().has(&DataKey::Config) {
+        if env.storage().instance().has(&DataKey::Config)
+            || env.storage().instance().has(&DataKey::Metadata)
+            || env.storage().instance().has(&DataKey::State)
+        {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
 
@@ -556,6 +559,7 @@ impl DripStream {
         }
         ttl::bump(env);
         ttl::extend_on_activity(env);
+        ttl::extend_persistent_on_activity(env);
 
         let info = state::load(env);
         state::assert_not_cancelled(&info)?;

@@ -60,6 +60,17 @@ pub fn extend_on_activity(env: &soroban_sdk::Env) {
         .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
 }
 
+pub fn extend_persistent_on_activity(env: &soroban_sdk::Env) {
+    for key in [
+        crate::storage::DataKey::MetadataUri,
+        crate::storage::DataKey::CancelledRecord,
+    ] {
+        if env.storage().persistent().has(&key) {
+            drip_common::ttl::bump_persistent(env, &key);
+        }
+    }
+}
+
 /// Emergency instance TTL extension by any sender, recipient, or third-party (Issue #805).
 /// Bumps the instance storage TTL without requiring withdrawals or state mutations.
 pub fn extend_stream_ttl(env: &soroban_sdk::Env) {

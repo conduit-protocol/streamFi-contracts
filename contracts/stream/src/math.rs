@@ -609,4 +609,31 @@ mod interpolate_tests {
             assert!(down <= up && up - down <= 1);
         }
     }
+
+    #[test]
+    fn rounding_extremes_never_exceed_deposit() {
+        let rates: [i128; 8] = [
+            1, 2, 7, 1_000_000, 1_i128 << 32, 1_i128 << 64,
+            i128::MAX / 10_000, i128::MAX / 2,
+        ];
+        let durations: [u64; 8] = [1, 2, 3, 59, 60, 3_600, 86_400, 1_000_000];
+        for rate in rates {
+            for duration in durations {
+                match rate.checked_mul(duration as i128) {
+                    Some(deposit) => {
+                        for elapsed in [0, 1, duration / 2, duration] {
+                            let accrued = calculate_streamed_amount(rate, elapsed).unwrap();
+                            assert!(accrued <= deposit);
+                            assert!(accrued >= 0);
+                        }
+                    }
+                    None => assert_eq!(
+                        calculate_streamed_amount(rate, duration),
+                        Err(Error::ArithmeticOverflow)
+                    ),
+                }
+            }
+        }
+    }
+
 }
